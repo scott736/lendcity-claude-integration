@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.7.11
+ * Version: 11.7.12
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.7.11');
+define('LENDCITY_CLAUDE_VERSION', '11.7.12');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
