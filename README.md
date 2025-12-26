@@ -1,6 +1,6 @@
 # LendCity Tools Plugin
 
-**Version:** 12.0.0
+**Version:** 12.1.0
 **WordPress Plugin for AI-Powered Content Management**
 
 ## Overview
@@ -135,6 +135,14 @@ Main logic is in:
   - Enhanced linking prompt with summaries + anchor suggestions
   - Increased candidate pool (15 pages, 20 posts shown to Claude)
   - New `build_semantic_indexes()` method for catalog optimization
+- v12.1.0: **Background Processing** - All batch operations now run without keeping browser open:
+  - WP Cron-based background queues for Catalog, Ownership Map, Auto-Linker, and SEO Metadata
+  - New "Background Queue Status" dashboard showing real-time progress
+  - "BUILD ALL (Background)" button starts all 4 processes via WP Cron
+  - Individual "Build (Background)" buttons for each step
+  - Auto-polling status updates every 5 seconds when queues are active
+  - "Stop All Queues" button to cancel all background processing
+  - Processes continue even after closing browser window
 
 ## Installation
 

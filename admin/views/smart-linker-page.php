@@ -38,15 +38,112 @@ $total_links = $smart_linker->get_total_link_count();
 <div class="wrap">
     <h1>Smart Linker <span style="font-size: 14px; color: #666;">AI-Powered Internal Linking</span></h1>
 
+    <!-- Background Queue Status Dashboard -->
+    <?php
+    $catalog_queue_status = $smart_linker->get_catalog_queue_status();
+    $ownership_queue_status = $smart_linker->get_ownership_queue_status();
+    $meta_queue_status = $smart_linker->get_meta_queue_status();
+    $any_queue_active =
+        ($catalog_queue_status['status'] ?? 'idle') === 'running' ||
+        ($ownership_queue_status['status'] ?? 'idle') === 'running' ||
+        ($queue_status['state'] ?? 'idle') === 'running' ||
+        ($meta_queue_status['status'] ?? 'idle') === 'running';
+    ?>
+    <div id="background-queue-dashboard" style="background: linear-gradient(135deg, #1a1a2e, #16213e); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white; <?php echo $any_queue_active ? '' : 'display: none;'; ?>">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+            <h2 style="margin: 0; color: white;">🔄 Background Queues</h2>
+            <span style="background: #00c853; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold; animation: pulse 2s infinite;">RUNNING</span>
+            <span style="opacity: 0.7; font-size: 13px; margin-left: auto;">You can close this window — processing continues in background</span>
+        </div>
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px;">
+            <!-- Catalog Queue -->
+            <div id="bg-catalog-status" class="bg-queue-card" style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px; <?php echo ($catalog_queue_status['status'] ?? 'idle') !== 'running' ? 'opacity: 0.5;' : ''; ?>">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <strong>📚 Catalog</strong>
+                    <span class="bg-status-badge" style="background: <?php echo ($catalog_queue_status['status'] ?? 'idle') === 'running' ? '#00c853' : '#666'; ?>; padding: 2px 8px; border-radius: 10px; font-size: 11px;">
+                        <?php echo ucfirst($catalog_queue_status['status'] ?? 'idle'); ?>
+                    </span>
+                </div>
+                <div style="background: rgba(255,255,255,0.2); height: 8px; border-radius: 4px; overflow: hidden;">
+                    <?php $cat_pct = ($catalog_queue_status['total'] ?? 0) > 0 ? round((($catalog_queue_status['total'] ?? 0) - ($catalog_queue_status['remaining'] ?? 0)) / ($catalog_queue_status['total'] ?? 1) * 100) : 0; ?>
+                    <div class="bg-progress-bar" style="background: #4fc3f7; height: 100%; width: <?php echo $cat_pct; ?>%;"></div>
+                </div>
+                <div style="font-size: 12px; margin-top: 8px; opacity: 0.8;">
+                    <span class="bg-processed"><?php echo ($catalog_queue_status['total'] ?? 0) - ($catalog_queue_status['remaining'] ?? 0); ?></span> /
+                    <span class="bg-total"><?php echo $catalog_queue_status['total'] ?? 0; ?></span> items
+                </div>
+            </div>
+            <!-- Ownership Queue -->
+            <div id="bg-ownership-status" class="bg-queue-card" style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px; <?php echo ($ownership_queue_status['status'] ?? 'idle') !== 'running' ? 'opacity: 0.5;' : ''; ?>">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <strong>🔑 Ownership Map</strong>
+                    <span class="bg-status-badge" style="background: <?php echo ($ownership_queue_status['status'] ?? 'idle') === 'running' ? '#00c853' : '#666'; ?>; padding: 2px 8px; border-radius: 10px; font-size: 11px;">
+                        <?php echo ucfirst($ownership_queue_status['status'] ?? 'idle'); ?>
+                    </span>
+                </div>
+                <div style="background: rgba(255,255,255,0.2); height: 8px; border-radius: 4px; overflow: hidden;">
+                    <?php $own_pct = ($ownership_queue_status['total'] ?? 0) > 0 ? round((($ownership_queue_status['total'] ?? 0) - ($ownership_queue_status['remaining'] ?? 0)) / ($ownership_queue_status['total'] ?? 1) * 100) : 0; ?>
+                    <div class="bg-progress-bar" style="background: #ba68c8; height: 100%; width: <?php echo $own_pct; ?>%;"></div>
+                </div>
+                <div style="font-size: 12px; margin-top: 8px; opacity: 0.8;">
+                    <span class="bg-processed"><?php echo ($ownership_queue_status['total'] ?? 0) - ($ownership_queue_status['remaining'] ?? 0); ?></span> /
+                    <span class="bg-total"><?php echo $ownership_queue_status['total'] ?? 0; ?></span> items
+                </div>
+            </div>
+            <!-- Linker Queue -->
+            <div id="bg-linker-status" class="bg-queue-card" style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px; <?php echo ($queue_status['state'] ?? 'idle') !== 'running' ? 'opacity: 0.5;' : ''; ?>">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <strong>🔗 Auto Linker</strong>
+                    <span class="bg-status-badge" style="background: <?php echo ($queue_status['state'] ?? 'idle') === 'running' ? '#00c853' : '#666'; ?>; padding: 2px 8px; border-radius: 10px; font-size: 11px;">
+                        <?php echo ucfirst($queue_status['state'] ?? 'idle'); ?>
+                    </span>
+                </div>
+                <div style="background: rgba(255,255,255,0.2); height: 8px; border-radius: 4px; overflow: hidden;">
+                    <?php $link_pct = ($queue_status['total'] ?? 0) > 0 ? round(($queue_status['processed'] ?? 0) / ($queue_status['total'] ?? 1) * 100) : 0; ?>
+                    <div class="bg-progress-bar" style="background: #7c4dff; height: 100%; width: <?php echo $link_pct; ?>%;"></div>
+                </div>
+                <div style="font-size: 12px; margin-top: 8px; opacity: 0.8;">
+                    <span class="bg-processed"><?php echo $queue_status['processed'] ?? 0; ?></span> /
+                    <span class="bg-total"><?php echo $queue_status['total'] ?? 0; ?></span> items
+                </div>
+            </div>
+            <!-- Meta Queue -->
+            <div id="bg-meta-status" class="bg-queue-card" style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px; <?php echo ($meta_queue_status['status'] ?? 'idle') !== 'running' ? 'opacity: 0.5;' : ''; ?>">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                    <strong>📝 SEO Metadata</strong>
+                    <span class="bg-status-badge" style="background: <?php echo ($meta_queue_status['status'] ?? 'idle') === 'running' ? '#00c853' : '#666'; ?>; padding: 2px 8px; border-radius: 10px; font-size: 11px;">
+                        <?php echo ucfirst($meta_queue_status['status'] ?? 'idle'); ?>
+                    </span>
+                </div>
+                <div style="background: rgba(255,255,255,0.2); height: 8px; border-radius: 4px; overflow: hidden;">
+                    <?php $meta_pct = ($meta_queue_status['total'] ?? 0) > 0 ? round((($meta_queue_status['total'] ?? 0) - ($meta_queue_status['remaining'] ?? 0)) / ($meta_queue_status['total'] ?? 1) * 100) : 0; ?>
+                    <div class="bg-progress-bar" style="background: #ff7043; height: 100%; width: <?php echo $meta_pct; ?>%;"></div>
+                </div>
+                <div style="font-size: 12px; margin-top: 8px; opacity: 0.8;">
+                    <span class="bg-processed"><?php echo ($meta_queue_status['total'] ?? 0) - ($meta_queue_status['remaining'] ?? 0); ?></span> /
+                    <span class="bg-total"><?php echo $meta_queue_status['total'] ?? 0; ?></span> items
+                </div>
+            </div>
+        </div>
+        <div style="margin-top: 15px; text-align: right;">
+            <button type="button" id="stop-all-queues-btn" class="button" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3);">
+                Stop All Queues
+            </button>
+        </div>
+    </div>
+    <style>
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+    </style>
+
     <!-- BUILD ALL Button -->
     <div style="background: linear-gradient(135deg, #11998e, #38ef7d); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
         <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
             <div>
                 <h2 style="margin: 0; color: white;">Quick Start</h2>
-                <p style="margin: 5px 0 0; opacity: 0.9;">Run all 4 steps automatically: Catalog → Keyword Map → Auto-Link → SEO Meta</p>
+                <p style="margin: 5px 0 0; opacity: 0.9;">Run all 4 steps in background: Catalog → Keyword Map → Auto-Link → SEO Meta</p>
             </div>
             <button type="button" id="build-all-btn" class="button button-large" style="background: white; color: #11998e; border: none; font-weight: bold; font-size: 16px; padding: 12px 30px;">
-                🚀 BUILD ALL
+                🚀 BUILD ALL (Background)
             </button>
         </div>
         <div id="build-all-progress" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
@@ -56,6 +153,9 @@ $total_links = $smart_linker->get_total_link_count();
             <div style="background: #e0e0e0; height: 20px; border-radius: 4px; overflow: hidden;">
                 <div id="build-all-bar" style="background: linear-gradient(90deg, #11998e, #38ef7d); height: 100%; width: 0%; transition: width 0.3s;"></div>
             </div>
+            <p style="margin-top: 10px; font-size: 13px; color: #666;">
+                ✅ All processes now run in background via WP Cron. You can close this window.
+            </p>
         </div>
     </div>
 
@@ -76,15 +176,16 @@ $total_links = $smart_linker->get_total_link_count();
             <?php if (!empty($catalog)): ?>
                 <div style="background: #d4edda; padding: 15px; border-radius: 4px;">
                     <strong style="font-size: 24px;"><?php echo $catalog_stats['total']; ?></strong> items<br>
-                    <small><?php echo $catalog_stats['pages']; ?> pages Page: + <?php echo $catalog_stats['posts']; ?> posts</small>
+                    <small><?php echo $catalog_stats['pages']; ?> pages + <?php echo $catalog_stats['posts']; ?> posts</small>
                 </div>
             <?php else: ?>
                 <div style="background: #fff3cd; padding: 15px; border-radius: 4px;">⚠️ Catalog not built</div>
             <?php endif; ?>
             <div>
-                <button type="button" id="build-catalog" class="button button-primary button-large">Build Catalog</button>
-                <button type="button" id="clear-catalog" class="button button-large" style="color: #d63638;" <?php echo empty($catalog) ? 'disabled' : ''; ?>>Clear Catalog</button>
-                <p class="description"><?php echo $total_items; ?> items • ~<?php echo ceil($total_items * 1.5 / 60); ?> min</p>
+                <button type="button" id="build-catalog-bg" class="button button-primary button-large">🚀 Build (Background)</button>
+                <button type="button" id="build-catalog" class="button button-large">Build (Keep Window Open)</button>
+                <button type="button" id="clear-catalog" class="button button-large" style="color: #d63638;" <?php echo empty($catalog) ? 'disabled' : ''; ?>>Clear</button>
+                <p class="description"><?php echo $total_items; ?> items • Runs via WP Cron when using Background mode</p>
             </div>
         </div>
         <div id="catalog-progress" style="display: none;">
@@ -101,8 +202,11 @@ $total_links = $smart_linker->get_total_link_count();
         <p style="margin-bottom: 15px; opacity: 0.9;">Scans all pages to determine which page should "own" each 3-5 word keyword. Prevents duplicate anchors by design.</p>
 
         <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-            <button type="button" id="build-ownership-btn" class="button button-large" style="background: white; color: #667eea; border: none; font-weight: bold;">
-                Build Ownership Map
+            <button type="button" id="build-ownership-bg-btn" class="button button-large" style="background: white; color: #667eea; border: none; font-weight: bold;">
+                🚀 Build (Background)
+            </button>
+            <button type="button" id="build-ownership-btn" class="button button-large" style="background: rgba(255,255,255,0.9); color: #667eea; border: none;">
+                Build (Keep Window Open)
             </button>
             <button type="button" id="rebuild-ownership-btn" class="button button-large" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5);">
                 Force Rebuild
@@ -1827,5 +1931,227 @@ jQuery(document).ready(function($) {
 
     // Load stats on page load
     loadOwnershipStats();
+
+    // ========== v12.1 BACKGROUND QUEUE HANDLERS ==========
+
+    // Background queue status polling
+    var bgQueuePollInterval = null;
+
+    function updateBackgroundQueueUI(data) {
+        var anyActive = false;
+
+        // Catalog
+        if (data.catalog) {
+            var cat = data.catalog;
+            var catCard = $('#bg-catalog-status');
+            var catProcessed = (cat.total || 0) - (cat.remaining || 0);
+            var catPct = cat.total > 0 ? Math.round(catProcessed / cat.total * 100) : 0;
+            catCard.find('.bg-status-badge').text(cat.status || 'idle').css('background', cat.status === 'running' ? '#00c853' : '#666');
+            catCard.find('.bg-progress-bar').css('width', catPct + '%');
+            catCard.find('.bg-processed').text(catProcessed);
+            catCard.find('.bg-total').text(cat.total || 0);
+            catCard.css('opacity', cat.status === 'running' ? '1' : '0.5');
+            if (cat.status === 'running') anyActive = true;
+        }
+
+        // Ownership
+        if (data.ownership) {
+            var own = data.ownership;
+            var ownCard = $('#bg-ownership-status');
+            var ownProcessed = (own.total || 0) - (own.remaining || 0);
+            var ownPct = own.total > 0 ? Math.round(ownProcessed / own.total * 100) : 0;
+            ownCard.find('.bg-status-badge').text(own.status || 'idle').css('background', own.status === 'running' ? '#00c853' : '#666');
+            ownCard.find('.bg-progress-bar').css('width', ownPct + '%');
+            ownCard.find('.bg-processed').text(ownProcessed);
+            ownCard.find('.bg-total').text(own.total || 0);
+            ownCard.css('opacity', own.status === 'running' ? '1' : '0.5');
+            if (own.status === 'running') anyActive = true;
+        }
+
+        // Linker
+        if (data.linking) {
+            var link = data.linking;
+            var linkCard = $('#bg-linker-status');
+            var linkPct = link.total > 0 ? Math.round((link.processed || 0) / link.total * 100) : 0;
+            linkCard.find('.bg-status-badge').text(link.state || 'idle').css('background', link.state === 'running' ? '#00c853' : '#666');
+            linkCard.find('.bg-progress-bar').css('width', linkPct + '%');
+            linkCard.find('.bg-processed').text(link.processed || 0);
+            linkCard.find('.bg-total').text(link.total || 0);
+            linkCard.css('opacity', link.state === 'running' ? '1' : '0.5');
+            if (link.state === 'running') anyActive = true;
+        }
+
+        // Metadata
+        if (data.metadata) {
+            var meta = data.metadata;
+            var metaCard = $('#bg-meta-status');
+            var metaProcessed = (meta.total || 0) - (meta.remaining || 0);
+            var metaPct = meta.total > 0 ? Math.round(metaProcessed / meta.total * 100) : 0;
+            metaCard.find('.bg-status-badge').text(meta.status || 'idle').css('background', meta.status === 'running' ? '#00c853' : '#666');
+            metaCard.find('.bg-progress-bar').css('width', metaPct + '%');
+            metaCard.find('.bg-processed').text(metaProcessed);
+            metaCard.find('.bg-total').text(meta.total || 0);
+            metaCard.css('opacity', meta.status === 'running' ? '1' : '0.5');
+            if (meta.status === 'running') anyActive = true;
+        }
+
+        // Show/hide dashboard
+        if (anyActive) {
+            $('#background-queue-dashboard').show();
+        } else if (bgQueuePollInterval) {
+            // Keep showing for a moment after completion, then hide
+            setTimeout(function() {
+                if (!anyActive) {
+                    $('#background-queue-dashboard').hide();
+                }
+            }, 3000);
+            clearInterval(bgQueuePollInterval);
+            bgQueuePollInterval = null;
+        }
+    }
+
+    function pollBackgroundQueues() {
+        $.post(ajaxurl, {
+            action: 'lendcity_get_all_queue_statuses',
+            nonce: nonce
+        }, function(r) {
+            if (r.success) {
+                updateBackgroundQueueUI(r.data);
+            }
+        });
+    }
+
+    function startBackgroundQueuePolling() {
+        $('#background-queue-dashboard').show();
+        if (!bgQueuePollInterval) {
+            bgQueuePollInterval = setInterval(pollBackgroundQueues, 5000);
+        }
+        pollBackgroundQueues(); // Immediate first poll
+    }
+
+    // Background Catalog Build
+    $('#build-catalog-bg').on('click', function() {
+        if (!confirm('Build catalog in background for all posts and pages? You can close the browser window.')) return;
+        var $btn = $(this).prop('disabled', true).text('Starting...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_start_background_catalog',
+            nonce: nonce
+        }, function(r) {
+            $btn.prop('disabled', false).text('🚀 Build (Background)');
+            if (r.success) {
+                alert('Background catalog build started! ' + r.data.total + ' items queued.\n\nYou can close this window - processing continues via WP Cron.');
+                startBackgroundQueuePolling();
+            } else {
+                alert('Error: ' + (r.data || 'Failed to start'));
+            }
+        }).fail(function() {
+            $btn.prop('disabled', false).text('🚀 Build (Background)');
+            alert('AJAX Error - please try again');
+        });
+    });
+
+    // Background Ownership Build
+    $('#build-ownership-bg-btn').on('click', function() {
+        if (!confirm('Build ownership map in background? You can close the browser window.')) return;
+        var $btn = $(this).prop('disabled', true).text('Starting...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_start_background_ownership',
+            nonce: nonce
+        }, function(r) {
+            $btn.prop('disabled', false).text('🚀 Build (Background)');
+            if (r.success) {
+                alert('Background ownership map build started! ' + r.data.total + ' items queued.\n\nYou can close this window - processing continues via WP Cron.');
+                startBackgroundQueuePolling();
+            } else {
+                alert('Error: ' + (r.data || 'Failed to start'));
+            }
+        }).fail(function() {
+            $btn.prop('disabled', false).text('🚀 Build (Background)');
+            alert('AJAX Error - please try again');
+        });
+    });
+
+    // Stop All Queues
+    $('#stop-all-queues-btn').on('click', function() {
+        if (!confirm('Stop ALL background queues?')) return;
+        var $btn = $(this).prop('disabled', true).text('Stopping...');
+
+        // Stop all queues in parallel
+        $.when(
+            $.post(ajaxurl, { action: 'lendcity_clear_catalog_queue', nonce: nonce }),
+            $.post(ajaxurl, { action: 'lendcity_clear_ownership_queue', nonce: nonce }),
+            $.post(ajaxurl, { action: 'lendcity_clear_link_queue', nonce: nonce }),
+            $.post(ajaxurl, { action: 'lendcity_clear_meta_queue', nonce: nonce })
+        ).then(function() {
+            $btn.prop('disabled', false).text('Stop All Queues');
+            alert('All queues stopped.');
+            if (bgQueuePollInterval) {
+                clearInterval(bgQueuePollInterval);
+                bgQueuePollInterval = null;
+            }
+            $('#background-queue-dashboard').hide();
+        });
+    });
+
+    // Update BUILD ALL to use background endpoints
+    $('#build-all-btn').off('click').on('click', function() {
+        if (!confirm('Start all 4 background processes?\n\n1. Build Catalog\n2. Build Ownership Map\n3. Auto Linker\n4. SEO Metadata\n\nYou can close the browser window - all processes run via WP Cron.')) return;
+
+        var $btn = $(this).prop('disabled', true).text('Starting...');
+        $('#build-all-progress').show();
+        $('#build-all-step').text('Starting background processes...');
+        $('#build-all-bar').css('width', '25%');
+
+        // Start catalog first (others depend on it)
+        $.post(ajaxurl, {
+            action: 'lendcity_start_background_catalog',
+            nonce: nonce
+        }, function(r1) {
+            $('#build-all-bar').css('width', '50%');
+            $('#build-all-step').text('Starting ownership map...');
+
+            // Start ownership
+            $.post(ajaxurl, {
+                action: 'lendcity_start_background_ownership',
+                nonce: nonce
+            }, function(r2) {
+                $('#build-all-bar').css('width', '75%');
+                $('#build-all-step').text('Starting auto linker...');
+
+                // Start linker queue
+                $.post(ajaxurl, {
+                    action: 'lendcity_init_bulk_queue',
+                    nonce: nonce,
+                    skip_existing: true
+                }, function(r3) {
+                    $('#build-all-bar').css('width', '90%');
+                    $('#build-all-step').text('Starting SEO metadata...');
+
+                    // Start meta queue
+                    $.post(ajaxurl, {
+                        action: 'lendcity_bulk_smart_metadata',
+                        nonce: nonce,
+                        skip_existing: true
+                    }, function(r4) {
+                        $('#build-all-bar').css('width', '100%');
+                        $('#build-all-step').text('All background processes started!');
+                        $btn.prop('disabled', false).text('🚀 BUILD ALL (Background)');
+                        startBackgroundQueuePolling();
+                    });
+                });
+            });
+        }).fail(function() {
+            $btn.prop('disabled', false).text('🚀 BUILD ALL (Background)');
+            $('#build-all-progress').hide();
+            alert('Error starting processes');
+        });
+    });
+
+    // Start polling if any queue was already running on page load
+    <?php if ($any_queue_active): ?>
+    startBackgroundQueuePolling();
+    <?php endif; ?>
 });
 </script>

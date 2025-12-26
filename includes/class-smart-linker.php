@@ -32,6 +32,12 @@ class LendCity_Smart_Linker {
     private $meta_queue_option = 'lendcity_meta_queue';
     private $meta_queue_status_option = 'lendcity_meta_queue_status';
     private $keyword_ownership_option = 'lendcity_keyword_ownership';
+
+    // v12.0 Background processing queues
+    private $catalog_queue_option = 'lendcity_catalog_queue';
+    private $catalog_queue_status_option = 'lendcity_catalog_queue_status';
+    private $ownership_queue_option = 'lendcity_ownership_queue';
+    private $ownership_queue_status_option = 'lendcity_ownership_queue_status';
     private $catalog_cache = null;
     private $links_cache = null; // In-memory cache for get_all_site_links
 
@@ -77,6 +83,10 @@ class LendCity_Smart_Linker {
         add_action('lendcity_process_queue_batch', array($this, 'process_queue_batch'));
         add_action('lendcity_auto_link_new_post', array($this, 'process_new_post_auto_link'));
         add_action('lendcity_process_meta_queue', array($this, 'process_meta_queue_batch'));
+
+        // v12.0 Background queue processing hooks (runs without browser)
+        add_action('lendcity_process_catalog_queue', array($this, 'process_catalog_queue_batch'));
+        add_action('lendcity_process_ownership_queue', array($this, 'process_ownership_queue_batch'));
 
         // Loopback processing (non-cron)
         add_action('wp_ajax_lendcity_background_process', array($this, 'ajax_background_process'));
@@ -926,6 +936,21 @@ class LendCity_Smart_Linker {
         }
 
         delete_transient($lock_key);
+    }
+
+    /**
+     * v12.0: Build and save a single catalog entry (for background processing)
+     * Returns success/failure for queue processing
+     */
+    public function build_single_catalog_entry($post_id) {
+        $entry = $this->build_single_post_catalog($post_id);
+
+        if ($entry && is_array($entry) && isset($entry['post_id'])) {
+            $this->insert_catalog_entry($post_id, $entry);
+            return array('success' => true, 'entry' => $entry);
+        }
+
+        return array('success' => false, 'message' => 'Failed to build catalog entry');
     }
 
     /**
@@ -2704,6 +2729,357 @@ class LendCity_Smart_Linker {
         $this->clear_catalog_cache();
 
         $this->debug_log('Queue cleared completely');
+    }
+
+    // =========================================================================
+    // v12.0 BACKGROUND QUEUE PROCESSING (Runs without browser)
+    // =========================================================================
+
+    /**
+     * Initialize catalog build queue for background processing
+     */
+    public function init_catalog_queue($post_types = array('post', 'page')) {
+        // Get all published posts/pages
+        $args = array(
+            'post_type' => $post_types,
+            'post_status' => 'publish',
+            'posts_per_page' => -1,
+            'fields' => 'ids'
+        );
+        $posts = get_posts($args);
+
+        if (empty($posts)) {
+            return array('success' => false, 'message' => 'No posts found');
+        }
+
+        // Save queue
+        update_option($this->catalog_queue_option, $posts, false);
+
+        // Initialize status
+        $status = array(
+            'state' => 'running',
+            'total' => count($posts),
+            'processed' => 0,
+            'errors' => 0,
+            'started_at' => current_time('mysql'),
+            'last_activity' => current_time('mysql'),
+            'current_post' => ''
+        );
+        update_option($this->catalog_queue_status_option, $status, false);
+
+        // Schedule cron if not already scheduled
+        if (!wp_next_scheduled('lendcity_process_catalog_queue')) {
+            wp_schedule_event(time(), 'every_minute', 'lendcity_process_catalog_queue');
+        }
+
+        $this->debug_log('Catalog queue initialized: ' . count($posts) . ' posts');
+
+        return array('success' => true, 'total' => count($posts));
+    }
+
+    /**
+     * Process catalog queue batch - runs via WP Cron (no browser needed)
+     */
+    public function process_catalog_queue_batch() {
+        $lock_key = 'lendcity_catalog_queue_processing';
+        if (get_transient($lock_key)) {
+            return array('complete' => false, 'message' => 'Already processing');
+        }
+        set_transient($lock_key, true, 180); // 3 minute lock
+
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(300);
+        }
+
+        $queue = get_option($this->catalog_queue_option, array());
+        $status = get_option($this->catalog_queue_status_option, array());
+
+        if (empty($queue)) {
+            // Queue complete
+            if (isset($status['state']) && $status['state'] === 'running') {
+                $status['state'] = 'complete';
+                $status['completed_at'] = current_time('mysql');
+                update_option($this->catalog_queue_status_option, $status, false);
+
+                // Build semantic indexes after catalog complete
+                $this->build_semantic_indexes();
+            }
+            wp_clear_scheduled_hook('lendcity_process_catalog_queue');
+            delete_transient($lock_key);
+            $this->debug_log('Catalog queue complete');
+            return array('complete' => true);
+        }
+
+        // Process batch of 3 posts (balance speed vs API limits)
+        $batch_size = 3;
+        $processed = 0;
+
+        while ($processed < $batch_size && !empty($queue)) {
+            $post_id = array_shift($queue);
+            update_option($this->catalog_queue_option, $queue, false);
+
+            $post = get_post($post_id);
+            if (!$post) {
+                $status['errors']++;
+                continue;
+            }
+
+            $status['current_post'] = $post->post_title;
+            $status['last_activity'] = current_time('mysql');
+            update_option($this->catalog_queue_status_option, $status, false);
+
+            // Build catalog entry for this post
+            $result = $this->build_single_catalog_entry($post_id);
+
+            if ($result['success']) {
+                $status['processed']++;
+                $this->debug_log('Catalog: Added ' . $post->post_title);
+            } else {
+                $status['errors']++;
+                $this->debug_log('Catalog: Failed ' . $post->post_title . ' - ' . ($result['message'] ?? 'Unknown error'));
+            }
+
+            update_option($this->catalog_queue_status_option, $status, false);
+            $processed++;
+
+            // Small delay to avoid API rate limits
+            usleep(500000); // 0.5 second
+        }
+
+        delete_transient($lock_key);
+
+        if (empty($queue)) {
+            $status['state'] = 'complete';
+            $status['completed_at'] = current_time('mysql');
+            $status['current_post'] = '';
+            update_option($this->catalog_queue_status_option, $status, false);
+            wp_clear_scheduled_hook('lendcity_process_catalog_queue');
+
+            // Build semantic indexes
+            $this->build_semantic_indexes();
+
+            $this->debug_log('Catalog queue complete - ' . $status['processed'] . ' entries');
+            return array('complete' => true, 'processed' => $status['processed']);
+        }
+
+        return array('complete' => false, 'remaining' => count($queue), 'processed' => $processed);
+    }
+
+    /**
+     * Get catalog queue status
+     */
+    public function get_catalog_queue_status() {
+        $queue = get_option($this->catalog_queue_option, array());
+        $status = get_option($this->catalog_queue_status_option, array());
+
+        return array(
+            'state' => $status['state'] ?? 'idle',
+            'total' => $status['total'] ?? 0,
+            'processed' => $status['processed'] ?? 0,
+            'remaining' => is_array($queue) ? count($queue) : 0,
+            'errors' => $status['errors'] ?? 0,
+            'current_post' => $status['current_post'] ?? '',
+            'started_at' => $status['started_at'] ?? '',
+            'last_activity' => $status['last_activity'] ?? '',
+            'completed_at' => $status['completed_at'] ?? ''
+        );
+    }
+
+    /**
+     * Clear catalog queue
+     */
+    public function clear_catalog_queue() {
+        delete_option($this->catalog_queue_option);
+        delete_option($this->catalog_queue_status_option);
+        wp_clear_scheduled_hook('lendcity_process_catalog_queue');
+        delete_transient('lendcity_catalog_queue_processing');
+        $this->debug_log('Catalog queue cleared');
+    }
+
+    /**
+     * Initialize ownership map queue for background processing
+     */
+    public function init_ownership_queue() {
+        // Get all catalog entries
+        $catalog = $this->get_catalog();
+
+        if (empty($catalog)) {
+            return array('success' => false, 'message' => 'Catalog is empty - build catalog first');
+        }
+
+        $post_ids = array_keys($catalog);
+
+        // Save queue
+        update_option($this->ownership_queue_option, $post_ids, false);
+
+        // Clear existing ownership map
+        delete_option($this->keyword_ownership_option);
+
+        // Initialize status
+        $status = array(
+            'state' => 'running',
+            'total' => count($post_ids),
+            'processed' => 0,
+            'keywords_found' => 0,
+            'errors' => 0,
+            'started_at' => current_time('mysql'),
+            'last_activity' => current_time('mysql'),
+            'current_post' => ''
+        );
+        update_option($this->ownership_queue_status_option, $status, false);
+
+        // Schedule cron
+        if (!wp_next_scheduled('lendcity_process_ownership_queue')) {
+            wp_schedule_event(time(), 'every_minute', 'lendcity_process_ownership_queue');
+        }
+
+        $this->debug_log('Ownership queue initialized: ' . count($post_ids) . ' posts');
+
+        return array('success' => true, 'total' => count($post_ids));
+    }
+
+    /**
+     * Process ownership queue batch - runs via WP Cron
+     */
+    public function process_ownership_queue_batch() {
+        $lock_key = 'lendcity_ownership_queue_processing';
+        if (get_transient($lock_key)) {
+            return array('complete' => false, 'message' => 'Already processing');
+        }
+        set_transient($lock_key, true, 120);
+
+        $queue = get_option($this->ownership_queue_option, array());
+        $status = get_option($this->ownership_queue_status_option, array());
+
+        if (empty($queue)) {
+            if (isset($status['state']) && $status['state'] === 'running') {
+                $status['state'] = 'complete';
+                $status['completed_at'] = current_time('mysql');
+                update_option($this->ownership_queue_status_option, $status, false);
+            }
+            wp_clear_scheduled_hook('lendcity_process_ownership_queue');
+            delete_transient($lock_key);
+            $this->debug_log('Ownership queue complete');
+            return array('complete' => true);
+        }
+
+        // Process batch of 10 posts (ownership is faster than catalog)
+        $batch_size = 10;
+        $processed = 0;
+        $keywords_added = 0;
+
+        $ownership = get_option($this->keyword_ownership_option, array());
+
+        while ($processed < $batch_size && !empty($queue)) {
+            $post_id = array_shift($queue);
+            update_option($this->ownership_queue_option, $queue, false);
+
+            $entry = $this->get_catalog_entry($post_id);
+            if (!$entry) {
+                $status['errors']++;
+                continue;
+            }
+
+            $status['current_post'] = $entry['title'];
+            $status['last_activity'] = current_time('mysql');
+            update_option($this->ownership_queue_status_option, $status, false);
+
+            // Extract keywords from catalog entry
+            $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
+            $keywords = $entry['semantic_keywords'] ?? array();
+            $all_phrases = array_merge($anchor_phrases, $keywords);
+
+            foreach ($all_phrases as $phrase) {
+                $phrase_lower = strtolower(trim($phrase));
+                $word_count = str_word_count($phrase_lower);
+
+                // Only 2-5 word phrases
+                if ($word_count < 2 || $word_count > 5) continue;
+
+                if (!isset($ownership[$phrase_lower])) {
+                    $ownership[$phrase_lower] = array(
+                        'owner_post_id' => $post_id,
+                        'owner_url' => $entry['url'],
+                        'owner_title' => $entry['title'],
+                        'score' => 100
+                    );
+                    $keywords_added++;
+                }
+            }
+
+            $status['processed']++;
+            $status['keywords_found'] = count($ownership);
+            $processed++;
+        }
+
+        // Save ownership map
+        update_option($this->keyword_ownership_option, $ownership, false);
+        update_option($this->ownership_queue_status_option, $status, false);
+        delete_transient($lock_key);
+
+        if (empty($queue)) {
+            $status['state'] = 'complete';
+            $status['completed_at'] = current_time('mysql');
+            $status['current_post'] = '';
+            update_option($this->ownership_queue_status_option, $status, false);
+            wp_clear_scheduled_hook('lendcity_process_ownership_queue');
+            $this->debug_log('Ownership queue complete - ' . count($ownership) . ' keywords');
+            return array('complete' => true, 'keywords' => count($ownership));
+        }
+
+        return array('complete' => false, 'remaining' => count($queue), 'processed' => $processed);
+    }
+
+    /**
+     * Get ownership queue status
+     */
+    public function get_ownership_queue_status() {
+        $queue = get_option($this->ownership_queue_option, array());
+        $status = get_option($this->ownership_queue_status_option, array());
+
+        return array(
+            'state' => $status['state'] ?? 'idle',
+            'total' => $status['total'] ?? 0,
+            'processed' => $status['processed'] ?? 0,
+            'remaining' => is_array($queue) ? count($queue) : 0,
+            'keywords_found' => $status['keywords_found'] ?? 0,
+            'errors' => $status['errors'] ?? 0,
+            'current_post' => $status['current_post'] ?? '',
+            'started_at' => $status['started_at'] ?? '',
+            'last_activity' => $status['last_activity'] ?? '',
+            'completed_at' => $status['completed_at'] ?? ''
+        );
+    }
+
+    /**
+     * Clear ownership queue
+     */
+    public function clear_ownership_queue() {
+        delete_option($this->ownership_queue_option);
+        delete_option($this->ownership_queue_status_option);
+        wp_clear_scheduled_hook('lendcity_process_ownership_queue');
+        delete_transient('lendcity_ownership_queue_processing');
+        $this->debug_log('Ownership queue cleared');
+    }
+
+    /**
+     * Get meta queue status (for consistency)
+     */
+    public function get_meta_queue_status() {
+        $queue = get_option($this->meta_queue_option, array());
+        $status = get_option($this->meta_queue_status_option, array());
+
+        return array(
+            'state' => $status['state'] ?? 'idle',
+            'total' => $status['total'] ?? 0,
+            'processed' => $status['processed'] ?? 0,
+            'remaining' => is_array($queue) ? count($queue) : 0,
+            'errors' => $status['errors'] ?? 0,
+            'current_post' => $status['current_post'] ?? '',
+            'started_at' => $status['started_at'] ?? '',
+            'last_activity' => $status['last_activity'] ?? '',
+            'completed_at' => $status['completed_at'] ?? ''
+        );
     }
 
     // =========================================================================
