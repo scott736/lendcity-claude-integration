@@ -1,9 +1,9 @@
 <?php
 /**
- * Plugin Name: LendCity Claude Integration
+ * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 10.0.7
+ * Version: 11.7.16
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '10.0.7');
+define('LENDCITY_CLAUDE_VERSION', '11.7.16');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -33,6 +33,12 @@ function lendcity_claude_cron_schedules($schedules) {
             'display' => __('Every 15 Minutes')
         );
     }
+    // Dynamic article frequency schedule (matches publishing frequency setting)
+    $frequency_days = get_option('lendcity_article_frequency', 3);
+    $schedules['lendcity_article_frequency'] = array(
+        'interval' => $frequency_days * DAY_IN_SECONDS,
+        'display' => sprintf(__('Every %d days (Article Frequency)'), $frequency_days)
+    );
     return $schedules;
 }
 
@@ -41,14 +47,27 @@ register_activation_hook(__FILE__, 'lendcity_claude_activate');
 function lendcity_claude_activate() {
     // Clear any old cron jobs that might be lingering
     lendcity_claude_clear_all_crons();
-    
+
+    // Create/upgrade the catalog database table
+    require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-smart-linker.php';
+    $smart_linker = new LendCity_Smart_Linker();
+    $smart_linker->maybe_create_table();
+
+    // Clean up old wp_options catalog (v10 and earlier) - don't migrate, new catalog is smarter
+    $old_catalog = get_option('lendcity_post_catalog', array());
+    if (!empty($old_catalog)) {
+        // Backup before deleting
+        update_option('lendcity_post_catalog_backup_v10', $old_catalog);
+        delete_option('lendcity_post_catalog');
+        delete_option('lendcity_post_catalog_built_at');
+        error_log('LendCity: Cleaned up old wp_options catalog. Please rebuild catalog for v11 enriched data.');
+    }
+
     // Schedule fresh crons (NOT link queue - that's scheduled dynamically when needed)
     if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
-        wp_schedule_event(time(), 'hourly', 'lendcity_auto_schedule_articles');
+        wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
     }
-    if (!wp_next_scheduled('lendcity_check_podcasts')) {
-        wp_schedule_event(time(), 'every_15_minutes', 'lendcity_check_podcasts');
-    }
+    // Podcast publishing is now handled via Transistor webhooks (no cron needed)
 }
 
 // Deactivation hook - runs when plugin is deactivated
@@ -155,13 +174,17 @@ class LendCity_Claude_Integration {
     private function init_hooks() {
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_init', array($this, 'register_settings'));
-        
+        add_action('admin_notices', array($this, 'show_upgrade_notice'));
+        add_action('wp_ajax_lendcity_dismiss_v11_notice', array($this, 'ajax_dismiss_v11_notice'));
+        add_action('wp_ajax_lendcity_get_catalog_stats', array($this, 'ajax_get_catalog_stats'));
+
         // Smart Linker AJAX
         add_action('wp_ajax_lendcity_get_all_content_ids', array($this, 'ajax_get_all_content_ids'));
         add_action('wp_ajax_lendcity_build_single_catalog', array($this, 'ajax_build_single_catalog'));
         add_action('wp_ajax_lendcity_build_catalog_batch', array($this, 'ajax_build_catalog_batch'));
+        add_action('wp_ajax_lendcity_build_parallel_catalog', array($this, 'ajax_build_parallel_catalog'));
+        add_action('wp_ajax_lendcity_update_link_counts', array($this, 'ajax_update_link_counts'));
         add_action('wp_ajax_lendcity_clear_catalog', array($this, 'ajax_clear_catalog'));
-        add_action('wp_ajax_lendcity_create_links_to_target', array($this, 'ajax_create_links_to_target'));
         add_action('wp_ajax_lendcity_get_link_suggestions', array($this, 'ajax_get_link_suggestions'));
         add_action('wp_ajax_lendcity_insert_approved_links', array($this, 'ajax_insert_approved_links'));
         add_action('wp_ajax_lendcity_queue_all_linking', array($this, 'ajax_queue_all_linking'));
@@ -189,7 +212,27 @@ class LendCity_Claude_Integration {
         
         // Metadata AJAX (used by Smart Linker)
         add_action('wp_ajax_lendcity_generate_metadata_from_links', array($this, 'ajax_generate_metadata_from_links'));
-        
+
+        // Smart Metadata v2 AJAX (runs AFTER linking)
+        add_action('wp_ajax_lendcity_generate_smart_metadata', array($this, 'ajax_generate_smart_metadata'));
+        add_action('wp_ajax_lendcity_get_smart_metadata_posts', array($this, 'ajax_get_smart_metadata_posts'));
+        add_action('wp_ajax_lendcity_bulk_smart_metadata', array($this, 'ajax_bulk_smart_metadata'));
+
+        // Meta Queue AJAX (persistent background processing)
+        add_action('wp_ajax_lendcity_init_meta_queue', array($this, 'ajax_init_meta_queue'));
+        add_action('wp_ajax_lendcity_get_meta_queue_status', array($this, 'ajax_get_meta_queue_status'));
+        add_action('wp_ajax_lendcity_clear_meta_queue', array($this, 'ajax_clear_meta_queue'));
+
+        // SEO Health Monitor AJAX
+        add_action('wp_ajax_lendcity_get_seo_health_issues', array($this, 'ajax_get_seo_health_issues'));
+        add_action('wp_ajax_lendcity_auto_fix_seo', array($this, 'ajax_auto_fix_seo'));
+
+        // Keyword Ownership AJAX
+        add_action('wp_ajax_lendcity_build_keyword_ownership', array($this, 'ajax_build_keyword_ownership'));
+        add_action('wp_ajax_lendcity_get_keyword_ownership_stats', array($this, 'ajax_get_keyword_ownership_stats'));
+        add_action('wp_ajax_lendcity_get_keyword_ownership_list', array($this, 'ajax_get_keyword_ownership_list'));
+        add_action('wp_ajax_lendcity_clear_keyword_ownership', array($this, 'ajax_clear_keyword_ownership'));
+
         // Article Scheduler AJAX
         add_action('wp_ajax_lendcity_process_article', array($this, 'ajax_process_article'));
         add_action('wp_ajax_lendcity_schedule_all_articles', array($this, 'ajax_schedule_all_articles'));
@@ -203,8 +246,7 @@ class LendCity_Claude_Integration {
         add_action('wp_ajax_lendcity_test_api', array($this, 'ajax_test_api'));
         add_action('wp_ajax_lendcity_test_tinypng', array($this, 'ajax_test_tinypng'));
         
-        // Podcast AJAX
-        add_action('wp_ajax_lendcity_manual_podcast_check', array($this, 'ajax_manual_podcast_check'));
+        // Podcast AJAX (Backfill only - new episodes handled via Transistor webhook)
         add_action('wp_ajax_lendcity_scan_transistor_embeds', array($this, 'ajax_scan_transistor_embeds'));
         add_action('wp_ajax_lendcity_backfill_podcast_episodes', array($this, 'ajax_backfill_podcast_episodes'));
         add_action('wp_ajax_lendcity_get_podcast_debug_log', array($this, 'ajax_get_podcast_debug_log'));
@@ -215,14 +257,19 @@ class LendCity_Claude_Integration {
         // Auto-schedule cron (maintains minimum scheduled posts)
         add_action('lendcity_auto_schedule_articles', array($this, 'cron_auto_schedule_articles'));
         add_action('init', array($this, 'setup_auto_schedule_cron'));
-        
-        // Podcast auto-publisher cron (every 15 minutes)
-        add_action('lendcity_check_podcasts', array($this, 'cron_check_podcasts'));
-        add_action('init', array($this, 'setup_podcast_cron'));
-        
+
+        // Transistor Webhook REST API
+        add_action('rest_api_init', array($this, 'register_transistor_webhook'));
+
         // Clean up stale crons on admin init (runs once per version)
         add_action('admin_init', array($this, 'maybe_cleanup_stale_crons'));
-        
+
+        // Save show mappings on settings save
+        add_action('admin_init', array($this, 'save_show_mappings'));
+
+        // Webhook secret regeneration AJAX
+        add_action('wp_ajax_lendcity_regenerate_webhook_secret', array($this, 'ajax_regenerate_webhook_secret'));
+
         // Initialize Smart Linker
         new LendCity_Smart_Linker();
     }
@@ -235,69 +282,157 @@ class LendCity_Claude_Integration {
         if ($last_version !== LENDCITY_CLAUDE_VERSION) {
             // Version changed - clear old crons and reschedule
             lendcity_claude_clear_all_crons();
-            
-            // Reschedule (NOT link queue - that's scheduled dynamically when needed)
+
+            // Clear any stale queue status (prevents auto-run after plugin update)
+            delete_option('lendcity_smart_linker_queue');
+            delete_option('lendcity_smart_linker_queue_status');
+
+            // Reschedule (NOT link queue - that's scheduled dynamically)
             if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
-                wp_schedule_event(time(), 'hourly', 'lendcity_auto_schedule_articles');
+                wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
             }
-            if (!wp_next_scheduled('lendcity_check_podcasts')) {
-                wp_schedule_event(time(), 'every_15_minutes', 'lendcity_check_podcasts');
-            }
-            
+            // Podcast publishing handled via Transistor webhooks (no cron)
+
             update_option('lendcity_claude_last_version', LENDCITY_CLAUDE_VERSION);
-            lendcity_debug_log('Cleaned up stale crons and rescheduled for version ' . LENDCITY_CLAUDE_VERSION);
+            lendcity_debug_log('Cleaned up stale crons and queue for version ' . LENDCITY_CLAUDE_VERSION);
         }
     }
     
     public function register_settings() {
-        register_setting('lendcity_claude_settings', 'lendcity_claude_api_key');
-        register_setting('lendcity_claude_settings', 'lendcity_unsplash_api_key');
-        register_setting('lendcity_claude_settings', 'lendcity_tinypng_api_key');
+        // Main settings - with sanitize callbacks to preserve existing values
+        register_setting('lendcity_claude_settings', 'lendcity_claude_api_key', array(
+            'sanitize_callback' => array($this, 'sanitize_api_key_claude')
+        ));
+        register_setting('lendcity_claude_settings', 'lendcity_unsplash_api_key', array(
+            'sanitize_callback' => array($this, 'sanitize_api_key_unsplash')
+        ));
+        register_setting('lendcity_claude_settings', 'lendcity_tinypng_api_key', array(
+            'sanitize_callback' => array($this, 'sanitize_api_key_tinypng')
+        ));
         register_setting('lendcity_claude_settings', 'lendcity_smart_linker_auto');
         register_setting('lendcity_claude_settings', 'lendcity_debug_mode');
-        
-        // Podcast settings
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_enabled');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_rss');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_category');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_start_date');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_start_hour');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_end_hour');
-        
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_enabled');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_rss');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_category');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_start_date');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_start_hour');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_end_hour');
+
+        // Podcast webhook settings - SEPARATE group to avoid overwriting API keys
+        register_setting('lendcity_podcast_settings', 'lendcity_transistor_webhook_secret');
+        register_setting('lendcity_podcast_settings', 'lendcity_transistor_api_key');
+        register_setting('lendcity_podcast_settings', 'lendcity_transistor_shows');
+        register_setting('lendcity_podcast_settings', 'lendcity_show_id_1');
+        register_setting('lendcity_podcast_settings', 'lendcity_show_category_1');
+        register_setting('lendcity_podcast_settings', 'lendcity_show_id_2');
+        register_setting('lendcity_podcast_settings', 'lendcity_show_category_2');
+    }
+
+    /**
+     * Sanitize API keys - preserve existing value if new value is empty
+     */
+    public function sanitize_api_key_claude($value) {
+        if (empty($value)) {
+            return get_option('lendcity_claude_api_key', '');
+        }
+        return sanitize_text_field($value);
+    }
+
+    public function sanitize_api_key_unsplash($value) {
+        if (empty($value)) {
+            return get_option('lendcity_unsplash_api_key', '');
+        }
+        return sanitize_text_field($value);
+    }
+
+    public function sanitize_api_key_tinypng($value) {
+        if (empty($value)) {
+            return get_option('lendcity_tinypng_api_key', '');
+        }
+        return sanitize_text_field($value);
+    }
+
+    /**
+     * Save show mappings when settings are saved
+     */
+    public function save_show_mappings() {
+        // Only run on settings save (check for settings page and proper nonce)
+        if (!isset($_POST['option_page']) || $_POST['option_page'] !== 'lendcity_claude_settings') {
+            return;
+        }
+
+        // Verify the settings nonce (WordPress adds this automatically)
+        if (!isset($_POST['_wpnonce']) || !wp_verify_nonce($_POST['_wpnonce'], 'lendcity_claude_settings-options')) {
+            return;
+        }
+
+        // Check user permissions
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        // Build and save show mappings
+        $shows = array();
+        if (!empty($_POST['lendcity_show_id_1']) && !empty($_POST['lendcity_show_category_1'])) {
+            $shows[sanitize_text_field($_POST['lendcity_show_id_1'])] = sanitize_text_field($_POST['lendcity_show_category_1']);
+        }
+        if (!empty($_POST['lendcity_show_id_2']) && !empty($_POST['lendcity_show_category_2'])) {
+            $shows[sanitize_text_field($_POST['lendcity_show_id_2'])] = sanitize_text_field($_POST['lendcity_show_category_2']);
+        }
+        if (!empty($shows)) {
+            update_option('lendcity_transistor_shows', json_encode($shows));
+        }
     }
     
+    /**
+     * Show admin notice for v11 upgrade - rebuild catalog for enriched metadata
+     */
+    public function show_upgrade_notice() {
+        // Only show on plugin pages
+        $screen = get_current_screen();
+        if (!$screen || strpos($screen->id, 'lendcity') === false) {
+            return;
+        }
+
+        // Check if user dismissed the notice
+        if (get_option('lendcity_v11_notice_dismissed', false)) {
+            return;
+        }
+
+        // Check if catalog is empty (new install or needs rebuild)
+        $smart_linker = new LendCity_Smart_Linker();
+        $catalog_count = $smart_linker->get_catalog_count();
+
+        if ($catalog_count === 0) {
+            ?>
+            <div class="notice notice-info is-dismissible" id="lendcity-v11-notice">
+                <p><strong>LendCity Tools v11.0 - Scalable Database Catalog</strong></p>
+                <p>This version features a new high-performance database-backed catalog with enriched metadata for smarter linking:</p>
+                <ul style="list-style: disc; margin-left: 20px;">
+                    <li><strong>Topic Clusters</strong> - Group related content together</li>
+                    <li><strong>Funnel Stages</strong> - Awareness, Consideration, Decision</li>
+                    <li><strong>Difficulty Levels</strong> - Beginner, Intermediate, Advanced</li>
+                    <li><strong>Reader Intent</strong> - Educational, Transactional, Navigational</li>
+                    <li><strong>Quality Scores</strong> - Prioritize high-quality content</li>
+                </ul>
+                <p><a href="<?php echo admin_url('admin.php?page=lendcity-claude-smart-linker'); ?>" class="button button-primary">Go to Smart Linker to Build Catalog</a>
+                <button type="button" class="button" onclick="jQuery.post(ajaxurl, {action: 'lendcity_dismiss_v11_notice', nonce: '<?php echo wp_create_nonce('lendcity_claude_nonce'); ?>'}, function(){ jQuery('#lendcity-v11-notice').fadeOut(); });">Dismiss</button></p>
+            </div>
+            <?php
+        }
+    }
+
     public function add_admin_menu() {
         add_menu_page(
-            'Claude AI',
-            'Claude AI',
+            'LendCity Tools',
+            'LendCity Tools',
             'manage_options',
             'lendcity-claude',
-            array($this, 'dashboard_page'),
+            array($this, 'smart_linker_page'),
             'dashicons-admin-generic',
             30
         );
-        
-        add_submenu_page(
-            'lendcity-claude',
-            'Dashboard',
-            'Dashboard',
-            'manage_options',
-            'lendcity-claude',
-            array($this, 'dashboard_page')
-        );
-        
+
         add_submenu_page(
             'lendcity-claude',
             'Smart Linker',
             'Smart Linker',
             'manage_options',
-            'lendcity-claude-smart-linker',
+            'lendcity-claude',
             array($this, 'smart_linker_page')
         );
         
@@ -330,11 +465,7 @@ class LendCity_Claude_Integration {
     }
     
     // ==================== PAGE RENDERS ====================
-    
-    public function dashboard_page() {
-        include LENDCITY_CLAUDE_PLUGIN_DIR . 'admin/views/dashboard-page.php';
-    }
-    
+
     public function smart_linker_page() {
         include LENDCITY_CLAUDE_PLUGIN_DIR . 'admin/views/smart-linker-page.php';
     }
@@ -368,27 +499,55 @@ class LendCity_Claude_Integration {
         
         wp_send_json_success(array('ids' => $posts));
     }
-    
+
+    /**
+     * Dismiss the v11 upgrade notice
+     */
+    public function ajax_dismiss_v11_notice() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        update_option('lendcity_v11_notice_dismissed', true);
+        wp_send_json_success();
+    }
+
+    /**
+     * Get catalog stats for the new database-backed catalog
+     */
+    public function ajax_get_catalog_stats() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $stats = $smart_linker->get_catalog_stats();
+        $clusters = $smart_linker->get_all_clusters();
+
+        wp_send_json_success(array(
+            'stats' => $stats,
+            'clusters' => $clusters
+        ));
+    }
+
     public function ajax_build_single_catalog() {
         check_ajax_referer('lendcity_claude_nonce', 'nonce');
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Permission denied');
         }
-        
+
         $post_id = intval($_POST['post_id']);
         $smart_linker = new LendCity_Smart_Linker();
         $entry = $smart_linker->build_single_post_catalog($post_id);
-        
+
         if ($entry && is_array($entry) && isset($entry['post_id'])) {
-            // Save to catalog
-            $catalog = $smart_linker->get_catalog();
-            $catalog[$post_id] = $entry;
-            update_option('lendcity_post_catalog', $catalog);
-            update_option('lendcity_post_catalog_built_at', current_time('mysql'));
-            
+            // Save to database table (v11 scalable catalog)
+            $smart_linker->insert_catalog_entry($post_id, $entry);
+
             wp_send_json_success(array(
                 'post_id' => $post_id,
-                'title' => $entry['title']
+                'title' => $entry['title'],
+                'topic_cluster' => $entry['topic_cluster'] ?? '',
+                'funnel_stage' => $entry['funnel_stage'] ?? '',
+                'difficulty_level' => $entry['difficulty_level'] ?? ''
             ));
         } else {
             wp_send_json_error('Failed to build catalog entry');
@@ -403,35 +562,72 @@ class LendCity_Claude_Integration {
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Permission denied');
         }
-        
+
         $post_ids = isset($_POST['post_ids']) ? array_map('intval', $_POST['post_ids']) : array();
-        
+
         if (empty($post_ids)) {
             wp_send_json_error('No post IDs provided');
         }
-        
+
         $smart_linker = new LendCity_Smart_Linker();
-        
-        // Use batch function - single API call for all posts
+
+        // Use batch function - saves directly to database table (v11 scalable catalog)
         $entries = $smart_linker->build_batch_catalog($post_ids);
-        
-        if (!empty($entries)) {
-            // Save to catalog
-            $catalog = $smart_linker->get_catalog();
-            foreach ($entries as $post_id => $entry) {
-                $catalog[$post_id] = $entry;
-            }
-            update_option('lendcity_post_catalog', $catalog);
-            update_option('lendcity_post_catalog_built_at', current_time('mysql'));
-        }
-        
+
         wp_send_json_success(array(
             'processed' => count($post_ids),
             'success' => count($entries),
             'results' => array_keys($entries)
         ));
     }
-    
+
+    /**
+     * Build catalog in PARALLEL - 3-5x faster using concurrent API calls
+     */
+    public function ajax_build_parallel_catalog() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        // Increase time limit for parallel processing
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(600);
+        }
+
+        $post_ids = isset($_POST['post_ids']) ? array_map('intval', $_POST['post_ids']) : array();
+        $concurrent = isset($_POST['concurrent']) ? min(5, max(1, intval($_POST['concurrent']))) : 3;
+
+        if (empty($post_ids)) {
+            wp_send_json_error('No post IDs provided');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $entries = $smart_linker->build_parallel_catalog($post_ids, $concurrent);
+
+        wp_send_json_success(array(
+            'processed' => count($post_ids),
+            'success' => count($entries),
+            'concurrent' => $concurrent,
+            'results' => array_keys($entries)
+        ));
+    }
+
+    /**
+     * Update link counts for all catalog entries
+     */
+    public function ajax_update_link_counts() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $smart_linker->update_link_counts();
+
+        wp_send_json_success(array('message' => 'Link counts updated'));
+    }
+
     /**
      * Clear the entire catalog
      */
@@ -440,27 +636,18 @@ class LendCity_Claude_Integration {
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Permission denied');
         }
-        
+
+        // Clear the new database table
+        $smart_linker = new LendCity_Smart_Linker();
+        $smart_linker->clear_catalog();
+
+        // Also clean up any legacy wp_options catalog
         delete_option('lendcity_post_catalog');
         delete_option('lendcity_post_catalog_built_at');
-        
+
         wp_send_json_success(array('message' => 'Catalog cleared'));
     }
-    
-    public function ajax_create_links_to_target() {
-        check_ajax_referer('lendcity_claude_nonce', 'nonce');
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error('Permission denied');
-        }
-        
-        $target_id = intval($_POST['target_id']);
-        
-        $smart_linker = new LendCity_Smart_Linker();
-        $result = $smart_linker->create_links_to_target($target_id);
-        
-        wp_send_json_success($result);
-    }
-    
+
     public function ajax_get_link_suggestions() {
         check_ajax_referer('lendcity_claude_nonce', 'nonce');
         if (!current_user_can('manage_options')) {
@@ -859,21 +1046,9 @@ class LendCity_Claude_Integration {
      * Setup the auto-schedule cron based on publishing frequency
      */
     public function setup_auto_schedule_cron() {
-        $frequency_days = get_option('lendcity_article_frequency', 3);
-        $frequency_seconds = $frequency_days * DAY_IN_SECONDS;
-        
-        // Register custom cron schedule based on frequency
-        add_filter('cron_schedules', function($schedules) use ($frequency_days, $frequency_seconds) {
-            $schedules['lendcity_frequency'] = array(
-                'interval' => $frequency_seconds,
-                'display' => 'Every ' . $frequency_days . ' days (LendCity)'
-            );
-            return $schedules;
-        });
-        
-        // Schedule if not already scheduled
+        // Schedule if not already scheduled (uses lendcity_article_frequency registered globally)
         if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
-            wp_schedule_event(time(), 'lendcity_frequency', 'lendcity_auto_schedule_articles');
+            wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
         }
     }
     
@@ -1195,215 +1370,153 @@ class LendCity_Claude_Integration {
     }
     
     /**
-     * Setup podcast cron - only schedule if it's Monday and not all done
+     * Register Transistor webhook REST API endpoint
      */
-    public function setup_podcast_cron() {
-        // Get current time in EST
-        $est_timezone = new DateTimeZone('America/Toronto');
-        $now = new DateTime('now', $est_timezone);
-        $current_day = $now->format('l');
-        $current_week = $now->format('Y-W');
-        
-        // Check weekly status
-        $weekly_status = get_option('lendcity_podcast_weekly_status', array());
-        $is_current_week = isset($weekly_status['week']) && $weekly_status['week'] === $current_week;
-        
-        // Check if all enabled podcasts are done
-        $podcast1_enabled = get_option('lendcity_podcast1_enabled', 'no') === 'yes';
-        $podcast2_enabled = get_option('lendcity_podcast2_enabled', 'yes') === 'yes';
-        $podcast1_done = $is_current_week && !empty($weekly_status['podcast1_done']);
-        $podcast2_done = $is_current_week && !empty($weekly_status['podcast2_done']);
-        
-        $all_done = true;
-        if ($podcast1_enabled && !$podcast1_done) $all_done = false;
-        if ($podcast2_enabled && !$podcast2_done) $all_done = false;
-        
-        // Only schedule if it's Monday and not all done
-        if ($current_day === 'Monday' && !$all_done) {
-            if (!wp_next_scheduled('lendcity_check_podcasts')) {
-                wp_schedule_event(time(), 'every_15_minutes', 'lendcity_check_podcasts');
-                lendcity_debug_log('Podcast cron scheduled for Monday');
-            }
-        }
-    }
-    
-    /**
-     * Cron job to check podcast feeds for new episodes
-     * Only runs on Mondays and stops once both podcasts are processed for the week
-     */
-    public function cron_check_podcasts() {
-        // Get current time in EST
-        $est_timezone = new DateTimeZone('America/Toronto');
-        $now = new DateTime('now', $est_timezone);
-        $current_hour = (int)$now->format('G');
-        $current_day = $now->format('l'); // Day name
-        $today_date = $now->format('Y-m-d');
-        $current_week = $now->format('Y-W'); // Year-Week format
-        
-        // Only run on Mondays
-        if ($current_day !== 'Monday') {
-            lendcity_debug_log('Podcast: Not Monday, skipping.');
-            return;
-        }
-        
-        // Check if both podcasts already processed this week
-        $weekly_status = get_option('lendcity_podcast_weekly_status', array());
-        if (isset($weekly_status['week']) && $weekly_status['week'] === $current_week) {
-            $podcast1_done = !empty($weekly_status['podcast1_done']);
-            $podcast2_done = !empty($weekly_status['podcast2_done']);
-            
-            // Check which podcasts are enabled
-            $podcast1_enabled = get_option('lendcity_podcast1_enabled', 'no') === 'yes';
-            $podcast2_enabled = get_option('lendcity_podcast2_enabled', 'yes') === 'yes';
-            
-            // If all enabled podcasts are done, unschedule the cron until next week
-            $all_done = true;
-            if ($podcast1_enabled && !$podcast1_done) $all_done = false;
-            if ($podcast2_enabled && !$podcast2_done) $all_done = false;
-            
-            if ($all_done) {
-                lendcity_debug_log('Podcast: All podcasts processed for week ' . $current_week . ', stopping cron.');
-                wp_clear_scheduled_hook('lendcity_check_podcasts');
-                return;
-            }
-        } else {
-            // New week - reset status
-            $weekly_status = array('week' => $current_week, 'podcast1_done' => false, 'podcast2_done' => false);
-            update_option('lendcity_podcast_weekly_status', $weekly_status);
-        }
-        
-        lendcity_debug_log('Podcast: Checking for new episodes...');
-        
-        // Check Podcast 1 (Wisdom, Lifestyle, Money Show)
-        $podcast1_enabled = get_option('lendcity_podcast1_enabled', 'no');
-        $podcast1_start_date = get_option('lendcity_podcast1_start_date', '2025-01-05');
-        $podcast1_start_hour = (int)get_option('lendcity_podcast1_start_hour', 5);
-        $podcast1_end_hour = (int)get_option('lendcity_podcast1_end_hour', 7);
-        
-        if ($podcast1_enabled === 'yes' && $today_date >= $podcast1_start_date && empty($weekly_status['podcast1_done'])) {
-            if ($current_hour >= $podcast1_start_hour && $current_hour < $podcast1_end_hour) {
-                lendcity_debug_log('Podcast: Checking Podcast 1 (Wisdom, Lifestyle, Money Show)');
-                $result = $this->check_podcast_feed(1);
-                if ($result === true) {
-                    $weekly_status['podcast1_done'] = true;
-                    update_option('lendcity_podcast_weekly_status', $weekly_status);
-                }
-            }
-        }
-        
-        // Check Podcast 2 (Close More Deals)
-        $podcast2_enabled = get_option('lendcity_podcast2_enabled', 'yes');
-        $podcast2_start_date = get_option('lendcity_podcast2_start_date', '2024-12-22');
-        $podcast2_start_hour = (int)get_option('lendcity_podcast2_start_hour', 9);
-        $podcast2_end_hour = (int)get_option('lendcity_podcast2_end_hour', 11);
-        
-        if ($podcast2_enabled === 'yes' && $today_date >= $podcast2_start_date && empty($weekly_status['podcast2_done'])) {
-            if ($current_hour >= $podcast2_start_hour && $current_hour < $podcast2_end_hour) {
-                lendcity_debug_log('Podcast: Checking Podcast 2 (Close More Deals)');
-                $result = $this->check_podcast_feed(2);
-                if ($result === true) {
-                    $weekly_status['podcast2_done'] = true;
-                    update_option('lendcity_podcast_weekly_status', $weekly_status);
-                }
-            }
-        }
-        
-        // Check again if all done after processing
-        $podcast1_enabled = get_option('lendcity_podcast1_enabled', 'no') === 'yes';
-        $podcast2_enabled = get_option('lendcity_podcast2_enabled', 'yes') === 'yes';
-        $all_done = true;
-        if ($podcast1_enabled && empty($weekly_status['podcast1_done'])) $all_done = false;
-        if ($podcast2_enabled && empty($weekly_status['podcast2_done'])) $all_done = false;
-        
-        if ($all_done) {
-            lendcity_log('Podcast: All podcasts processed for week ' . $current_week . ', stopping cron until next Monday.');
-            wp_clear_scheduled_hook('lendcity_check_podcasts');
-        }
-    }
-    
-    /**
-     * Check a specific podcast feed for new episodes
-     * Returns true if episode was successfully processed, false otherwise
-     */
-    private function check_podcast_feed($podcast_num) {
-        $rss_url = get_option("lendcity_podcast{$podcast_num}_rss", '');
-        $category_name = get_option("lendcity_podcast{$podcast_num}_category", '');
-        
-        if (empty($rss_url) || empty($category_name)) {
-            lendcity_log("Podcast {$podcast_num}: Missing RSS URL or category");
-            return false;
-        }
-        
-        // Fetch RSS feed - bypass any caching
-        $response = wp_remote_get($rss_url, array(
-            'timeout' => 30,
-            'headers' => array(
-                'Cache-Control' => 'no-cache, no-store, must-revalidate',
-                'Pragma' => 'no-cache',
-                'Expires' => '0'
-            ),
-            'sslverify' => true
+    public function register_transistor_webhook() {
+        register_rest_route('lendcity/v1', '/transistor-webhook', array(
+            'methods' => 'POST',
+            'callback' => array($this, 'handle_transistor_webhook'),
+            'permission_callback' => '__return_true', // Public endpoint, verified by secret
         ));
-        
-        if (is_wp_error($response)) {
-            lendcity_log("Podcast {$podcast_num}: Failed to fetch RSS - " . $response->get_error_message());
-            return false;
+    }
+
+    /**
+     * Handle incoming Transistor webhook for episode_published events
+     * Webhook URL: https://yoursite.com/wp-json/lendcity/v1/transistor-webhook?key=YOUR_SECRET
+     */
+    public function handle_transistor_webhook($request) {
+        // Verify webhook secret
+        $provided_key = $request->get_param('key');
+        $stored_secret = get_option('lendcity_transistor_webhook_secret', '');
+
+        if (empty($stored_secret)) {
+            // Generate a secret if none exists
+            $stored_secret = wp_generate_password(32, false);
+            update_option('lendcity_transistor_webhook_secret', $stored_secret);
         }
-        
-        $body = wp_remote_retrieve_body($response);
-        
-        // Parse XML
-        libxml_use_internal_errors(true);
-        $xml = simplexml_load_string($body);
-        
-        if ($xml === false) {
-            lendcity_log("Podcast {$podcast_num}: Failed to parse RSS XML");
-            return false;
+
+        if ($provided_key !== $stored_secret) {
+            lendcity_log('Transistor Webhook: Invalid secret key');
+            return new WP_REST_Response(array('error' => 'Invalid key'), 403);
         }
-        
-        // Get processed episodes
+
+        // Get webhook payload
+        $body = $request->get_body();
+        $data = json_decode($body, true);
+
+        if (empty($data)) {
+            lendcity_log('Transistor Webhook: Empty or invalid JSON payload');
+            return new WP_REST_Response(array('error' => 'Invalid payload'), 400);
+        }
+
+        lendcity_log('Transistor Webhook: Received - ' . json_encode($data));
+
+        // Extract episode data from webhook
+        // Transistor webhook format: { "event": "episode_published", "data": { "id": "...", "attributes": {...} } }
+        $event = $data['event'] ?? '';
+        if ($event !== 'episode_published') {
+            lendcity_log('Transistor Webhook: Ignoring event type: ' . $event);
+            return new WP_REST_Response(array('message' => 'Event ignored'), 200);
+        }
+
+        $episode_data = $data['data'] ?? array();
+        $attributes = $episode_data['attributes'] ?? array();
+
+        // Get the share_id from the episode data
+        $share_id = $attributes['share_id'] ?? '';
+        $episode_title = $attributes['title'] ?? 'Untitled Episode';
+        $show_id = $episode_data['relationships']['show']['data']['id'] ?? '';
+
+        if (empty($share_id)) {
+            // Try to extract from share_url
+            $share_url = $attributes['share_url'] ?? '';
+            if (preg_match('/share\.transistor\.fm\/s\/([a-z0-9]+)/i', $share_url, $matches)) {
+                $share_id = $matches[1];
+            }
+        }
+
+        if (empty($share_id)) {
+            lendcity_log('Transistor Webhook: No share_id found in payload');
+            return new WP_REST_Response(array('error' => 'No share_id found'), 400);
+        }
+
+        // Get category from show mapping
+        $shows_config = get_option('lendcity_transistor_shows', '{}');
+        $shows = json_decode($shows_config, true) ?: array();
+        $category_name = $shows[$show_id] ?? 'Podcast';
+
+        // Check if already processed
         $processed = get_option('lendcity_processed_podcast_episodes', array());
-        $processed_guids = array_column($processed, 'guid');
-        
-        // Get latest episode
-        if (!isset($xml->channel->item[0])) {
-            lendcity_debug_log("Podcast {$podcast_num}: No episodes found in feed");
-            return false;
+        foreach ($processed as $ep) {
+            if (isset($ep['share_id']) && $ep['share_id'] === $share_id) {
+                lendcity_log('Transistor Webhook: Episode already processed - ' . $episode_title);
+                return new WP_REST_Response(array('message' => 'Already processed'), 200);
+            }
         }
-        
-        $item = $xml->channel->item[0];
-        $guid = (string)$item->guid;
-        $title = (string)$item->title;
-        
-        // Check if already processed - this counts as "done" for the week
-        if (in_array($guid, $processed_guids)) {
-            lendcity_debug_log("Podcast {$podcast_num}: Episode already processed - {$title}");
-            return true; // Already done for this week
-        }
-        
-        lendcity_log("Podcast {$podcast_num}: New episode found - {$title}");
-        
-        // Process this episode
-        $result = $this->process_podcast_episode($item, $xml, $category_name);
-        
+
+        lendcity_log('Transistor Webhook: Processing new episode - ' . $episode_title);
+
+        // Process the episode using existing function
+        $result = $this->process_episode_from_share_id($share_id, $category_name, $episode_title);
+
         if ($result['success']) {
             // Record as processed
             $processed[] = array(
-                'guid' => $guid,
-                'title' => $title,
+                'share_id' => $share_id,
+                'title' => $episode_title,
                 'post_id' => $result['post_id'],
                 'date' => current_time('mysql'),
-                'podcast' => $podcast_num
+                'show_id' => $show_id
             );
             update_option('lendcity_processed_podcast_episodes', $processed);
-            lendcity_log("Podcast {$podcast_num}: Successfully created post #{$result['post_id']}");
-            return true;
+
+            lendcity_log('Transistor Webhook: Successfully created post #' . $result['post_id']);
+
+            return new WP_REST_Response(array(
+                'success' => true,
+                'post_id' => $result['post_id'],
+                'message' => 'Episode processed successfully'
+            ), 200);
         } else {
-            lendcity_log("Podcast {$podcast_num}: Failed to process - " . ($result['error'] ?? 'Unknown error'));
-            return false;
+            lendcity_log('Transistor Webhook: Failed - ' . ($result['error'] ?? 'Unknown error'));
+            return new WP_REST_Response(array(
+                'error' => $result['error'] ?? 'Processing failed'
+            ), 500);
         }
     }
-    
+
+    /**
+     * Get the webhook URL for display in admin
+     */
+    public function get_transistor_webhook_url() {
+        $secret = get_option('lendcity_transistor_webhook_secret', '');
+        if (empty($secret)) {
+            $secret = wp_generate_password(32, false);
+            update_option('lendcity_transistor_webhook_secret', $secret);
+        }
+        return rest_url('lendcity/v1/transistor-webhook') . '?key=' . $secret;
+    }
+
+    /**
+     * AJAX: Regenerate webhook secret
+     */
+    public function ajax_regenerate_webhook_secret() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $new_secret = wp_generate_password(32, false);
+        update_option('lendcity_transistor_webhook_secret', $new_secret);
+
+        lendcity_log('Transistor webhook secret regenerated');
+
+        wp_send_json_success(array(
+            'message' => 'Webhook secret regenerated',
+            'url' => rest_url('lendcity/v1/transistor-webhook') . '?key=' . $new_secret
+        ));
+    }
+
     /**
      * Process a single podcast episode into a blog post
      */
@@ -1643,96 +1756,7 @@ class LendCity_Claude_Integration {
         
         return array('success' => true, 'post_id' => $post_id, 'title' => $article_data['title'] ?? $episode_title);
     }
-    
-    /**
-     * AJAX: Manual podcast check - bypasses day/time restrictions
-     */
-    public function ajax_manual_podcast_check() {
-        check_ajax_referer('lendcity_claude_nonce', 'nonce');
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error('Permission denied');
-        }
-        
-        $podcast_num = intval($_POST['podcast']);
-        if ($podcast_num < 1 || $podcast_num > 2) {
-            wp_send_json_error('Invalid podcast number');
-        }
-        
-        $rss_url = get_option("lendcity_podcast{$podcast_num}_rss", '');
-        $category_name = get_option("lendcity_podcast{$podcast_num}_category", '');
-        
-        if (empty($rss_url) || empty($category_name)) {
-            wp_send_json_error('RSS URL or category not configured');
-        }
-        
-        // Fetch RSS feed
-        $response = wp_remote_get($rss_url, array(
-            'timeout' => 30,
-            'headers' => array(
-                'Cache-Control' => 'no-cache, no-store, must-revalidate',
-                'Pragma' => 'no-cache',
-                'Expires' => '0'
-            )
-        ));
-        
-        if (is_wp_error($response)) {
-            wp_send_json_error('Failed to fetch RSS: ' . $response->get_error_message());
-        }
-        
-        $body = wp_remote_retrieve_body($response);
-        
-        libxml_use_internal_errors(true);
-        $xml = simplexml_load_string($body);
-        
-        if ($xml === false) {
-            wp_send_json_error('Failed to parse RSS XML');
-        }
-        
-        // Get processed episodes
-        $processed = get_option('lendcity_processed_podcast_episodes', array());
-        $processed_guids = array_column($processed, 'guid');
-        
-        // Get latest episode
-        if (!isset($xml->channel->item[0])) {
-            wp_send_json_error('No episodes found in feed');
-        }
-        
-        $item = $xml->channel->item[0];
-        $guid = (string)$item->guid;
-        $title = (string)$item->title;
-        
-        // Check if already processed
-        if (in_array($guid, $processed_guids)) {
-            wp_send_json_success(array(
-                'message' => 'Latest episode already processed: ' . $title,
-                'post_id' => null
-            ));
-        }
-        
-        // Process this episode
-        $result = $this->process_podcast_episode($item, $xml, $category_name);
-        
-        if ($result['success']) {
-            // Record as processed
-            $processed[] = array(
-                'guid' => $guid,
-                'title' => $title,
-                'post_id' => $result['post_id'],
-                'date' => current_time('mysql'),
-                'podcast' => $podcast_num
-            );
-            update_option('lendcity_processed_podcast_episodes', $processed);
-            
-            wp_send_json_success(array(
-                'message' => 'Created post for: ' . $title,
-                'post_id' => $result['post_id'],
-                'edit_link' => get_edit_post_link($result['post_id'], 'raw')
-            ));
-        } else {
-            wp_send_json_error($result['error'] ?? 'Unknown error processing episode');
-        }
-    }
-    
+
     /**
      * AJAX: Scan posts for Transistor embeds
      */
@@ -2373,9 +2397,378 @@ class LendCity_Claude_Integration {
             )
         ));
     }
-    
+
+    // ==================== SMART METADATA v2 AJAX ====================
+    // These handlers run AFTER linking phase for optimal SEO metadata
+
+    /**
+     * Generate smart metadata for a single post using catalog + link data
+     */
+    public function ajax_generate_smart_metadata() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $post_id = intval($_POST['post_id']);
+        $post = get_post($post_id);
+
+        if (!$post) {
+            wp_send_json_error('Post not found');
+        }
+
+        // Get BEFORE values
+        $before_title = get_post_meta($post_id, '_seopress_titles_title', true) ?: '';
+        $before_desc = get_post_meta($post_id, '_seopress_titles_desc', true) ?: '';
+        $before_tags = wp_get_post_tags($post_id, array('fields' => 'names'));
+        $before_tags_str = !empty($before_tags) ? implode(', ', $before_tags) : '';
+        $before_keyphrase = get_post_meta($post_id, '_seopress_analysis_target_kw', true) ?: '';
+
+        // Generate smart metadata using the new method
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->generate_smart_metadata($post_id);
+
+        if (is_wp_error($result)) {
+            wp_send_json_error($result->get_error_message());
+        }
+
+        // Save the metadata
+        if (!empty($result['title'])) {
+            update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($result['title']));
+        }
+        if (!empty($result['description'])) {
+            update_post_meta($post_id, '_seopress_titles_desc', sanitize_text_field($result['description']));
+        }
+        if (!empty($result['tags']) && is_array($result['tags'])) {
+            wp_set_post_tags($post_id, $result['tags'], false);
+        }
+        if (!empty($result['focus_keyphrase'])) {
+            update_post_meta($post_id, '_seopress_analysis_target_kw', sanitize_text_field($result['focus_keyphrase']));
+        }
+
+        wp_send_json_success(array(
+            'post_id' => $post_id,
+            'post_title' => $post->post_title,
+            'post_type' => $post->post_type,
+            'data_sources' => array(
+                'catalog_used' => $result['catalog_used'],
+                'inbound_anchors' => $result['inbound_anchors_count'],
+                'outbound_anchors' => $result['outbound_anchors_count']
+            ),
+            'reasoning' => $result['reasoning'] ?? '',
+            'before' => array(
+                'title' => $before_title,
+                'description' => $before_desc,
+                'tags' => $before_tags_str,
+                'focus_keyphrase' => $before_keyphrase
+            ),
+            'after' => array(
+                'title' => $result['title'] ?? '',
+                'description' => $result['description'] ?? '',
+                'tags' => is_array($result['tags']) ? implode(', ', $result['tags']) : '',
+                'focus_keyphrase' => $result['focus_keyphrase'] ?? ''
+            )
+        ));
+    }
+
+    /**
+     * Get list of posts that need smart metadata generation
+     */
+    public function ajax_get_smart_metadata_posts() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $only_linked = isset($_POST['only_linked']) ? (bool) $_POST['only_linked'] : true;
+        $skip_existing = isset($_POST['skip_existing']) ? ($_POST['skip_existing'] === 'true' || $_POST['skip_existing'] === '1') : true;
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $post_ids = $smart_linker->get_posts_for_smart_metadata($only_linked);
+
+        // Get post details and optionally filter by existing meta
+        $posts = array();
+        $skipped = 0;
+        foreach ($post_ids as $post_id) {
+            $post = get_post($post_id);
+            if (!$post) continue;
+
+            // Skip posts with existing SEO meta if requested
+            if ($skip_existing) {
+                $existing_title = get_post_meta($post_id, '_seopress_titles_title', true);
+                $existing_desc = get_post_meta($post_id, '_seopress_titles_desc', true);
+                if (!empty($existing_title) && !empty($existing_desc)) {
+                    $skipped++;
+                    continue;
+                }
+            }
+
+            $posts[] = array(
+                'id' => $post_id,
+                'title' => $post->post_title,
+                'type' => $post->post_type
+            );
+        }
+
+        wp_send_json_success(array(
+            'posts' => $posts,
+            'total' => count($posts),
+            'skipped' => $skipped
+        ));
+    }
+
+    /**
+     * Process a batch of posts for smart metadata (for bulk processing)
+     */
+    public function ajax_bulk_smart_metadata() {
+        @set_time_limit(120);
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $post_ids = isset($_POST['post_ids']) ? array_map('intval', (array) $_POST['post_ids']) : array();
+
+        if (empty($post_ids)) {
+            wp_send_json_error('No post IDs provided');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $results = array();
+        $success_count = 0;
+        $error_count = 0;
+
+        foreach ($post_ids as $post_id) {
+            $post = get_post($post_id);
+            if (!$post) {
+                $results[] = array('id' => $post_id, 'status' => 'error', 'message' => 'Post not found');
+                $error_count++;
+                continue;
+            }
+
+            $result = $smart_linker->generate_smart_metadata($post_id);
+
+            if (is_wp_error($result)) {
+                $results[] = array('id' => $post_id, 'title' => $post->post_title, 'status' => 'error', 'message' => $result->get_error_message());
+                $error_count++;
+                continue;
+            }
+
+            // Save the metadata
+            if (!empty($result['title'])) {
+                update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($result['title']));
+            }
+            if (!empty($result['description'])) {
+                update_post_meta($post_id, '_seopress_titles_desc', sanitize_text_field($result['description']));
+            }
+            if (!empty($result['tags']) && is_array($result['tags'])) {
+                wp_set_post_tags($post_id, $result['tags'], false);
+            }
+            if (!empty($result['focus_keyphrase'])) {
+                update_post_meta($post_id, '_seopress_analysis_target_kw', sanitize_text_field($result['focus_keyphrase']));
+            }
+
+            $results[] = array(
+                'id' => $post_id,
+                'title' => $post->post_title,
+                'status' => 'success',
+                'data' => array(
+                    'seo_title' => $result['title'],
+                    'focus_keyphrase' => $result['focus_keyphrase']
+                )
+            );
+            $success_count++;
+
+            // Brief pause between API calls
+            usleep(500000); // 0.5 second
+        }
+
+        wp_send_json_success(array(
+            'results' => $results,
+            'success' => $success_count,
+            'errors' => $error_count
+        ));
+    }
+
+    // ==================== META QUEUE AJAX (Persistent Background) ====================
+
+    /**
+     * Initialize metadata queue for background processing
+     */
+    public function ajax_init_meta_queue() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $skip_existing = isset($_POST['skip_existing']) && $_POST['skip_existing'] === 'true';
+        $only_linked = isset($_POST['only_linked']) && $_POST['only_linked'] === 'true';
+
+        $smart_linker = new LendCity_Smart_Linker();
+
+        // Get posts to process
+        $post_ids = $smart_linker->get_posts_for_smart_metadata($only_linked);
+
+        if (empty($post_ids)) {
+            wp_send_json_error('No posts found to process');
+        }
+
+        $result = $smart_linker->init_meta_queue($post_ids, $skip_existing);
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result['message']);
+        }
+    }
+
+    /**
+     * Get current metadata queue status
+     */
+    public function ajax_get_meta_queue_status() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $status = $smart_linker->get_meta_queue_status();
+
+        wp_send_json_success($status);
+    }
+
+    /**
+     * Clear metadata queue
+     */
+    public function ajax_clear_meta_queue() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->clear_meta_queue();
+
+        wp_send_json_success($result);
+    }
+
+    // ==================== SEO HEALTH MONITOR AJAX ====================
+
+    /**
+     * Scan SEO health issues (paginated)
+     */
+    public function ajax_get_seo_health_issues() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $reset = isset($_POST['reset']) && $_POST['reset'] === 'true';
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->scan_seo_health_batch($reset);
+
+        wp_send_json_success($result);
+    }
+
+    /**
+     * Auto-fix SEO for a specific post
+     */
+    public function ajax_auto_fix_seo() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $post_id = intval($_POST['post_id']);
+        if (!$post_id) {
+            wp_send_json_error('Invalid post ID');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->auto_fix_seo($post_id);
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result['error']);
+        }
+    }
+
+    // ==================== KEYWORD OWNERSHIP AJAX ====================
+
+    /**
+     * Build the keyword ownership map
+     */
+    public function ajax_build_keyword_ownership() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $force = isset($_POST['force']) && $_POST['force'] === 'true';
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->build_keyword_ownership_map($force);
+
+        wp_send_json_success(array(
+            'stats' => $result['stats'] ?? array(),
+            'built_at' => $result['built_at'] ?? null,
+            'total_keywords' => count($result['map'] ?? array())
+        ));
+    }
+
+    /**
+     * Get keyword ownership stats
+     */
+    public function ajax_get_keyword_ownership_stats() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $stats = $smart_linker->get_keyword_ownership_stats();
+
+        wp_send_json_success($stats);
+    }
+
+    /**
+     * Get paginated keyword ownership list
+     */
+    public function ajax_get_keyword_ownership_list() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $page = intval($_POST['page'] ?? 1);
+        $per_page = intval($_POST['per_page'] ?? 50);
+        $search = sanitize_text_field($_POST['search'] ?? '');
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->get_keyword_ownership_paginated($page, $per_page, $search);
+
+        wp_send_json_success($result);
+    }
+
+    /**
+     * Clear keyword ownership map
+     */
+    public function ajax_clear_keyword_ownership() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $smart_linker->clear_keyword_ownership_map();
+
+        wp_send_json_success(array('message' => 'Keyword ownership map cleared'));
+    }
+
     // ==================== ARTICLE SCHEDULER AJAX ====================
-    
+
     public function ajax_process_article() {
         // Extend PHP execution time for long API calls
         @set_time_limit(300);

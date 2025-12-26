@@ -7,7 +7,7 @@ class LendCity_Claude_API {
     
     private $api_key;
     private $api_url = 'https://api.anthropic.com/v1/messages';
-    private $model = 'claude-sonnet-4-5-20250929';
+    private $model = 'claude-opus-4-5-20251101';
     
     public function __construct() {
         $this->api_key = get_option('lendcity_claude_api_key');
@@ -18,9 +18,16 @@ class LendCity_Claude_API {
      */
     public function simple_completion($prompt, $max_tokens = 300) {
         if (empty($this->api_key)) {
+            error_log('LendCity Claude API Error: API key is empty or not set');
             return false;
         }
+
+        error_log('LendCity Claude API: Making request with model ' . $this->model);
         
+        // Sanitize prompt to ensure valid UTF-8
+        $prompt = mb_convert_encoding($prompt, 'UTF-8', 'UTF-8');
+        $prompt = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $prompt);
+
         $body = array(
             'model' => $this->model,
             'max_tokens' => $max_tokens,
@@ -31,14 +38,20 @@ class LendCity_Claude_API {
                 )
             )
         );
-        
+
+        $json_body = json_encode($body);
+        if ($json_body === false) {
+            error_log('LendCity Claude API Error: Failed to encode request body - ' . json_last_error_msg());
+            return false;
+        }
+
         $response = wp_remote_post($this->api_url, array(
             'headers' => array(
                 'Content-Type' => 'application/json',
                 'x-api-key' => $this->api_key,
                 'anthropic-version' => '2023-06-01'
             ),
-            'body' => json_encode($body),
+            'body' => $json_body,
             'timeout' => 60
         ));
         
@@ -46,13 +59,27 @@ class LendCity_Claude_API {
             error_log('LendCity Claude API Error: ' . $response->get_error_message());
             return false;
         }
-        
-        $response_body = json_decode(wp_remote_retrieve_body($response), true);
-        
+
+        $response_code = wp_remote_retrieve_response_code($response);
+        $raw_body = wp_remote_retrieve_body($response);
+        $response_body = json_decode($raw_body, true);
+
+        // Log detailed error info for non-200 responses
+        if ($response_code !== 200) {
+            $error_msg = isset($response_body['error']['message'])
+                ? $response_body['error']['message']
+                : 'Unknown error';
+            error_log('LendCity Claude API Error (HTTP ' . $response_code . '): ' . $error_msg);
+            error_log('LendCity Claude API Model: ' . $this->model);
+            error_log('LendCity Claude API Full Response: ' . substr($raw_body, 0, 500));
+            return false;
+        }
+
         if (isset($response_body['content'][0]['text'])) {
             return $response_body['content'][0]['text'];
         }
-        
+
+        error_log('LendCity Claude API Error: Response missing content - ' . substr($raw_body, 0, 500));
         return false;
     }
     
