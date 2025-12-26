@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.3.2
+ * Version: 11.3.3
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.3.2');
+define('LENDCITY_CLAUDE_VERSION', '11.3.3');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -264,7 +264,11 @@ class LendCity_Claude_Integration {
         if ($last_version !== LENDCITY_CLAUDE_VERSION) {
             // Version changed - clear old crons and reschedule
             lendcity_claude_clear_all_crons();
-            
+
+            // Clear any stale queue status (prevents auto-run after plugin update)
+            delete_option('lendcity_smart_linker_queue');
+            delete_option('lendcity_smart_linker_queue_status');
+
             // Reschedule (NOT link queue or podcast - those are scheduled dynamically)
             if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
                 wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
@@ -272,7 +276,7 @@ class LendCity_Claude_Integration {
             // Podcast cron handled by setup_podcast_cron() on Mondays only
 
             update_option('lendcity_claude_last_version', LENDCITY_CLAUDE_VERSION);
-            lendcity_debug_log('Cleaned up stale crons and rescheduled for version ' . LENDCITY_CLAUDE_VERSION);
+            lendcity_debug_log('Cleaned up stale crons and queue for version ' . LENDCITY_CLAUDE_VERSION);
         }
     }
     

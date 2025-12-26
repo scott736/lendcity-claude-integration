@@ -1881,8 +1881,16 @@ class LendCity_Smart_Linker {
             if ($entry['is_page']) continue;
 
             if ($skip_with_links) {
+                // Check meta key first (fast)
                 $existing_links = $this->get_post_links($id);
                 if (!empty($existing_links)) {
+                    $skipped++;
+                    continue;
+                }
+
+                // Also check actual content for claude links (fallback)
+                $post = get_post($id);
+                if ($post && strpos($post->post_content, 'data-claude-link="1"') !== false) {
                     $skipped++;
                     continue;
                 }
