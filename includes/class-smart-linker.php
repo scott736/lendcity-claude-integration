@@ -42,10 +42,16 @@ class LendCity_Smart_Linker {
     // Parallel processing settings
     private $parallel_batch_size = 5; // Posts per parallel request
 
+    // Cached debug mode flag (avoids repeated get_option calls)
+    private $debug_mode = null;
+
     public function __construct() {
         global $wpdb;
         $this->table_name = $wpdb->prefix . 'lendcity_catalog';
         $this->api_key = get_option('lendcity_claude_api_key');
+
+        // Cache debug mode setting (called 20+ times per request otherwise)
+        $this->debug_mode = get_option('lendcity_debug_mode', 'no') === 'yes';
 
         // Check if database needs to be created/upgraded
         $this->maybe_create_table();
@@ -622,8 +628,12 @@ class LendCity_Smart_Linker {
     // LOGGING HELPERS
     // =========================================================================
 
+    /**
+     * Debug logging - only logs if debug mode is enabled
+     * Uses cached $this->debug_mode to avoid repeated get_option() calls
+     */
     private function debug_log($message) {
-        if (get_option('lendcity_debug_mode', 'no') === 'yes') {
+        if ($this->debug_mode) {
             error_log('LendCity Smart Linker: ' . $message);
         }
     }
