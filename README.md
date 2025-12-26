@@ -111,6 +111,10 @@ Main logic is in:
 - v10.0.5: Fixed queue double-processing with locks
 - v10.0.6: Speed optimizations (batch size 3, 1s delay, catalog caching)
 - v10.0.7: Increased catalog summary to 4-5 sentences for better link relevance
+- v11.0.0: Custom database table for scalability (10,000+ posts)
+- v11.1.0: Enriched catalog v4.0 (topic clusters, personas, funnel stages, geographic targeting)
+- v11.1.1: Fixed dbDelta compatibility issues (direct SQL)
+- v11.2.0: Smart Metadata v2 - Runs AFTER linking for optimal SEO using catalog + inbound anchors
 
 ## Installation
 

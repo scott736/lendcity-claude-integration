@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Claude Integration
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.1.0
+ * Version: 11.2.0
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -209,7 +209,12 @@ class LendCity_Claude_Integration {
         
         // Metadata AJAX (used by Smart Linker)
         add_action('wp_ajax_lendcity_generate_metadata_from_links', array($this, 'ajax_generate_metadata_from_links'));
-        
+
+        // Smart Metadata v2 AJAX (runs AFTER linking)
+        add_action('wp_ajax_lendcity_generate_smart_metadata', array($this, 'ajax_generate_smart_metadata'));
+        add_action('wp_ajax_lendcity_get_smart_metadata_posts', array($this, 'ajax_get_smart_metadata_posts'));
+        add_action('wp_ajax_lendcity_bulk_smart_metadata', array($this, 'ajax_bulk_smart_metadata'));
+
         // Article Scheduler AJAX
         add_action('wp_ajax_lendcity_process_article', array($this, 'ajax_process_article'));
         add_action('wp_ajax_lendcity_schedule_all_articles', array($this, 'ajax_schedule_all_articles'));
@@ -2501,9 +2506,188 @@ class LendCity_Claude_Integration {
             )
         ));
     }
-    
+
+    // ==================== SMART METADATA v2 AJAX ====================
+    // These handlers run AFTER linking phase for optimal SEO metadata
+
+    /**
+     * Generate smart metadata for a single post using catalog + link data
+     */
+    public function ajax_generate_smart_metadata() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $post_id = intval($_POST['post_id']);
+        $post = get_post($post_id);
+
+        if (!$post) {
+            wp_send_json_error('Post not found');
+        }
+
+        // Get BEFORE values
+        $before_title = get_post_meta($post_id, '_seopress_titles_title', true) ?: '';
+        $before_desc = get_post_meta($post_id, '_seopress_titles_desc', true) ?: '';
+        $before_tags = wp_get_post_tags($post_id, array('fields' => 'names'));
+        $before_tags_str = !empty($before_tags) ? implode(', ', $before_tags) : '';
+        $before_keyphrase = get_post_meta($post_id, '_seopress_analysis_target_kw', true) ?: '';
+
+        // Generate smart metadata using the new method
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->generate_smart_metadata($post_id);
+
+        if (is_wp_error($result)) {
+            wp_send_json_error($result->get_error_message());
+        }
+
+        // Save the metadata
+        if (!empty($result['title'])) {
+            update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($result['title']));
+        }
+        if (!empty($result['description'])) {
+            update_post_meta($post_id, '_seopress_titles_desc', sanitize_text_field($result['description']));
+        }
+        if (!empty($result['tags']) && is_array($result['tags'])) {
+            wp_set_post_tags($post_id, $result['tags'], false);
+        }
+        if (!empty($result['focus_keyphrase'])) {
+            update_post_meta($post_id, '_seopress_analysis_target_kw', sanitize_text_field($result['focus_keyphrase']));
+        }
+
+        wp_send_json_success(array(
+            'post_id' => $post_id,
+            'post_title' => $post->post_title,
+            'post_type' => $post->post_type,
+            'data_sources' => array(
+                'catalog_used' => $result['catalog_used'],
+                'inbound_anchors' => $result['inbound_anchors_count'],
+                'outbound_anchors' => $result['outbound_anchors_count']
+            ),
+            'reasoning' => $result['reasoning'] ?? '',
+            'before' => array(
+                'title' => $before_title,
+                'description' => $before_desc,
+                'tags' => $before_tags_str,
+                'focus_keyphrase' => $before_keyphrase
+            ),
+            'after' => array(
+                'title' => $result['title'] ?? '',
+                'description' => $result['description'] ?? '',
+                'tags' => is_array($result['tags']) ? implode(', ', $result['tags']) : '',
+                'focus_keyphrase' => $result['focus_keyphrase'] ?? ''
+            )
+        ));
+    }
+
+    /**
+     * Get list of posts that need smart metadata generation
+     */
+    public function ajax_get_smart_metadata_posts() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $only_linked = isset($_POST['only_linked']) ? (bool) $_POST['only_linked'] : true;
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $post_ids = $smart_linker->get_posts_for_smart_metadata($only_linked);
+
+        // Get post details
+        $posts = array();
+        foreach ($post_ids as $post_id) {
+            $post = get_post($post_id);
+            if ($post) {
+                $posts[] = array(
+                    'id' => $post_id,
+                    'title' => $post->post_title,
+                    'type' => $post->post_type
+                );
+            }
+        }
+
+        wp_send_json_success(array(
+            'posts' => $posts,
+            'total' => count($posts)
+        ));
+    }
+
+    /**
+     * Process a batch of posts for smart metadata (for bulk processing)
+     */
+    public function ajax_bulk_smart_metadata() {
+        @set_time_limit(120);
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $post_ids = isset($_POST['post_ids']) ? array_map('intval', (array) $_POST['post_ids']) : array();
+
+        if (empty($post_ids)) {
+            wp_send_json_error('No post IDs provided');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $results = array();
+        $success_count = 0;
+        $error_count = 0;
+
+        foreach ($post_ids as $post_id) {
+            $post = get_post($post_id);
+            if (!$post) {
+                $results[] = array('id' => $post_id, 'status' => 'error', 'message' => 'Post not found');
+                $error_count++;
+                continue;
+            }
+
+            $result = $smart_linker->generate_smart_metadata($post_id);
+
+            if (is_wp_error($result)) {
+                $results[] = array('id' => $post_id, 'title' => $post->post_title, 'status' => 'error', 'message' => $result->get_error_message());
+                $error_count++;
+                continue;
+            }
+
+            // Save the metadata
+            if (!empty($result['title'])) {
+                update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($result['title']));
+            }
+            if (!empty($result['description'])) {
+                update_post_meta($post_id, '_seopress_titles_desc', sanitize_text_field($result['description']));
+            }
+            if (!empty($result['tags']) && is_array($result['tags'])) {
+                wp_set_post_tags($post_id, $result['tags'], false);
+            }
+            if (!empty($result['focus_keyphrase'])) {
+                update_post_meta($post_id, '_seopress_analysis_target_kw', sanitize_text_field($result['focus_keyphrase']));
+            }
+
+            $results[] = array(
+                'id' => $post_id,
+                'title' => $post->post_title,
+                'status' => 'success',
+                'data' => array(
+                    'seo_title' => $result['title'],
+                    'focus_keyphrase' => $result['focus_keyphrase']
+                )
+            );
+            $success_count++;
+
+            // Brief pause between API calls
+            usleep(500000); // 0.5 second
+        }
+
+        wp_send_json_success(array(
+            'results' => $results,
+            'success' => $success_count,
+            'errors' => $error_count
+        ));
+    }
+
     // ==================== ARTICLE SCHEDULER AJAX ====================
-    
+
     public function ajax_process_article() {
         // Extend PHP execution time for long API calls
         @set_time_limit(300);

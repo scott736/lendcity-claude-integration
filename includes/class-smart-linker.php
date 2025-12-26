@@ -2917,4 +2917,282 @@ class LendCity_Smart_Linker {
 
         $this->log('Updated link counts for ' . count($catalog) . ' catalog entries');
     }
+
+    // =========================================================================
+    // SMART METADATA GENERATION v2 - Runs AFTER Linking Phase
+    // =========================================================================
+
+    /**
+     * Generate smart SEO metadata using catalog data + inbound link analysis
+     * This should be run AFTER linking is complete to get full anchor text data
+     *
+     * @param int $post_id The post ID to generate metadata for
+     * @return array|WP_Error Metadata result or error
+     */
+    public function generate_smart_metadata($post_id) {
+        $post = get_post($post_id);
+        if (!$post) {
+            return new WP_Error('not_found', 'Post not found');
+        }
+
+        // 1. Get catalog entry for this post (enriched data)
+        $catalog_entry = $this->get_catalog_entry($post_id);
+
+        // 2. Get all inbound link anchor texts (what other posts use to link TO this)
+        $inbound_anchors = $this->get_inbound_anchors($post_id);
+
+        // 3. Get outbound anchors (what this post links to - contextual)
+        $outbound_links = get_post_meta($post_id, $this->link_meta_key, true) ?: array();
+        $outbound_anchors = array();
+        foreach ($outbound_links as $link) {
+            if (!empty($link['anchor'])) {
+                $outbound_anchors[] = $link['anchor'];
+            }
+        }
+
+        // 4. Get target keywords for pages
+        $target_keywords = '';
+        if ($post->post_type === 'page') {
+            $target_keywords = get_post_meta($post_id, $this->keywords_meta_key, true);
+        }
+
+        // 5. Get existing site tags for consistency
+        $existing_tags = get_tags(array('hide_empty' => false, 'number' => 100));
+        $existing_tag_names = array_column($existing_tags ?: array(), 'name');
+
+        // 6. Content preview
+        $content = wp_strip_all_tags($post->post_content);
+        $content = substr($content, 0, 1500);
+
+        // Build comprehensive prompt
+        $prompt = $this->build_smart_metadata_prompt(
+            $post,
+            $catalog_entry,
+            $inbound_anchors,
+            $outbound_anchors,
+            $target_keywords,
+            $existing_tag_names,
+            $content
+        );
+
+        // Call Claude API
+        $api = new LendCity_Claude_API();
+        $response = $api->simple_completion($prompt, 800);
+
+        if (!$response) {
+            return new WP_Error('api_error', 'API request failed');
+        }
+
+        // Parse response
+        $result = json_decode($response, true);
+        if (!$result && preg_match('/\{.*\}/s', $response, $matches)) {
+            $result = json_decode($matches[0], true);
+        }
+
+        if (!$result || !isset($result['title'])) {
+            return new WP_Error('parse_error', 'Invalid API response: ' . substr($response, 0, 200));
+        }
+
+        return array(
+            'title' => $result['title'] ?? '',
+            'description' => $result['description'] ?? '',
+            'tags' => $result['tags'] ?? array(),
+            'focus_keyphrase' => $result['focus_keyphrase'] ?? '',
+            'reasoning' => $result['reasoning'] ?? '',
+            'catalog_used' => !empty($catalog_entry),
+            'inbound_anchors_count' => count($inbound_anchors),
+            'outbound_anchors_count' => count($outbound_anchors)
+        );
+    }
+
+    /**
+     * Get all anchor texts from links pointing TO this post
+     *
+     * @param int $post_id Target post ID
+     * @return array List of anchor texts
+     */
+    public function get_inbound_anchors($post_id) {
+        $post_url = get_permalink($post_id);
+        $all_links = $this->get_all_site_links(5000);
+
+        $inbound_anchors = array();
+        foreach ($all_links as $link) {
+            if ($link['url'] === $post_url && !empty($link['anchor'])) {
+                $inbound_anchors[] = $link['anchor'];
+            }
+        }
+
+        return $inbound_anchors;
+    }
+
+    /**
+     * Build the smart metadata prompt using all available data
+     */
+    private function build_smart_metadata_prompt($post, $catalog_entry, $inbound_anchors, $outbound_anchors, $target_keywords, $existing_tags, $content) {
+        $type_label = $post->post_type === 'page' ? 'PAGE' : 'ARTICLE';
+
+        $prompt = "Generate highly optimized SEO metadata for this mortgage/real estate {$type_label}.\n\n";
+        $prompt .= "=== CONTENT INFO ===\n";
+        $prompt .= "Title: {$post->post_title}\n";
+        $prompt .= "Type: {$type_label}\n";
+        $prompt .= "Content Preview: {$content}\n\n";
+
+        // Add enriched catalog data if available
+        if (!empty($catalog_entry)) {
+            $prompt .= "=== SEMANTIC ANALYSIS (from our content catalog) ===\n";
+
+            if (!empty($catalog_entry['summary'])) {
+                $prompt .= "Summary: {$catalog_entry['summary']}\n";
+            }
+            if (!empty($catalog_entry['topic_cluster'])) {
+                $prompt .= "Topic Cluster: {$catalog_entry['topic_cluster']}\n";
+            }
+            if (!empty($catalog_entry['funnel_stage'])) {
+                $prompt .= "Funnel Stage: {$catalog_entry['funnel_stage']} (awareness/consideration/decision)\n";
+            }
+            if (!empty($catalog_entry['reader_intent'])) {
+                $prompt .= "Reader Intent: {$catalog_entry['reader_intent']}\n";
+            }
+            if (!empty($catalog_entry['target_persona'])) {
+                $prompt .= "Target Persona: {$catalog_entry['target_persona']}\n";
+            }
+            if (!empty($catalog_entry['difficulty_level'])) {
+                $prompt .= "Difficulty Level: {$catalog_entry['difficulty_level']}\n";
+            }
+            if (!empty($catalog_entry['content_format'])) {
+                $prompt .= "Content Format: {$catalog_entry['content_format']}\n";
+            }
+            if (!empty($catalog_entry['content_lifespan'])) {
+                $prompt .= "Content Lifespan: {$catalog_entry['content_lifespan']}\n";
+            }
+
+            // Parse JSON fields
+            if (!empty($catalog_entry['main_topics'])) {
+                $topics = json_decode($catalog_entry['main_topics'], true);
+                if (is_array($topics)) {
+                    $prompt .= "Main Topics: " . implode(', ', $topics) . "\n";
+                }
+            }
+            if (!empty($catalog_entry['semantic_keywords'])) {
+                $keywords = json_decode($catalog_entry['semantic_keywords'], true);
+                if (is_array($keywords)) {
+                    $prompt .= "Semantic Keywords: " . implode(', ', array_slice($keywords, 0, 15)) . "\n";
+                }
+            }
+            if (!empty($catalog_entry['target_regions'])) {
+                $regions = json_decode($catalog_entry['target_regions'], true);
+                if (is_array($regions)) {
+                    $prompt .= "Target Regions: " . implode(', ', $regions) . "\n";
+                }
+            }
+            $prompt .= "\n";
+        }
+
+        // Add inbound link anchors (CRITICAL - this shows what others think this page is about)
+        if (!empty($inbound_anchors)) {
+            $unique_anchors = array_unique($inbound_anchors);
+            $anchor_counts = array_count_values($inbound_anchors);
+            arsort($anchor_counts);
+
+            $prompt .= "=== INBOUND LINK SIGNALS (how other content links TO this) ===\n";
+            $prompt .= "These anchor texts reveal what other content thinks this page is about:\n";
+
+            $top_anchors = array_slice($anchor_counts, 0, 10, true);
+            foreach ($top_anchors as $anchor => $count) {
+                $prompt .= "- \"{$anchor}\" (used {$count}x)\n";
+            }
+            $prompt .= "\n";
+        }
+
+        // Add outbound link context
+        if (!empty($outbound_anchors)) {
+            $prompt .= "=== OUTBOUND LINKS (what this content links to) ===\n";
+            $prompt .= implode(', ', array_unique($outbound_anchors)) . "\n\n";
+        }
+
+        // Add target keywords for pages
+        if (!empty($target_keywords)) {
+            $prompt .= "=== PRIORITY KEYWORDS (manually specified) ===\n";
+            $prompt .= $target_keywords . "\n\n";
+        }
+
+        // Add existing tags
+        if (!empty($existing_tags)) {
+            $prompt .= "=== EXISTING SITE TAGS (prefer these when relevant) ===\n";
+            $prompt .= implode(', ', array_slice($existing_tags, 0, 50)) . "\n\n";
+        }
+
+        // Instructions
+        $prompt .= "=== INSTRUCTIONS ===\n";
+        $prompt .= "Generate SEO metadata that:\n";
+        $prompt .= "1. SEO Title (50-60 chars): Must include the most-used inbound anchor phrases when available\n";
+        $prompt .= "2. Meta Description (150-160 chars): Compelling description incorporating semantic keywords\n";
+        $prompt .= "3. Tags (8 max): Mix of existing site tags + new tags from semantic keywords\n";
+        $prompt .= "4. Focus Keyphrase: The primary keyword this page should rank for\n\n";
+
+        $prompt .= "CRITICAL RULES:\n";
+        $prompt .= "- If inbound anchors exist, they reveal WHAT USERS ARE LOOKING FOR - prioritize these!\n";
+        $prompt .= "- Match the funnel stage: awareness=educational, consideration=comparative, decision=action-oriented\n";
+        $prompt .= "- Match the persona voice: first_time_buyer=simple, investor=ROI-focused, professional=technical\n";
+        $prompt .= "- Keep everything EVERGREEN - no dates or time-sensitive references\n";
+        $prompt .= "- For Canadian real estate: include 'Canada' or 'Canadian' naturally\n\n";
+
+        $prompt .= "Return ONLY valid JSON:\n";
+        $prompt .= '{"title":"...","description":"...","tags":["tag1","tag2"],"focus_keyphrase":"...","reasoning":"brief explanation of choices"}' . "\n";
+
+        return $prompt;
+    }
+
+    /**
+     * Bulk generate smart metadata for all posts with links
+     * Returns list of post IDs that need processing
+     *
+     * @param bool $only_linked Only include posts that have inbound or outbound links
+     * @return array List of post IDs to process
+     */
+    public function get_posts_for_smart_metadata($only_linked = true) {
+        $posts_to_process = array();
+
+        if ($only_linked) {
+            // Get all posts with outbound links
+            $posts_with_outbound = get_posts(array(
+                'post_type' => array('post', 'page'),
+                'post_status' => 'publish',
+                'posts_per_page' => -1,
+                'meta_query' => array(
+                    array(
+                        'key' => $this->link_meta_key,
+                        'compare' => 'EXISTS'
+                    )
+                ),
+                'fields' => 'ids'
+            ));
+
+            // Get all posts/pages with inbound links
+            $all_links = $this->get_all_site_links(5000);
+            $posts_with_inbound = array();
+            foreach ($all_links as $link) {
+                $linked_post_id = url_to_postid($link['url']);
+                if ($linked_post_id) {
+                    $posts_with_inbound[$linked_post_id] = true;
+                }
+            }
+
+            // Combine unique IDs
+            $posts_to_process = array_unique(array_merge(
+                $posts_with_outbound,
+                array_keys($posts_with_inbound)
+            ));
+        } else {
+            // All published posts and pages
+            $posts_to_process = get_posts(array(
+                'post_type' => array('post', 'page'),
+                'post_status' => 'publish',
+                'posts_per_page' => -1,
+                'fields' => 'ids'
+            ));
+        }
+
+        return $posts_to_process;
+    }
 }
