@@ -2376,6 +2376,60 @@ class LendCity_Smart_Linker {
     }
 
     /**
+     * Get links in batches directly from database (memory efficient)
+     * Returns links from posts in batches, not from a full array
+     *
+     * @param int $batch_size Number of posts to process per batch
+     * @param int $offset Post offset for pagination
+     * @return array Array with 'links' and 'has_more' flag
+     */
+    public function get_links_batch($batch_size = 50, $offset = 0) {
+        global $wpdb;
+
+        // Get posts with links in batches
+        $results = $wpdb->get_results($wpdb->prepare("
+            SELECT pm.post_id, pm.meta_value, p.post_title
+            FROM {$wpdb->postmeta} pm
+            JOIN {$wpdb->posts} p ON pm.post_id = p.ID
+            WHERE pm.meta_key = %s
+            ORDER BY pm.post_id ASC
+            LIMIT %d OFFSET %d
+        ", $this->link_meta_key, $batch_size, $offset));
+
+        $links = array();
+        foreach ($results as $row) {
+            $post_links = maybe_unserialize($row->meta_value);
+            if (is_array($post_links)) {
+                foreach ($post_links as $link) {
+                    $link['source_id'] = $row->post_id;
+                    $link['source_title'] = $row->post_title;
+                    $links[] = $link;
+                }
+            }
+        }
+
+        // Check if there are more posts
+        $has_more = count($results) === $batch_size;
+
+        return array(
+            'links' => $links,
+            'has_more' => $has_more,
+            'next_offset' => $offset + $batch_size
+        );
+    }
+
+    /**
+     * Get total number of posts with links (for progress calculation)
+     */
+    public function get_posts_with_links_count() {
+        global $wpdb;
+        return (int) $wpdb->get_var($wpdb->prepare(
+            "SELECT COUNT(DISTINCT post_id) FROM {$wpdb->postmeta} WHERE meta_key = %s",
+            $this->link_meta_key
+        ));
+    }
+
+    /**
      * Get total link count
      */
     public function get_total_link_count() {
@@ -3300,63 +3354,125 @@ class LendCity_Smart_Linker {
     }
 
     // =========================================================================
-    // DUPLICATE ANCHOR DETECTION - Prioritize pages, remove from posts only
+    // DUPLICATE ANCHOR DETECTION - Paginated scanning
     // =========================================================================
 
-    /**
-     * Get all duplicate anchors across the site
-     * Returns anchors used for multiple different target URLs
-     *
-     * @return array List of duplicate anchor issues with prioritization
-     */
-    public function get_duplicate_anchors() {
-        // Use smaller limit to prevent memory exhaustion
-        $all_links = $this->get_all_site_links(1000);
+    private $dup_anchor_scan_option = 'lendcity_dup_anchor_scan';
 
-        // Group by anchor text
-        $anchors_by_text = array();
-        foreach ($all_links as $link) {
+    /**
+     * Start or continue duplicate anchor scan (paginated)
+     * Processes links in batches to avoid memory exhaustion
+     *
+     * @param bool $reset Start fresh scan
+     * @return array Scan status with progress
+     */
+    public function scan_duplicate_anchors_batch($reset = false) {
+        $scan_data = get_option($this->dup_anchor_scan_option, array());
+
+        // Initialize or reset scan
+        if ($reset || empty($scan_data)) {
+            $total_posts = $this->get_posts_with_links_count();
+            $scan_data = array(
+                'status' => 'scanning',
+                'offset' => 0,
+                'total_posts' => $total_posts,
+                'anchors' => array(), // anchor => array of URLs
+                'processed_posts' => 0
+            );
+        }
+
+        if ($scan_data['status'] === 'complete') {
+            return $this->get_duplicate_anchors_results($scan_data);
+        }
+
+        // Process one batch (50 posts at a time)
+        $batch = $this->get_links_batch(50, $scan_data['offset']);
+
+        foreach ($batch['links'] as $link) {
             $anchor = strtolower(trim($link['anchor']));
             if (empty($anchor) || strlen($anchor) < 3) continue;
 
-            if (!isset($anchors_by_text[$anchor])) {
-                $anchors_by_text[$anchor] = array();
+            if (!isset($scan_data['anchors'][$anchor])) {
+                $scan_data['anchors'][$anchor] = array();
             }
-            // Track unique URLs per anchor (skip post_type lookup here to save memory)
-            $url_exists = false;
-            foreach ($anchors_by_text[$anchor] as $existing) {
-                if ($existing['url'] === $link['url']) {
-                    $url_exists = true;
-                    break;
-                }
-            }
-            if (!$url_exists) {
-                $anchors_by_text[$anchor][] = array(
+
+            // Track unique URL + source combinations
+            $key = $link['url'] . '|' . $link['source_id'];
+            if (!isset($scan_data['anchors'][$anchor][$key])) {
+                $scan_data['anchors'][$anchor][$key] = array(
                     'url' => $link['url'],
                     'source_id' => $link['source_id']
                 );
             }
         }
 
-        // Free memory
-        unset($all_links);
+        $scan_data['offset'] = $batch['next_offset'];
+        $scan_data['processed_posts'] += 50;
 
-        // Find duplicates (same anchor pointing to multiple URLs)
+        // Check if complete
+        if (!$batch['has_more']) {
+            $scan_data['status'] = 'complete';
+        }
+
+        update_option($this->dup_anchor_scan_option, $scan_data);
+
+        // Return progress or final results
+        if ($scan_data['status'] === 'complete') {
+            return $this->get_duplicate_anchors_results($scan_data);
+        }
+
+        $percent = $scan_data['total_posts'] > 0
+            ? min(99, round(($scan_data['processed_posts'] / $scan_data['total_posts']) * 100))
+            : 0;
+
+        return array(
+            'status' => 'scanning',
+            'percent' => $percent,
+            'processed' => $scan_data['processed_posts'],
+            'total' => $scan_data['total_posts']
+        );
+    }
+
+    /**
+     * Process scan data into final duplicate results
+     */
+    private function get_duplicate_anchors_results($scan_data) {
         $duplicates = array();
-        foreach ($anchors_by_text as $anchor => $targets) {
-            if (count($targets) <= 1) continue;
 
-            // Get target post types and prioritize (only for duplicates)
+        foreach ($scan_data['anchors'] as $anchor => $url_data) {
+            // Get unique URLs (ignore source differences)
+            $urls = array();
+            foreach ($url_data as $data) {
+                if (!in_array($data['url'], $urls)) {
+                    $urls[] = $data['url'];
+                }
+            }
+
+            // Only include if same anchor points to multiple URLs
+            if (count($urls) <= 1) continue;
+
+            // Build target data with post types
             $target_data = array();
-            foreach ($targets as $target) {
-                $target_id = url_to_postid($target['url']);
+            foreach ($url_data as $data) {
+                // Check if we already have this URL
+                $url_found = false;
+                foreach ($target_data as $existing) {
+                    if ($existing['url'] === $data['url']) {
+                        $url_found = true;
+                        break;
+                    }
+                }
+                if ($url_found) continue;
+
+                $target_id = url_to_postid($data['url']);
                 $target_type = $target_id ? get_post_type($target_id) : 'external';
-                $source_type = get_post_type($target['source_id']);
+                $source_type = get_post_type($data['source_id']);
+
                 $target_data[] = array(
-                    'url' => $target['url'],
+                    'url' => $data['url'],
                     'post_id' => $target_id,
                     'post_type' => $target_type,
-                    'source_id' => $target['source_id'],
+                    'source_id' => $data['source_id'],
                     'source_type' => $source_type,
                     'priority' => $target_type === 'page' ? 1 : ($target_type === 'post' ? 2 : 3)
                 );
@@ -3371,8 +3487,8 @@ class LendCity_Smart_Linker {
                 'anchor' => $anchor,
                 'count' => count($target_data),
                 'targets' => $target_data,
-                'keep_url' => $target_data[0]['url'], // Keep the page version
-                'remove_from' => array_slice($target_data, 1) // Remove from posts
+                'keep_url' => $target_data[0]['url'],
+                'remove_from' => array_slice($target_data, 1)
             );
         }
 
@@ -3381,7 +3497,32 @@ class LendCity_Smart_Linker {
             return $b['count'] - $a['count'];
         });
 
-        return $duplicates;
+        return array(
+            'status' => 'complete',
+            'percent' => 100,
+            'duplicates' => $duplicates,
+            'count' => count($duplicates)
+        );
+    }
+
+    /**
+     * Clear duplicate anchor scan data
+     */
+    public function clear_duplicate_anchors_scan() {
+        delete_option($this->dup_anchor_scan_option);
+        return array('success' => true);
+    }
+
+    /**
+     * Get duplicate anchors (wrapper for compatibility)
+     */
+    public function get_duplicate_anchors() {
+        $scan_data = get_option($this->dup_anchor_scan_option, array());
+        if (!empty($scan_data) && $scan_data['status'] === 'complete') {
+            $results = $this->get_duplicate_anchors_results($scan_data);
+            return $results['duplicates'];
+        }
+        return array();
     }
 
     /**
@@ -3435,41 +3576,86 @@ class LendCity_Smart_Linker {
     }
 
     // =========================================================================
-    // SEO HEALTH MONITOR - Detect when SEO should change based on links
+    // SEO HEALTH MONITOR - Paginated scanning
     // =========================================================================
 
-    /**
-     * Analyze SEO health and detect issues
-     * Returns posts where SEO metadata may need updating based on link patterns
-     *
-     * @return array List of SEO health issues with recommendations
-     */
-    public function get_seo_health_issues() {
-        $issues = array();
-        // Use smaller limit to prevent memory exhaustion
-        $all_links = $this->get_all_site_links(1000);
+    private $seo_health_scan_option = 'lendcity_seo_health_scan';
 
-        // Build inbound anchor map
-        $inbound_anchors_by_url = array();
-        foreach ($all_links as $link) {
-            if (!isset($inbound_anchors_by_url[$link['url']])) {
-                $inbound_anchors_by_url[$link['url']] = array();
-            }
-            $inbound_anchors_by_url[$link['url']][] = strtolower($link['anchor']);
+    /**
+     * Start or continue SEO health scan (paginated)
+     * Processes links in batches to avoid memory exhaustion
+     *
+     * @param bool $reset Start fresh scan
+     * @return array Scan status with progress
+     */
+    public function scan_seo_health_batch($reset = false) {
+        $scan_data = get_option($this->seo_health_scan_option, array());
+
+        // Initialize or reset scan
+        if ($reset || empty($scan_data)) {
+            $total_posts = $this->get_posts_with_links_count();
+            $scan_data = array(
+                'status' => 'scanning',
+                'offset' => 0,
+                'total_posts' => $total_posts,
+                'anchors_by_url' => array(), // url => array of anchors
+                'processed_posts' => 0
+            );
         }
 
-        // Free memory
-        unset($all_links);
+        if ($scan_data['status'] === 'complete') {
+            return $this->get_seo_health_results($scan_data);
+        }
 
-        // Check each URL with inbound links (limit to 50 URLs to prevent timeout)
-        $checked = 0;
-        foreach ($inbound_anchors_by_url as $url => $anchors) {
-            if ($checked >= 50) break; // Limit to prevent memory/timeout issues
+        // Process one batch (50 posts at a time)
+        $batch = $this->get_links_batch(50, $scan_data['offset']);
 
+        foreach ($batch['links'] as $link) {
+            $url = $link['url'];
+            $anchor = strtolower(trim($link['anchor']));
+
+            if (!isset($scan_data['anchors_by_url'][$url])) {
+                $scan_data['anchors_by_url'][$url] = array();
+            }
+            $scan_data['anchors_by_url'][$url][] = $anchor;
+        }
+
+        $scan_data['offset'] = $batch['next_offset'];
+        $scan_data['processed_posts'] += 50;
+
+        // Check if complete
+        if (!$batch['has_more']) {
+            $scan_data['status'] = 'complete';
+        }
+
+        update_option($this->seo_health_scan_option, $scan_data);
+
+        // Return progress or final results
+        if ($scan_data['status'] === 'complete') {
+            return $this->get_seo_health_results($scan_data);
+        }
+
+        $percent = $scan_data['total_posts'] > 0
+            ? min(99, round(($scan_data['processed_posts'] / $scan_data['total_posts']) * 100))
+            : 0;
+
+        return array(
+            'status' => 'scanning',
+            'percent' => $percent,
+            'processed' => $scan_data['processed_posts'],
+            'total' => $scan_data['total_posts']
+        );
+    }
+
+    /**
+     * Process scan data into final SEO health results
+     */
+    private function get_seo_health_results($scan_data) {
+        $issues = array();
+
+        foreach ($scan_data['anchors_by_url'] as $url => $anchors) {
             $post_id = url_to_postid($url);
             if (!$post_id) continue;
-
-            $checked++;
 
             $post = get_post($post_id);
             if (!$post || $post->post_status !== 'publish') continue;
@@ -3556,7 +3742,32 @@ class LendCity_Smart_Linker {
             return $b['inbound_link_count'] - $a['inbound_link_count'];
         });
 
-        return $issues;
+        return array(
+            'status' => 'complete',
+            'percent' => 100,
+            'issues' => $issues,
+            'count' => count($issues)
+        );
+    }
+
+    /**
+     * Clear SEO health scan data
+     */
+    public function clear_seo_health_scan() {
+        delete_option($this->seo_health_scan_option);
+        return array('success' => true);
+    }
+
+    /**
+     * Get SEO health issues (wrapper for compatibility)
+     */
+    public function get_seo_health_issues() {
+        $scan_data = get_option($this->seo_health_scan_option, array());
+        if (!empty($scan_data) && $scan_data['status'] === 'complete') {
+            $results = $this->get_seo_health_results($scan_data);
+            return $results['issues'];
+        }
+        return array();
     }
 
     /**

@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.4.1');
+define('LENDCITY_CLAUDE_VERSION', '11.4.2');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -2744,7 +2744,7 @@ class LendCity_Claude_Integration {
     // ==================== SEO HEALTH MONITOR AJAX ====================
 
     /**
-     * Get SEO health issues
+     * Scan SEO health issues (paginated)
      */
     public function ajax_get_seo_health_issues() {
         check_ajax_referer('lendcity_claude_nonce', 'nonce');
@@ -2752,13 +2752,12 @@ class LendCity_Claude_Integration {
             wp_send_json_error('Permission denied');
         }
 
-        $smart_linker = new LendCity_Smart_Linker();
-        $issues = $smart_linker->get_seo_health_issues();
+        $reset = isset($_POST['reset']) && $_POST['reset'] === 'true';
 
-        wp_send_json_success(array(
-            'issues' => $issues,
-            'count' => count($issues)
-        ));
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->scan_seo_health_batch($reset);
+
+        wp_send_json_success($result);
     }
 
     /**
@@ -2788,7 +2787,7 @@ class LendCity_Claude_Integration {
     // ==================== DUPLICATE ANCHOR AJAX ====================
 
     /**
-     * Get duplicate anchors
+     * Scan duplicate anchors (paginated)
      */
     public function ajax_get_duplicate_anchors() {
         check_ajax_referer('lendcity_claude_nonce', 'nonce');
@@ -2796,13 +2795,12 @@ class LendCity_Claude_Integration {
             wp_send_json_error('Permission denied');
         }
 
-        $smart_linker = new LendCity_Smart_Linker();
-        $duplicates = $smart_linker->get_duplicate_anchors();
+        $reset = isset($_POST['reset']) && $_POST['reset'] === 'true';
 
-        wp_send_json_success(array(
-            'duplicates' => $duplicates,
-            'count' => count($duplicates)
-        ));
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->scan_duplicate_anchors_batch($reset);
+
+        wp_send_json_success($result);
     }
 
     /**
