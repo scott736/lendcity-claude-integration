@@ -44,7 +44,7 @@ $nonce = wp_create_nonce('lendcity_claude_nonce');
     <p>Automatically create blog posts when new podcast episodes are published via Transistor webhooks.</p>
 
     <form method="post" action="options.php">
-        <?php settings_fields('lendcity_claude_settings'); ?>
+        <?php settings_fields('lendcity_podcast_settings'); ?>
 
         <h2>Step 1: Webhook Endpoint</h2>
         <p>Copy this URL and paste it into your Transistor.fm webhook settings.</p>

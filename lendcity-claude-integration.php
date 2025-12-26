@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.7.14
+ * Version: 11.7.15
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.7.14');
+define('LENDCITY_CLAUDE_VERSION', '11.7.15');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -299,20 +299,51 @@ class LendCity_Claude_Integration {
     }
     
     public function register_settings() {
-        register_setting('lendcity_claude_settings', 'lendcity_claude_api_key');
-        register_setting('lendcity_claude_settings', 'lendcity_unsplash_api_key');
-        register_setting('lendcity_claude_settings', 'lendcity_tinypng_api_key');
+        // Main settings - with sanitize callbacks to preserve existing values
+        register_setting('lendcity_claude_settings', 'lendcity_claude_api_key', array(
+            'sanitize_callback' => array($this, 'sanitize_api_key_claude')
+        ));
+        register_setting('lendcity_claude_settings', 'lendcity_unsplash_api_key', array(
+            'sanitize_callback' => array($this, 'sanitize_api_key_unsplash')
+        ));
+        register_setting('lendcity_claude_settings', 'lendcity_tinypng_api_key', array(
+            'sanitize_callback' => array($this, 'sanitize_api_key_tinypng')
+        ));
         register_setting('lendcity_claude_settings', 'lendcity_smart_linker_auto');
         register_setting('lendcity_claude_settings', 'lendcity_debug_mode');
 
-        // Podcast webhook settings
-        register_setting('lendcity_claude_settings', 'lendcity_transistor_webhook_secret');
-        register_setting('lendcity_claude_settings', 'lendcity_transistor_api_key');
-        register_setting('lendcity_claude_settings', 'lendcity_transistor_shows'); // JSON: show_id => category mapping
-        register_setting('lendcity_claude_settings', 'lendcity_show_id_1');
-        register_setting('lendcity_claude_settings', 'lendcity_show_category_1');
-        register_setting('lendcity_claude_settings', 'lendcity_show_id_2');
-        register_setting('lendcity_claude_settings', 'lendcity_show_category_2');
+        // Podcast webhook settings - SEPARATE group to avoid overwriting API keys
+        register_setting('lendcity_podcast_settings', 'lendcity_transistor_webhook_secret');
+        register_setting('lendcity_podcast_settings', 'lendcity_transistor_api_key');
+        register_setting('lendcity_podcast_settings', 'lendcity_transistor_shows');
+        register_setting('lendcity_podcast_settings', 'lendcity_show_id_1');
+        register_setting('lendcity_podcast_settings', 'lendcity_show_category_1');
+        register_setting('lendcity_podcast_settings', 'lendcity_show_id_2');
+        register_setting('lendcity_podcast_settings', 'lendcity_show_category_2');
+    }
+
+    /**
+     * Sanitize API keys - preserve existing value if new value is empty
+     */
+    public function sanitize_api_key_claude($value) {
+        if (empty($value)) {
+            return get_option('lendcity_claude_api_key', '');
+        }
+        return sanitize_text_field($value);
+    }
+
+    public function sanitize_api_key_unsplash($value) {
+        if (empty($value)) {
+            return get_option('lendcity_unsplash_api_key', '');
+        }
+        return sanitize_text_field($value);
+    }
+
+    public function sanitize_api_key_tinypng($value) {
+        if (empty($value)) {
+            return get_option('lendcity_tinypng_api_key', '');
+        }
+        return sanitize_text_field($value);
     }
 
     /**
