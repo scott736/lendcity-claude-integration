@@ -36,7 +36,7 @@ class LendCity_Smart_Linker {
     private $keywords_meta_key = '_lendcity_target_keywords';
 
     // Database version for migrations
-    const DB_VERSION = '4.0';
+    const DB_VERSION = '4.1';
     const DB_VERSION_OPTION = 'lendcity_catalog_db_version';
 
     // Parallel processing settings
@@ -99,59 +99,39 @@ class LendCity_Smart_Linker {
             title VARCHAR(255) NOT NULL,
             url VARCHAR(500) NOT NULL,
             summary TEXT,
-            main_topics JSON,
-            semantic_keywords JSON,
-            entities JSON,
-            content_themes JSON,
-            good_anchor_phrases JSON,
-
-            -- Core Intelligence Fields (v3.0)
-            reader_intent ENUM('educational','transactional','navigational') DEFAULT 'educational',
-            difficulty_level ENUM('beginner','intermediate','advanced') DEFAULT 'intermediate',
-            funnel_stage ENUM('awareness','consideration','decision') DEFAULT 'awareness',
+            main_topics LONGTEXT,
+            semantic_keywords LONGTEXT,
+            entities LONGTEXT,
+            content_themes LONGTEXT,
+            good_anchor_phrases LONGTEXT,
+            reader_intent VARCHAR(20) DEFAULT 'educational',
+            difficulty_level VARCHAR(20) DEFAULT 'intermediate',
+            funnel_stage VARCHAR(20) DEFAULT 'awareness',
             topic_cluster VARCHAR(100) DEFAULT NULL,
-            related_clusters JSON,
+            related_clusters LONGTEXT,
             is_pillar_content TINYINT(1) NOT NULL DEFAULT 0,
             word_count INT UNSIGNED DEFAULT 0,
             content_quality_score TINYINT UNSIGNED DEFAULT 50,
-
-            -- NEW: Seasonal/Evergreen (v4.0)
-            content_lifespan ENUM('evergreen','seasonal','time-sensitive','dated') DEFAULT 'evergreen',
+            content_lifespan VARCHAR(20) DEFAULT 'evergreen',
             publish_season VARCHAR(30) DEFAULT NULL,
-
-            -- NEW: Geographic Targeting (v4.0)
-            target_regions JSON,
-            target_cities JSON,
-
-            -- NEW: Audience Persona (v4.0)
-            target_persona ENUM('first-time-buyer','investor','realtor','refinancer','self-employed','general') DEFAULT 'general',
-
-            -- NEW: Freshness Tracking (v4.0)
+            target_regions LONGTEXT,
+            target_cities LONGTEXT,
+            target_persona VARCHAR(30) DEFAULT 'general',
             content_last_updated DATE DEFAULT NULL,
             freshness_score TINYINT UNSIGNED DEFAULT 100,
-
-            -- NEW: Link Velocity (v4.0)
             inbound_link_count INT UNSIGNED DEFAULT 0,
             outbound_link_count INT UNSIGNED DEFAULT 0,
             link_gap_priority TINYINT UNSIGNED DEFAULT 50,
-
-            -- NEW: Conversion Signals (v4.0)
             has_cta TINYINT(1) DEFAULT 0,
             has_calculator TINYINT(1) DEFAULT 0,
             has_lead_form TINYINT(1) DEFAULT 0,
             monetization_value TINYINT UNSIGNED DEFAULT 5,
-
-            -- NEW: Content Format (v4.0)
-            content_format ENUM('guide','how-to','list','case-study','news','faq','comparison','calculator','landing-page','other') DEFAULT 'other',
-
-            -- NEW: Admin Overrides (v4.0)
-            must_link_to JSON,
-            never_link_to JSON,
-            preferred_anchors JSON,
-
+            content_format VARCHAR(30) DEFAULT 'other',
+            must_link_to LONGTEXT,
+            never_link_to LONGTEXT,
+            preferred_anchors LONGTEXT,
             updated_at DATETIME NOT NULL,
-
-            PRIMARY KEY (id),
+            PRIMARY KEY  (id),
             UNIQUE KEY idx_post_id (post_id),
             KEY idx_post_type (post_type),
             KEY idx_is_page (is_page),
@@ -166,9 +146,7 @@ class LendCity_Smart_Linker {
             KEY idx_monetization (monetization_value),
             KEY idx_format (content_format),
             KEY idx_link_gap (link_gap_priority),
-            KEY idx_updated (updated_at),
-            FULLTEXT idx_summary (summary),
-            FULLTEXT idx_title (title)
+            KEY idx_updated (updated_at)
         ) $charset_collate;";
 
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
