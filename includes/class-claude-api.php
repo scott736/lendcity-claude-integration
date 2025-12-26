@@ -21,6 +21,10 @@ class LendCity_Claude_API {
             return false;
         }
         
+        // Sanitize prompt to ensure valid UTF-8
+        $prompt = mb_convert_encoding($prompt, 'UTF-8', 'UTF-8');
+        $prompt = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $prompt);
+
         $body = array(
             'model' => $this->model,
             'max_tokens' => $max_tokens,
@@ -31,14 +35,20 @@ class LendCity_Claude_API {
                 )
             )
         );
-        
+
+        $json_body = json_encode($body);
+        if ($json_body === false) {
+            error_log('LendCity Claude API Error: Failed to encode request body - ' . json_last_error_msg());
+            return false;
+        }
+
         $response = wp_remote_post($this->api_url, array(
             'headers' => array(
                 'Content-Type' => 'application/json',
                 'x-api-key' => $this->api_key,
                 'anthropic-version' => '2023-06-01'
             ),
-            'body' => json_encode($body),
+            'body' => $json_body,
             'timeout' => 60
         ));
         
