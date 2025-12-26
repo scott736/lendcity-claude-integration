@@ -3310,7 +3310,8 @@ class LendCity_Smart_Linker {
      * @return array List of duplicate anchor issues with prioritization
      */
     public function get_duplicate_anchors() {
-        $all_links = $this->get_all_site_links(5000);
+        // Use smaller limit to prevent memory exhaustion
+        $all_links = $this->get_all_site_links(1000);
 
         // Group by anchor text
         $anchors_by_text = array();
@@ -3321,32 +3322,42 @@ class LendCity_Smart_Linker {
             if (!isset($anchors_by_text[$anchor])) {
                 $anchors_by_text[$anchor] = array();
             }
-            // Track unique URLs per anchor
-            if (!in_array($link['url'], array_column($anchors_by_text[$anchor], 'url'))) {
+            // Track unique URLs per anchor (skip post_type lookup here to save memory)
+            $url_exists = false;
+            foreach ($anchors_by_text[$anchor] as $existing) {
+                if ($existing['url'] === $link['url']) {
+                    $url_exists = true;
+                    break;
+                }
+            }
+            if (!$url_exists) {
                 $anchors_by_text[$anchor][] = array(
                     'url' => $link['url'],
-                    'source_id' => $link['source_id'],
-                    'source_type' => get_post_type($link['source_id'])
+                    'source_id' => $link['source_id']
                 );
             }
         }
+
+        // Free memory
+        unset($all_links);
 
         // Find duplicates (same anchor pointing to multiple URLs)
         $duplicates = array();
         foreach ($anchors_by_text as $anchor => $targets) {
             if (count($targets) <= 1) continue;
 
-            // Get target post types and prioritize
+            // Get target post types and prioritize (only for duplicates)
             $target_data = array();
             foreach ($targets as $target) {
                 $target_id = url_to_postid($target['url']);
                 $target_type = $target_id ? get_post_type($target_id) : 'external';
+                $source_type = get_post_type($target['source_id']);
                 $target_data[] = array(
                     'url' => $target['url'],
                     'post_id' => $target_id,
                     'post_type' => $target_type,
                     'source_id' => $target['source_id'],
-                    'source_type' => $target['source_type'],
+                    'source_type' => $source_type,
                     'priority' => $target_type === 'page' ? 1 : ($target_type === 'post' ? 2 : 3)
                 );
             }
@@ -3435,7 +3446,8 @@ class LendCity_Smart_Linker {
      */
     public function get_seo_health_issues() {
         $issues = array();
-        $all_links = $this->get_all_site_links(5000);
+        // Use smaller limit to prevent memory exhaustion
+        $all_links = $this->get_all_site_links(1000);
 
         // Build inbound anchor map
         $inbound_anchors_by_url = array();
@@ -3446,10 +3458,18 @@ class LendCity_Smart_Linker {
             $inbound_anchors_by_url[$link['url']][] = strtolower($link['anchor']);
         }
 
-        // Check each URL with inbound links
+        // Free memory
+        unset($all_links);
+
+        // Check each URL with inbound links (limit to 50 URLs to prevent timeout)
+        $checked = 0;
         foreach ($inbound_anchors_by_url as $url => $anchors) {
+            if ($checked >= 50) break; // Limit to prevent memory/timeout issues
+
             $post_id = url_to_postid($url);
             if (!$post_id) continue;
+
+            $checked++;
 
             $post = get_post($post_id);
             if (!$post || $post->post_status !== 'publish') continue;
