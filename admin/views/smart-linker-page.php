@@ -269,32 +269,6 @@ $total_links = $smart_linker->get_total_link_count();
         </div>
     </div>
 
-    <!-- Manual Link Creation -->
-    <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
-        <h2 style="margin-top: 0;">Create Links to Target</h2>
-        <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end;">
-            <div style="flex: 1; min-width: 300px;">
-                <label><strong>Target (receive links):</strong></label>
-                <select id="target-select" style="width: 100%; padding: 10px; margin-top: 5px;">
-                    <option value="">— Select target —</option>
-                    <optgroup label="Pages">
-                        <?php foreach ($all_pages as $p): ?><option value="<?php echo $p->ID; ?>"><?php echo esc_html($p->post_title); ?></option><?php endforeach; ?>
-                    </optgroup>
-                    <optgroup label="Posts">
-                        <?php foreach (array_slice($all_posts, 0, 100) as $p): ?><option value="<?php echo $p->ID; ?>"><?php echo esc_html($p->post_title); ?></option><?php endforeach; ?>
-                    </optgroup>
-                </select>
-            </div>
-            <div>
-                <label><strong>Max links:</strong></label>
-                <select id="max-links" style="padding: 10px; margin-top: 5px;"><option value="5" selected>5</option><option value="10">10</option></select>
-            </div>
-            <button type="button" id="create-links-btn" class="button button-primary button-large" <?php echo empty($catalog) ? 'disabled' : ''; ?>>Find & Create Links</button>
-        </div>
-        <div id="link-progress" style="display: none; margin-top: 15px; padding: 15px; background: #f0f6fc; border-radius: 4px;">Finding posts...</div>
-        <div id="link-result" style="display: none; margin-top: 15px;"></div>
-    </div>
-    
     <!-- SEO Settings: Priority Pages & Keywords -->
     <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
         <h2 style="margin-top: 0;">SEO Settings: Priority Pages & Keywords</h2>
@@ -1085,34 +1059,6 @@ jQuery(document).ready(function($) {
     $('#clear-queue-btn').on('click', function() {
         if (!confirm('Clear the queue?')) return;
         $.post(ajaxurl, {action: 'lendcity_clear_link_queue', nonce: nonce}, function() { location.reload(); });
-    });
-    
-    // Create Links to Target
-    $('#create-links-btn').on('click', function() {
-        var targetId = $('#target-select').val();
-        var maxLinks = $('#max-links').val();
-        if (!targetId) { alert('Select a target'); return; }
-        
-        var $btn = $(this).prop('disabled', true);
-        $('#link-progress').show().text('Finding posts that should link to this target...');
-        $('#link-result').hide();
-        
-        $.post(ajaxurl, {action: 'lendcity_create_links_to_target', nonce: nonce, target_id: targetId, max_links: maxLinks}, function(r) {
-            $('#link-progress').hide();
-            $btn.prop('disabled', false);
-            
-            if (r.success) {
-                var html = '<div style="background: #d4edda; padding: 15px; border-radius: 4px;">';
-                html += '<strong>✅ Created ' + r.data.links_created + ' links to "' + r.data.target_title + '"</strong><ul>';
-                r.data.links.forEach(function(l) {
-                    html += '<li>"' + l.anchor + '" in <em>' + l.source_title + '</em></li>';
-                });
-                html += '</ul></div>';
-                $('#link-result').html(html).show();
-            } else {
-                $('#link-result').html('<div style="background: #f8d7da; padding: 15px; border-radius: 4px;">Error: ' + r.data + '</div>').show();
-            }
-        });
     });
     
     // Update URLs

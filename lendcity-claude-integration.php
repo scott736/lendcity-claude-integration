@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.2.5
+ * Version: 11.2.6
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.2.5');
+define('LENDCITY_CLAUDE_VERSION', '11.2.6');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -180,7 +180,6 @@ class LendCity_Claude_Integration {
         add_action('wp_ajax_lendcity_build_parallel_catalog', array($this, 'ajax_build_parallel_catalog'));
         add_action('wp_ajax_lendcity_update_link_counts', array($this, 'ajax_update_link_counts'));
         add_action('wp_ajax_lendcity_clear_catalog', array($this, 'ajax_clear_catalog'));
-        add_action('wp_ajax_lendcity_create_links_to_target', array($this, 'ajax_create_links_to_target'));
         add_action('wp_ajax_lendcity_get_link_suggestions', array($this, 'ajax_get_link_suggestions'));
         add_action('wp_ajax_lendcity_insert_approved_links', array($this, 'ajax_insert_approved_links'));
         add_action('wp_ajax_lendcity_queue_all_linking', array($this, 'ajax_queue_all_linking'));
@@ -576,21 +575,7 @@ class LendCity_Claude_Integration {
 
         wp_send_json_success(array('message' => 'Catalog cleared'));
     }
-    
-    public function ajax_create_links_to_target() {
-        check_ajax_referer('lendcity_claude_nonce', 'nonce');
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error('Permission denied');
-        }
-        
-        $target_id = intval($_POST['target_id']);
-        
-        $smart_linker = new LendCity_Smart_Linker();
-        $result = $smart_linker->create_links_to_target($target_id);
-        
-        wp_send_json_success($result);
-    }
-    
+
     public function ajax_get_link_suggestions() {
         check_ajax_referer('lendcity_claude_nonce', 'nonce');
         if (!current_user_can('manage_options')) {
