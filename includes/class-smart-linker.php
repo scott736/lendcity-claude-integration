@@ -835,6 +835,33 @@ class LendCity_Smart_Linker {
         $this->log('Auto-link result for post ' . $post_id . ' - ' .
             ($result['success'] ? 'Success: ' . ($result['links_created'] ?? 0) . ' links' : $result['message']));
 
+        // Auto-generate SEO metadata if enabled and post doesn't have it
+        $auto_seo = get_option('lendcity_auto_seo_metadata', 'yes');
+        if ($auto_seo === 'yes') {
+            $existing_title = get_post_meta($post_id, '_seopress_titles_title', true);
+            $existing_desc = get_post_meta($post_id, '_seopress_titles_desc', true);
+
+            if (empty($existing_title) || empty($existing_desc)) {
+                $this->debug_log('Generating SEO metadata for new post ' . $post_id);
+                $meta_result = $this->generate_smart_metadata($post_id);
+
+                if (!is_wp_error($meta_result)) {
+                    if (!empty($meta_result['title'])) {
+                        update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($meta_result['title']));
+                    }
+                    if (!empty($meta_result['description'])) {
+                        update_post_meta($post_id, '_seopress_titles_desc', sanitize_text_field($meta_result['description']));
+                    }
+                    if (!empty($meta_result['focus_keyphrase'])) {
+                        update_post_meta($post_id, '_seopress_analysis_target_kw', sanitize_text_field($meta_result['focus_keyphrase']));
+                    }
+                    $this->log('Auto SEO metadata generated for post ' . $post_id);
+                } else {
+                    $this->log('Failed to generate SEO metadata for post ' . $post_id . ': ' . $meta_result->get_error_message());
+                }
+            }
+        }
+
         delete_transient($lock_key);
     }
 
