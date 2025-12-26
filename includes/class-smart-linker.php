@@ -31,6 +31,7 @@ class LendCity_Smart_Linker {
     private $queue_status_option = 'lendcity_smart_linker_queue_status';
     private $meta_queue_option = 'lendcity_meta_queue';
     private $meta_queue_status_option = 'lendcity_meta_queue_status';
+    private $anchor_blocklist_option = 'lendcity_anchor_blocklist';
     private $catalog_cache = null;
     private $links_cache = null; // In-memory cache for get_all_site_links
 
@@ -1750,6 +1751,12 @@ class LendCity_Smart_Linker {
         $post = get_post($post_id);
         if (!$post) {
             return array('success' => false, 'message' => 'Post not found');
+        }
+
+        // Check if this anchor+URL combination is blocked
+        if ($this->is_anchor_blocked($anchor_text, $target_url)) {
+            $this->debug_log("Skipped blocked anchor: '{$anchor_text}' -> {$target_url}");
+            return array('success' => false, 'message' => 'Anchor+URL blocked (duplicate was fixed)');
         }
 
         $existing_links = get_post_meta($post_id, $this->link_meta_key, true) ?: array();
@@ -3534,6 +3541,7 @@ class LendCity_Smart_Linker {
     public function fix_duplicate_anchor($anchor) {
         $duplicates = $this->get_duplicate_anchors();
         $fixed = 0;
+        $blocked = 0;
         $errors = array();
 
         foreach ($duplicates as $dup) {
@@ -3562,6 +3570,10 @@ class LendCity_Smart_Linker {
                             'post_content' => $new_content
                         ));
                         $fixed++;
+
+                        // Add to blocklist so auto-linker won't recreate this
+                        $this->add_to_anchor_blocklist($dup['anchor'], $target['url']);
+                        $blocked++;
                     }
                 }
             }
@@ -3571,8 +3583,96 @@ class LendCity_Smart_Linker {
         return array(
             'success' => true,
             'fixed' => $fixed,
+            'blocked' => $blocked,
             'anchor' => $anchor
         );
+    }
+
+    // =========================================================================
+    // ANCHOR BLOCKLIST - Prevent recreating removed duplicate anchors
+    // =========================================================================
+
+    /**
+     * Add an anchor+URL combination to the blocklist
+     * This prevents auto-linker from recreating links that were manually removed
+     *
+     * @param string $anchor The anchor text
+     * @param string $url The target URL
+     * @return bool Success
+     */
+    public function add_to_anchor_blocklist($anchor, $url) {
+        $blocklist = get_option($this->anchor_blocklist_option, array());
+
+        $key = $this->get_blocklist_key($anchor, $url);
+
+        if (!isset($blocklist[$key])) {
+            $blocklist[$key] = array(
+                'anchor' => strtolower(trim($anchor)),
+                'url' => $url,
+                'blocked_at' => current_time('mysql')
+            );
+            update_option($this->anchor_blocklist_option, $blocklist);
+            $this->debug_log("Added to anchor blocklist: '{$anchor}' -> {$url}");
+        }
+
+        return true;
+    }
+
+    /**
+     * Check if an anchor+URL combination is blocked
+     *
+     * @param string $anchor The anchor text
+     * @param string $url The target URL
+     * @return bool True if blocked
+     */
+    public function is_anchor_blocked($anchor, $url) {
+        $blocklist = get_option($this->anchor_blocklist_option, array());
+        $key = $this->get_blocklist_key($anchor, $url);
+        return isset($blocklist[$key]);
+    }
+
+    /**
+     * Get blocklist key for anchor+URL combination
+     */
+    private function get_blocklist_key($anchor, $url) {
+        return md5(strtolower(trim($anchor)) . '|' . $url);
+    }
+
+    /**
+     * Get full anchor blocklist
+     *
+     * @return array List of blocked anchor+URL combinations
+     */
+    public function get_anchor_blocklist() {
+        return get_option($this->anchor_blocklist_option, array());
+    }
+
+    /**
+     * Remove an item from the anchor blocklist
+     *
+     * @param string $anchor The anchor text
+     * @param string $url The target URL
+     * @return bool Success
+     */
+    public function remove_from_anchor_blocklist($anchor, $url) {
+        $blocklist = get_option($this->anchor_blocklist_option, array());
+        $key = $this->get_blocklist_key($anchor, $url);
+
+        if (isset($blocklist[$key])) {
+            unset($blocklist[$key]);
+            update_option($this->anchor_blocklist_option, $blocklist);
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Clear entire anchor blocklist
+     */
+    public function clear_anchor_blocklist() {
+        delete_option($this->anchor_blocklist_option);
+        return array('success' => true);
     }
 
     // =========================================================================
