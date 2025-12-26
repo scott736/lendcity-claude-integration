@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.2.6
+ * Version: 11.2.7
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.2.6');
+define('LENDCITY_CLAUDE_VERSION', '11.2.7');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -337,26 +337,17 @@ class LendCity_Claude_Integration {
             'LendCity Tools',
             'manage_options',
             'lendcity-claude',
-            array($this, 'dashboard_page'),
+            array($this, 'smart_linker_page'),
             'dashicons-admin-generic',
             30
         );
-        
-        add_submenu_page(
-            'lendcity-claude',
-            'Dashboard',
-            'Dashboard',
-            'manage_options',
-            'lendcity-claude',
-            array($this, 'dashboard_page')
-        );
-        
+
         add_submenu_page(
             'lendcity-claude',
             'Smart Linker',
             'Smart Linker',
             'manage_options',
-            'lendcity-claude-smart-linker',
+            'lendcity-claude',
             array($this, 'smart_linker_page')
         );
         
@@ -389,11 +380,7 @@ class LendCity_Claude_Integration {
     }
     
     // ==================== PAGE RENDERS ====================
-    
-    public function dashboard_page() {
-        include LENDCITY_CLAUDE_PLUGIN_DIR . 'admin/views/dashboard-page.php';
-    }
-    
+
     public function smart_linker_page() {
         include LENDCITY_CLAUDE_PLUGIN_DIR . 'admin/views/smart-linker-page.php';
     }
