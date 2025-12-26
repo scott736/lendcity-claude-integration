@@ -3720,7 +3720,8 @@ class LendCity_Smart_Linker {
      * Build the global keyword ownership map from catalog data
      * Uses existing good_anchor_phrases - no API calls needed
      *
-     * Scoring algorithm for ownership:
+     * Scoring algorithm for ownership (PAGES GET PRIORITY):
+     * - is_page: +100 points (PAGES WIN over posts)
      * - is_pillar_content: +30 points (pillar pages are authoritative)
      * - content_quality_score: 0-100 points
      * - monetization_value * 5: 0-50 points (high-value pages priority)
@@ -3755,7 +3756,7 @@ class LendCity_Smart_Linker {
 
         do {
             $rows = $wpdb->get_results($wpdb->prepare(
-                "SELECT post_id, url, title, good_anchor_phrases, is_pillar_content,
+                "SELECT post_id, url, title, good_anchor_phrases, is_page, is_pillar_content,
                         content_quality_score, monetization_value, link_gap_priority,
                         has_cta, has_lead_form
                  FROM {$this->table_name}
@@ -3774,7 +3775,9 @@ class LendCity_Smart_Linker {
                 $url = $row['url'];
 
                 // Calculate page authority score
+                // PAGES GET TOP PRIORITY (+100 bonus) so they win keyword ownership over posts
                 $score = 0;
+                $score += $row['is_page'] ? 100 : 0;  // Pages get major priority
                 $score += $row['is_pillar_content'] ? 30 : 0;
                 $score += intval($row['content_quality_score'] ?? 50);
                 $score += intval($row['monetization_value'] ?? 5) * 5;
