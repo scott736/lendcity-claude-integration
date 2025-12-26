@@ -3888,6 +3888,19 @@ class LendCity_Smart_Linker {
                     }
                 }
 
+                // 4. Target keywords from post meta (user-defined, highest priority)
+                $target_keywords = get_post_meta($post_id, $this->keywords_meta_key, true);
+                if (!empty($target_keywords)) {
+                    // Target keywords can be comma-separated or newline-separated
+                    $tk_list = preg_split('/[,\n]+/', $target_keywords);
+                    foreach ($tk_list as $tk) {
+                        $tk = trim($tk);
+                        if (!empty($tk) && strlen($tk) >= 3) {
+                            $all_keywords[] = $tk;
+                        }
+                    }
+                }
+
                 // Process all keywords
                 foreach ($all_keywords as $anchor) {
                     // Normalize: lowercase, trim, single spaces
