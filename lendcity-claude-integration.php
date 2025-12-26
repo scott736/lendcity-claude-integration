@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.3.5
+ * Version: 11.4.5
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.4.4');
+define('LENDCITY_CLAUDE_VERSION', '11.4.5');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -227,10 +227,6 @@ class LendCity_Claude_Integration {
         // SEO Health Monitor AJAX
         add_action('wp_ajax_lendcity_get_seo_health_issues', array($this, 'ajax_get_seo_health_issues'));
         add_action('wp_ajax_lendcity_auto_fix_seo', array($this, 'ajax_auto_fix_seo'));
-
-        // Duplicate Anchor AJAX
-        add_action('wp_ajax_lendcity_get_duplicate_anchors', array($this, 'ajax_get_duplicate_anchors'));
-        add_action('wp_ajax_lendcity_fix_duplicate_anchor', array($this, 'ajax_fix_duplicate_anchor'));
 
         // Article Scheduler AJAX
         add_action('wp_ajax_lendcity_process_article', array($this, 'ajax_process_article'));
@@ -2782,45 +2778,6 @@ class LendCity_Claude_Integration {
         } else {
             wp_send_json_error($result['error']);
         }
-    }
-
-    // ==================== DUPLICATE ANCHOR AJAX ====================
-
-    /**
-     * Scan duplicate anchors (paginated)
-     */
-    public function ajax_get_duplicate_anchors() {
-        check_ajax_referer('lendcity_claude_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) {
-            wp_send_json_error('Permission denied');
-        }
-
-        $reset = isset($_POST['reset']) && $_POST['reset'] === 'true';
-
-        $smart_linker = new LendCity_Smart_Linker();
-        $result = $smart_linker->scan_duplicate_anchors_batch($reset);
-
-        wp_send_json_success($result);
-    }
-
-    /**
-     * Fix a specific duplicate anchor
-     */
-    public function ajax_fix_duplicate_anchor() {
-        check_ajax_referer('lendcity_claude_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) {
-            wp_send_json_error('Permission denied');
-        }
-
-        $anchor = sanitize_text_field($_POST['anchor']);
-        if (empty($anchor)) {
-            wp_send_json_error('Invalid anchor');
-        }
-
-        $smart_linker = new LendCity_Smart_Linker();
-        $result = $smart_linker->fix_duplicate_anchor($anchor);
-
-        wp_send_json_success($result);
     }
 
     // ==================== ARTICLE SCHEDULER AJAX ====================

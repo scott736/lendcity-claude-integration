@@ -586,29 +586,6 @@ $total_links = $smart_linker->get_total_link_count();
             <div id="seo-health-content" style="display: none;"></div>
         </div>
     </div>
-
-    <!-- Duplicate Anchor Detection Panel -->
-    <div style="background: linear-gradient(135deg, #ff9a56, #ff6b6b); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-            <h2 style="margin: 0; color: white;">Duplicate Anchor Detection</h2>
-            <span style="background: rgba(255,255,255,0.3); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">SEO FIX</span>
-        </div>
-        <p style="margin-bottom: 5px; opacity: 0.9;">Finds anchor text used to link to multiple different pages — bad for SEO. Pages are prioritized; duplicates are removed from posts only.</p>
-        <p style="margin-bottom: 15px; font-size: 12px; opacity: 0.8;">
-            <strong>How it works:</strong> Same anchor → multiple URLs = confusing for search engines. We keep the page link, remove duplicate anchors from posts.
-        </p>
-
-        <button type="button" id="scan-duplicate-anchors-btn" class="button button-large" style="background: white; color: #ff6b6b; border: none; font-weight: bold;">
-            Scan for Duplicate Anchors
-        </button>
-
-        <div id="duplicate-anchors-results" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333; max-height: 400px; overflow-y: auto;">
-            <div id="duplicate-anchors-loading" style="text-align: center; padding: 20px;">
-                <span class="spinner is-active" style="float: none;"></span> Scanning...
-            </div>
-            <div id="duplicate-anchors-content" style="display: none;"></div>
-        </div>
-    </div>
 </div>
 
 <!-- Select2 for searchable dropdowns -->
@@ -1693,107 +1670,6 @@ jQuery(document).ready(function($) {
         }).fail(function() {
             alert('Request failed');
             $btn.prop('disabled', false).text('Auto Fix');
-        });
-    });
-
-    // ========== DUPLICATE ANCHOR DETECTION (Paginated) ==========
-    function runDuplicateAnchorScan(reset) {
-        $.post(ajaxurl, {
-            action: 'lendcity_get_duplicate_anchors',
-            nonce: nonce,
-            reset: reset ? 'true' : 'false'
-        }, function(response) {
-            if (!response.success) {
-                $('#duplicate-anchors-loading').html('<p style="color: #dc3545;">Error: ' + response.data + '</p>');
-                $('#scan-duplicate-anchors-btn').prop('disabled', false).text('Scan for Duplicate Anchors');
-                return;
-            }
-
-            var data = response.data;
-
-            if (data.status === 'scanning') {
-                // Update progress
-                $('#duplicate-anchors-loading').html(
-                    '<div style="margin-bottom: 10px;"><strong>Scanning... ' + data.percent + '%</strong></div>' +
-                    '<div style="background: #e0e0e0; height: 20px; border-radius: 4px; overflow: hidden;">' +
-                    '<div style="background: linear-gradient(90deg, #ff9a56, #ff6b6b); height: 100%; width: ' + data.percent + '%; transition: width 0.3s;"></div>' +
-                    '</div>' +
-                    '<p style="margin-top: 10px; font-size: 12px; color: #666;">Processed ' + data.processed + ' of ' + data.total + ' posts</p>'
-                );
-                // Continue scanning
-                setTimeout(function() { runDuplicateAnchorScan(false); }, 500);
-            } else {
-                // Complete - show results
-                $('#duplicate-anchors-loading').hide();
-                $('#duplicate-anchors-content').show();
-                $('#scan-duplicate-anchors-btn').prop('disabled', false).text('Scan for Duplicate Anchors');
-
-                if (data.duplicates && data.duplicates.length > 0) {
-                    var html = '<p style="margin-top: 0;"><strong>' + data.count + ' duplicate anchors found</strong></p>';
-                    html += '<p style="font-size: 12px; color: #666; margin-bottom: 15px;">Pages are prioritized — duplicates will be removed from posts only.</p>';
-                    html += '<table class="wp-list-table widefat fixed striped" style="margin-top: 10px;">';
-                    html += '<thead><tr><th>Anchor Text</th><th>Used For</th><th>Keep (Page)</th><th>Action</th></tr></thead><tbody>';
-
-                    data.duplicates.forEach(function(dup) {
-                        var targets = dup.targets.map(function(t) {
-                            return '<div style="font-size: 11px; margin-bottom: 2px;">' +
-                                '<span style="color: ' + (t.post_type === 'page' ? '#28a745' : '#666') + ';">[' + t.post_type + ']</span> ' +
-                                t.url.replace(/^https?:\/\/[^\/]+/, '') + '</div>';
-                        }).join('');
-
-                        html += '<tr data-anchor="' + dup.anchor + '">';
-                        html += '<td><code style="font-size: 13px;">' + dup.anchor + '</code><br><small style="color: #666;">(' + dup.count + ' targets)</small></td>';
-                        html += '<td>' + targets + '</td>';
-                        html += '<td style="font-size: 11px; color: #28a745;">' + dup.keep_url.replace(/^https?:\/\/[^\/]+/, '') + '</td>';
-                        html += '<td><button type="button" class="button fix-duplicate-anchor-btn" data-anchor="' + dup.anchor + '">Fix (Remove from Posts)</button></td>';
-                        html += '</tr>';
-                    });
-
-                    html += '</tbody></table>';
-                    $('#duplicate-anchors-content').html(html);
-                } else {
-                    $('#duplicate-anchors-content').html('<p style="color: #28a745; margin: 0;">✓ No duplicate anchors found. All anchor texts are unique!</p>');
-                }
-            }
-        }).fail(function() {
-            $('#duplicate-anchors-loading').html('<p style="color: #dc3545;">Request failed. Please try again.</p>');
-            $('#scan-duplicate-anchors-btn').prop('disabled', false).text('Scan for Duplicate Anchors');
-        });
-    }
-
-    $('#scan-duplicate-anchors-btn').on('click', function() {
-        var $btn = $(this);
-        $btn.prop('disabled', true).text('Scanning...');
-        $('#duplicate-anchors-results').show();
-        $('#duplicate-anchors-loading').show().html('<div style="text-align: center; padding: 20px;"><span class="spinner is-active" style="float: none;"></span> Starting scan...</div>');
-        $('#duplicate-anchors-content').hide();
-
-        runDuplicateAnchorScan(true);
-    });
-
-    // Fix duplicate anchor
-    $(document).on('click', '.fix-duplicate-anchor-btn', function() {
-        var $btn = $(this);
-        var anchor = $btn.data('anchor');
-        $btn.prop('disabled', true).text('Fixing...');
-
-        $.post(ajaxurl, {
-            action: 'lendcity_fix_duplicate_anchor',
-            nonce: nonce,
-            anchor: anchor
-        }, function(response) {
-            if (response.success) {
-                $btn.closest('tr').fadeOut(300, function() { $(this).remove(); });
-                if (response.data.fixed > 0) {
-                    alert('Fixed! Removed ' + response.data.fixed + ' duplicate link(s).');
-                }
-            } else {
-                alert('Error fixing anchor');
-                $btn.prop('disabled', false).text('Fix (Remove from Posts)');
-            }
-        }).fail(function() {
-            alert('Request failed');
-            $btn.prop('disabled', false).text('Fix (Remove from Posts)');
         });
     });
 });
