@@ -84,75 +84,113 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Create the catalog table with proper indexes - v4.0 SUPER SMART CATALOG
+     * Create the catalog table - uses direct SQL to avoid dbDelta parsing issues
      */
     private function create_table() {
         global $wpdb;
 
         $charset_collate = $wpdb->get_charset_collate();
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$this->table_name}'") === $this->table_name;
 
-        $sql = "CREATE TABLE {$this->table_name} (
-            id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-            post_id BIGINT UNSIGNED NOT NULL,
-            post_type VARCHAR(20) NOT NULL DEFAULT 'post',
-            is_page TINYINT(1) NOT NULL DEFAULT 0,
-            title VARCHAR(255) NOT NULL,
-            url VARCHAR(500) NOT NULL,
-            summary TEXT,
-            main_topics LONGTEXT,
-            semantic_keywords LONGTEXT,
-            entities LONGTEXT,
-            content_themes LONGTEXT,
-            good_anchor_phrases LONGTEXT,
-            reader_intent VARCHAR(20) DEFAULT 'educational',
-            difficulty_level VARCHAR(20) DEFAULT 'intermediate',
-            funnel_stage VARCHAR(20) DEFAULT 'awareness',
-            topic_cluster VARCHAR(100) DEFAULT NULL,
-            related_clusters LONGTEXT,
-            is_pillar_content TINYINT(1) NOT NULL DEFAULT 0,
-            word_count INT UNSIGNED DEFAULT 0,
-            content_quality_score TINYINT UNSIGNED DEFAULT 50,
-            content_lifespan VARCHAR(20) DEFAULT 'evergreen',
-            publish_season VARCHAR(30) DEFAULT NULL,
-            target_regions LONGTEXT,
-            target_cities LONGTEXT,
-            target_persona VARCHAR(30) DEFAULT 'general',
-            content_last_updated DATE DEFAULT NULL,
-            freshness_score TINYINT UNSIGNED DEFAULT 100,
-            inbound_link_count INT UNSIGNED DEFAULT 0,
-            outbound_link_count INT UNSIGNED DEFAULT 0,
-            link_gap_priority TINYINT UNSIGNED DEFAULT 50,
-            has_cta TINYINT(1) DEFAULT 0,
-            has_calculator TINYINT(1) DEFAULT 0,
-            has_lead_form TINYINT(1) DEFAULT 0,
-            monetization_value TINYINT UNSIGNED DEFAULT 5,
-            content_format VARCHAR(30) DEFAULT 'other',
-            must_link_to LONGTEXT,
-            never_link_to LONGTEXT,
-            preferred_anchors LONGTEXT,
-            updated_at DATETIME NOT NULL,
-            PRIMARY KEY  (id),
-            UNIQUE KEY idx_post_id (post_id),
-            KEY idx_post_type (post_type),
-            KEY idx_is_page (is_page),
-            KEY idx_topic_cluster (topic_cluster),
-            KEY idx_difficulty (difficulty_level),
-            KEY idx_funnel (funnel_stage),
-            KEY idx_pillar (is_pillar_content),
-            KEY idx_intent (reader_intent),
-            KEY idx_persona (target_persona),
-            KEY idx_lifespan (content_lifespan),
-            KEY idx_freshness (freshness_score),
-            KEY idx_monetization (monetization_value),
-            KEY idx_format (content_format),
-            KEY idx_link_gap (link_gap_priority),
-            KEY idx_updated (updated_at)
-        ) $charset_collate;";
+        if (!$table_exists) {
+            $sql = "CREATE TABLE {$this->table_name} (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                post_id BIGINT UNSIGNED NOT NULL,
+                post_type VARCHAR(20) NOT NULL DEFAULT 'post',
+                is_page TINYINT(1) NOT NULL DEFAULT 0,
+                title VARCHAR(255) NOT NULL DEFAULT '',
+                url VARCHAR(500) NOT NULL DEFAULT '',
+                summary TEXT,
+                main_topics LONGTEXT,
+                semantic_keywords LONGTEXT,
+                entities LONGTEXT,
+                content_themes LONGTEXT,
+                good_anchor_phrases LONGTEXT,
+                reader_intent VARCHAR(20) DEFAULT 'educational',
+                difficulty_level VARCHAR(20) DEFAULT 'intermediate',
+                funnel_stage VARCHAR(20) DEFAULT 'awareness',
+                topic_cluster VARCHAR(100) DEFAULT NULL,
+                related_clusters LONGTEXT,
+                is_pillar_content TINYINT(1) NOT NULL DEFAULT 0,
+                word_count INT UNSIGNED DEFAULT 0,
+                content_quality_score TINYINT UNSIGNED DEFAULT 50,
+                content_lifespan VARCHAR(20) DEFAULT 'evergreen',
+                publish_season VARCHAR(30) DEFAULT NULL,
+                target_regions LONGTEXT,
+                target_cities LONGTEXT,
+                target_persona VARCHAR(30) DEFAULT 'general',
+                content_last_updated DATE DEFAULT NULL,
+                freshness_score TINYINT UNSIGNED DEFAULT 100,
+                inbound_link_count INT UNSIGNED DEFAULT 0,
+                outbound_link_count INT UNSIGNED DEFAULT 0,
+                link_gap_priority TINYINT UNSIGNED DEFAULT 50,
+                has_cta TINYINT(1) DEFAULT 0,
+                has_calculator TINYINT(1) DEFAULT 0,
+                has_lead_form TINYINT(1) DEFAULT 0,
+                monetization_value TINYINT UNSIGNED DEFAULT 5,
+                content_format VARCHAR(30) DEFAULT 'other',
+                must_link_to LONGTEXT,
+                never_link_to LONGTEXT,
+                preferred_anchors LONGTEXT,
+                updated_at DATETIME NOT NULL,
+                PRIMARY KEY (id),
+                UNIQUE KEY idx_post_id (post_id),
+                KEY idx_topic_cluster (topic_cluster),
+                KEY idx_persona (target_persona)
+            ) $charset_collate";
 
-        require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
-        dbDelta($sql);
+            $result = $wpdb->query($sql);
 
-        $this->log('Created/updated catalog database table v' . self::DB_VERSION);
+            if ($wpdb->last_error) {
+                $this->log('Table creation error: ' . $wpdb->last_error);
+            } else {
+                $this->log('Created catalog database table v' . self::DB_VERSION);
+            }
+        } else {
+            $this->maybe_upgrade_table();
+        }
+    }
+
+    /**
+     * Add missing columns to existing table (for v4 upgrades)
+     */
+    private function maybe_upgrade_table() {
+        global $wpdb;
+
+        $columns = $wpdb->get_col("SHOW COLUMNS FROM {$this->table_name}", 0);
+
+        $v4_columns = array(
+            'content_lifespan' => "VARCHAR(20) DEFAULT 'evergreen'",
+            'publish_season' => "VARCHAR(30) DEFAULT NULL",
+            'target_regions' => "LONGTEXT",
+            'target_cities' => "LONGTEXT",
+            'target_persona' => "VARCHAR(30) DEFAULT 'general'",
+            'content_last_updated' => "DATE DEFAULT NULL",
+            'freshness_score' => "TINYINT UNSIGNED DEFAULT 100",
+            'inbound_link_count' => "INT UNSIGNED DEFAULT 0",
+            'outbound_link_count' => "INT UNSIGNED DEFAULT 0",
+            'link_gap_priority' => "TINYINT UNSIGNED DEFAULT 50",
+            'has_cta' => "TINYINT(1) DEFAULT 0",
+            'has_calculator' => "TINYINT(1) DEFAULT 0",
+            'has_lead_form' => "TINYINT(1) DEFAULT 0",
+            'monetization_value' => "TINYINT UNSIGNED DEFAULT 5",
+            'content_format' => "VARCHAR(30) DEFAULT 'other'",
+            'must_link_to' => "LONGTEXT",
+            'never_link_to' => "LONGTEXT",
+            'preferred_anchors' => "LONGTEXT"
+        );
+
+        $added = 0;
+        foreach ($v4_columns as $col => $def) {
+            if (!in_array($col, $columns)) {
+                $wpdb->query("ALTER TABLE {$this->table_name} ADD COLUMN {$col} {$def}");
+                $added++;
+            }
+        }
+
+        if ($added > 0) {
+            $this->log("Added {$added} new v4 columns to catalog table");
+        }
     }
 
     /**
