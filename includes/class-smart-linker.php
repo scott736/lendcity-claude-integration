@@ -194,53 +194,6 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Check if migration from wp_options is needed
-     */
-    public function needs_migration() {
-        $old_catalog = get_option('lendcity_post_catalog', array());
-        $table_count = $this->get_catalog_count();
-
-        return !empty($old_catalog) && $table_count === 0;
-    }
-
-    /**
-     * Migrate from old wp_options catalog to new database table
-     */
-    public function migrate_from_options() {
-        global $wpdb;
-
-        $old_catalog = get_option('lendcity_post_catalog', array());
-        if (empty($old_catalog)) {
-            return array('success' => true, 'migrated' => 0, 'message' => 'No data to migrate');
-        }
-
-        $migrated = 0;
-        $errors = array();
-
-        foreach ($old_catalog as $post_id => $entry) {
-            $result = $this->insert_catalog_entry($post_id, $entry);
-            if ($result) {
-                $migrated++;
-            } else {
-                $errors[] = "Failed to migrate post $post_id";
-            }
-        }
-
-        // Backup and remove old option
-        if ($migrated > 0) {
-            update_option('lendcity_post_catalog_backup_v2', $old_catalog);
-            delete_option('lendcity_post_catalog');
-            $this->log("Migrated $migrated catalog entries to database table");
-        }
-
-        return array(
-            'success' => true,
-            'migrated' => $migrated,
-            'errors' => $errors
-        );
-    }
-
-    /**
      * Insert or update a catalog entry in the database
      */
     public function insert_catalog_entry($post_id, $entry) {
