@@ -18,8 +18,11 @@ class LendCity_Claude_API {
      */
     public function simple_completion($prompt, $max_tokens = 300) {
         if (empty($this->api_key)) {
+            error_log('LendCity Claude API Error: API key is empty or not set');
             return false;
         }
+
+        error_log('LendCity Claude API: Making request with model ' . $this->model);
         
         // Sanitize prompt to ensure valid UTF-8
         $prompt = mb_convert_encoding($prompt, 'UTF-8', 'UTF-8');
