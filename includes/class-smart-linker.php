@@ -3888,20 +3888,22 @@ class LendCity_Smart_Linker {
                     }
                 }
 
-                // 4. Target keywords from post meta (user-defined, highest priority)
+                // 4. Target keywords from post meta (user-defined, HIGHEST priority)
+                // These get a +1000 score bonus to ALWAYS win ownership
                 $target_keywords = get_post_meta($post_id, $this->keywords_meta_key, true);
+                $target_keyword_list = array();
                 if (!empty($target_keywords)) {
                     // Target keywords can be comma-separated or newline-separated
                     $tk_list = preg_split('/[,\n]+/', $target_keywords);
                     foreach ($tk_list as $tk) {
                         $tk = trim($tk);
                         if (!empty($tk) && strlen($tk) >= 3) {
-                            $all_keywords[] = $tk;
+                            $target_keyword_list[] = $tk;
                         }
                     }
                 }
 
-                // Process all keywords
+                // Process regular keywords (from catalog)
                 foreach ($all_keywords as $anchor) {
                     // Normalize: lowercase, trim, single spaces
                     $normalized = strtolower(trim(preg_replace('/\s+/', ' ', $anchor)));
@@ -3936,8 +3938,42 @@ class LendCity_Smart_Linker {
                     }
                 }
 
+                // Process TARGET keywords with MASSIVE score bonus (+1000)
+                // These ALWAYS override other ownership because user explicitly set them
+                foreach ($target_keyword_list as $anchor) {
+                    $normalized = strtolower(trim(preg_replace('/\s+/', ' ', $anchor)));
+
+                    // Allow single words for target keywords (user explicitly set them)
+                    if (strlen($normalized) < 2) continue;
+
+                    $target_score = $score + 1000; // Massive bonus to always win
+
+                    $total_keywords++;
+
+                    // Target keywords ALWAYS win (check score but they have +1000)
+                    if (isset($keyword_map[$normalized])) {
+                        if ($target_score > $keyword_map[$normalized]['score']) {
+                            $keyword_map[$normalized] = array(
+                                'post_id' => $post_id,
+                                'url' => $url,
+                                'score' => $target_score,
+                                'anchor' => $anchor,
+                                'is_target_keyword' => true
+                            );
+                        }
+                    } else {
+                        $keyword_map[$normalized] = array(
+                            'post_id' => $post_id,
+                            'url' => $url,
+                            'score' => $target_score,
+                            'anchor' => $anchor,
+                            'is_target_keyword' => true
+                        );
+                    }
+                }
+
                 // Memory cleanup
-                unset($anchors, $topics, $all_keywords);
+                unset($anchors, $topics, $all_keywords, $target_keyword_list);
             }
 
             $offset += $batch_size;
