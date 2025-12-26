@@ -2046,55 +2046,109 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Build the intelligent linking prompt - v5.0 Enhanced
-     * Now includes summaries, anchor phrases, and more context
+     * v12.2: Build compact catalog table for full site awareness
+     * Shows ALL pages/posts in a condensed format so Claude can make strategic decisions
+     */
+    private function build_compact_catalog_table($source_id, $linked_urls = array()) {
+        $catalog = $this->get_catalog();
+
+        $pages_table = "ID|Title|Cluster|Persona|Funnel|Inbound#|Priority\n";
+        $pages_table .= str_repeat("-", 80) . "\n";
+
+        $posts_table = "ID|Title|Cluster|Persona|Funnel|Inbound#\n";
+        $posts_table .= str_repeat("-", 70) . "\n";
+
+        $page_count = 0;
+        $post_count = 0;
+
+        foreach ($catalog as $id => $entry) {
+            if ($id == $source_id) continue;
+
+            // Mark already-linked items
+            $linked_marker = in_array($entry['url'], $linked_urls) ? '[LINKED]' : '';
+
+            $title = substr($entry['title'], 0, 40);
+            if (strlen($entry['title']) > 40) $title .= '...';
+
+            $cluster = substr($entry['topic_cluster'] ?? 'general', 0, 15);
+            $persona = substr($entry['target_persona'] ?? 'general', 0, 12);
+            $funnel = substr($entry['funnel_stage'] ?? 'awareness', 0, 10);
+            $inbound = $entry['inbound_link_count'] ?? 0;
+
+            if ($entry['is_page']) {
+                $priority = $this->get_page_priority($id);
+                $pages_table .= "{$id}|{$title}|{$cluster}|{$persona}|{$funnel}|{$inbound}|P{$priority}{$linked_marker}\n";
+                $page_count++;
+            } else {
+                $posts_table .= "{$id}|{$title}|{$cluster}|{$persona}|{$funnel}|{$inbound}{$linked_marker}\n";
+                $post_count++;
+            }
+        }
+
+        return array(
+            'pages' => $pages_table,
+            'posts' => $posts_table,
+            'page_count' => $page_count,
+            'post_count' => $post_count
+        );
+    }
+
+    /**
+     * Build the intelligent linking prompt - v12.2 Full Catalog Intelligence
+     * Now includes full site catalog awareness + detailed candidates
      */
     private function build_linking_prompt($source, $source_entry, $source_content,
         $available_pages, $available_posts, $used_anchors, $page_slots, $post_slots) {
 
+        // v12.2: Get linked URLs to mark in catalog
+        $existing_links = get_post_meta($source->ID, $this->link_meta_key, true) ?: array();
+        $linked_urls = array_column($existing_links, 'url');
+
+        // v12.2: Build full catalog awareness
+        $compact_catalog = $this->build_compact_catalog_table($source->ID, $linked_urls);
+
         $prompt = "You are an expert SEO strategist creating semantically relevant internal links.\n\n";
-        $prompt .= "=== SOURCE POST ===\n";
+
+        // v12.2: FULL SITE CATALOG - Claude sees the entire site structure
+        $prompt .= "=== FULL SITE CATALOG ({$compact_catalog['page_count']} pages, {$compact_catalog['post_count']} posts) ===\n";
+        $prompt .= "Use this to understand site architecture. Items marked [LINKED] are already linked from this post.\n";
+        $prompt .= "PRIORITIZE: Low Inbound# pages need links! High Priority pages (P4, P5) are important.\n\n";
+
+        $prompt .= "SERVICE PAGES:\n";
+        $prompt .= $compact_catalog['pages'] . "\n";
+
+        $prompt .= "BLOG POSTS:\n";
+        $prompt .= $compact_catalog['posts'] . "\n";
+
+        // Source post info
+        $prompt .= "=== SOURCE POST (adding links TO this post) ===\n";
         $prompt .= "Title: " . $source->post_title . "\n";
         $prompt .= "Topic Cluster: " . ($source_entry['topic_cluster'] ?? 'general') . "\n";
         $prompt .= "Funnel Stage: " . ($source_entry['funnel_stage'] ?? 'awareness') . "\n";
-        $prompt .= "Difficulty: " . ($source_entry['difficulty_level'] ?? 'intermediate') . "\n";
         $prompt .= "Persona: " . ($source_entry['target_persona'] ?? 'general') . "\n";
         $prompt .= "Topics: " . implode(', ', $source_entry['main_topics'] ?? array()) . "\n";
-        $prompt .= "Entities: " . implode(', ', array_slice($source_entry['entities'] ?? array(), 0, 10)) . "\n";
         $prompt .= "Content:\n" . $source_content . "\n\n";
 
         if (!empty($used_anchors)) {
             $prompt .= "=== ALREADY USED ANCHORS (NEVER USE THESE) ===\n" . implode(', ', $used_anchors) . "\n\n";
         }
 
-        // Get site-wide anchor usage for diversity check
-        $anchor_usage = get_option($this->anchor_usage_option, array());
-
+        // v12.2: Show DETAILED info for top candidates (for anchor selection)
         $links_requested = array();
 
         if ($page_slots > 0 && !empty($available_pages)) {
-            $prompt .= "=== AVAILABLE SERVICE PAGES (max " . $page_slots . " links) ===\n";
+            $prompt .= "=== TOP PAGE CANDIDATES WITH ANCHOR SUGGESTIONS (max " . $page_slots . " links) ===\n";
             $count = 0;
             foreach ($available_pages as $id => $entry) {
-                if ($count >= 15) break; // Increased from 8 to 15
+                if ($count >= 25) break; // Increased from 15 to 25
                 $priority = $this->get_page_priority($id);
-                $keywords = $this->get_page_keywords($id);
-                $prompt .= "\nID:" . $id . " | " . $entry['title'] . " | Priority:" . $priority;
-                $prompt .= " | Cluster:" . ($entry['topic_cluster'] ?? 'none');
-                $prompt .= " | Persona:" . ($entry['target_persona'] ?? 'general');
+                $inbound = $entry['inbound_link_count'] ?? 0;
+                $prompt .= "\nID:" . $id . " | " . $entry['title'] . " | P" . $priority . " | Inbound:" . $inbound;
 
-                // v5.0: Add summary for context
-                if (!empty($entry['summary'])) {
-                    $prompt .= "\n  Summary: " . substr($entry['summary'], 0, 150) . "...";
-                }
-
-                // v5.0: Add suggested anchor phrases
+                // Add anchor phrases for selection
                 $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
                 if (!empty($anchor_phrases)) {
-                    $prompt .= "\n  Best Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 5));
-                }
-                if ($keywords) {
-                    $prompt .= "\n  Keywords: " . $keywords;
+                    $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 6));
                 }
                 $prompt .= "\n";
                 $count++;
@@ -2104,24 +2158,17 @@ class LendCity_Smart_Linker {
         }
 
         if ($post_slots > 0 && !empty($available_posts)) {
-            $prompt .= "=== AVAILABLE BLOG POSTS (max " . $post_slots . " links) - SORTED BY RELEVANCE ===\n";
+            $prompt .= "=== TOP POST CANDIDATES WITH ANCHOR SUGGESTIONS (max " . $post_slots . " links) ===\n";
             $count = 0;
             foreach ($available_posts as $id => $entry) {
-                if ($count >= 20) break; // Increased from 12 to 20
-                $prompt .= "\nID:" . $id . " | " . $entry['title'];
-                $prompt .= " | Cluster:" . ($entry['topic_cluster'] ?? 'none');
-                $prompt .= " | Funnel:" . ($entry['funnel_stage'] ?? 'awareness');
-                $prompt .= " | Persona:" . ($entry['target_persona'] ?? 'general');
+                if ($count >= 30) break; // Increased from 20 to 30
+                $inbound = $entry['inbound_link_count'] ?? 0;
+                $prompt .= "\nID:" . $id . " | " . $entry['title'] . " | Inbound:" . $inbound;
 
-                // v5.0: Add summary for semantic context
-                if (!empty($entry['summary'])) {
-                    $prompt .= "\n  Summary: " . substr($entry['summary'], 0, 120) . "...";
-                }
-
-                // v5.0: Add suggested anchor phrases
+                // Add anchor phrases for selection
                 $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
                 if (!empty($anchor_phrases)) {
-                    $prompt .= "\n  Best Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 4));
+                    $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 5));
                 }
                 $prompt .= "\n";
                 $count++;
@@ -2133,22 +2180,22 @@ class LendCity_Smart_Linker {
         $prompt .= "=== TASK ===\n";
         $prompt .= "Find: " . implode(' + ', $links_requested) . "\n\n";
 
-        $prompt .= "=== v5.0 SEMANTIC LINKING RULES ===\n";
-        $prompt .= "1. SEMANTIC RELEVANCE: Only link when source paragraph ACTUALLY discusses the target topic\n";
-        $prompt .= "2. ANCHOR SELECTION: Use 2-4 word phrases that EXIST EXACTLY in the source content\n";
-        $prompt .= "3. PREFER SUGGESTED ANCHORS: Use 'Best Anchors' when they appear naturally in content\n";
-        $prompt .= "4. CLUSTER MATCHING: Prioritize same/related topic clusters for topical authority\n";
+        $prompt .= "=== v12.2 FULL CATALOG LINKING RULES ===\n";
+        $prompt .= "1. SITE-WIDE STRATEGY: You can see ALL pages/posts - make strategic choices\n";
+        $prompt .= "2. PRIORITIZE ORPHANS: Pages with Inbound# < 5 NEED links - prioritize them\n";
+        $prompt .= "3. RESPECT PRIORITY: P5 pages are most important, P1 least important\n";
+        $prompt .= "4. CLUSTER INTEGRITY: Link within same/related topic clusters for topical authority\n";
         $prompt .= "5. PERSONA ALIGNMENT: Match reader personas (don't link investor→first-time-buyer)\n";
-        $prompt .= "6. FUNNEL PROGRESSION: Link to content that advances the reader journey\n";
-        $prompt .= "7. DISTRIBUTE EVENLY: Spread links throughout the ENTIRE article (not just intro)\n";
+        $prompt .= "6. FUNNEL PROGRESSION: Link awareness→consideration→decision naturally\n";
+        $prompt .= "7. DISTRIBUTE EVENLY: Spread links throughout the ENTIRE article\n";
         $prompt .= "8. MAX 1 LINK PER PARAGRAPH: Never add multiple links to same paragraph\n";
-        $prompt .= "9. ANCHOR DIVERSITY: Vary anchor text - don't use same phrase repeatedly\n";
-        $prompt .= "10. QUALITY OVER QUANTITY: Return fewer links if no good semantic matches exist\n\n";
+        $prompt .= "9. ANCHOR DIVERSITY: Vary anchor text across the site\n";
+        $prompt .= "10. QUALITY > QUANTITY: Fewer good links beats many weak links\n\n";
 
-        $prompt .= "CRITICAL: Anchor text MUST:\n";
-        $prompt .= "- Be an EXACT phrase from the source content (2-4 words ideal)\n";
-        $prompt .= "- Semantically describe what the target page is about\n";
-        $prompt .= "- Read naturally in the sentence context\n\n";
+        $prompt .= "ANCHOR TEXT RULES:\n";
+        $prompt .= "- MUST be an EXACT phrase from the source content (2-4 words ideal)\n";
+        $prompt .= "- Use 'Anchors' suggestions when they appear naturally in content\n";
+        $prompt .= "- Must read naturally in sentence context\n\n";
 
         $prompt .= "Respond with ONLY a JSON array:\n";
         $prompt .= '[{"target_id": 123, "anchor_text": "exact phrase from content", "is_page": true/false, "paragraph_hint": "first few words of paragraph"}, ...]\n';

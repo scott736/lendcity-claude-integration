@@ -1,6 +1,6 @@
 # LendCity Tools Plugin
 
-**Version:** 12.1.0
+**Version:** 12.2.0
 **WordPress Plugin for AI-Powered Content Management**
 
 ## Overview
@@ -143,6 +143,15 @@ Main logic is in:
   - Auto-polling status updates every 5 seconds when queues are active
   - "Stop All Queues" button to cancel all background processing
   - Processes continue even after closing browser window
+- v12.2.0: **Full Catalog Intelligence** - Claude sees entire site architecture for strategic linking:
+  - Compact catalog table shows ALL pages and posts (not just top 15/20)
+  - Claude can make site-wide strategic decisions about link distribution
+  - Prioritizes orphan pages (low inbound link count) automatically
+  - Shows inbound link counts so Claude knows which pages need links
+  - Respects page priority settings (P1-P5) in linking decisions
+  - Increased detailed candidates: 25 pages + 30 posts with anchor suggestions
+  - Better topic cluster integrity and funnel progression
+  - Truly holistic SEO linking strategy
 
 ## Installation
 
