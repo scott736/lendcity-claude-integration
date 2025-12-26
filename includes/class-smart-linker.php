@@ -3105,26 +3105,6 @@ class LendCity_Smart_Linker {
         $this->debug_log('Ownership queue cleared');
     }
 
-    /**
-     * Get meta queue status (for consistency)
-     */
-    public function get_meta_queue_status() {
-        $queue = get_option($this->meta_queue_option, array());
-        $status = get_option($this->meta_queue_status_option, array());
-
-        return array(
-            'state' => $status['state'] ?? 'idle',
-            'total' => $status['total'] ?? 0,
-            'processed' => $status['processed'] ?? 0,
-            'remaining' => is_array($queue) ? count($queue) : 0,
-            'errors' => $status['errors'] ?? 0,
-            'current_post' => $status['current_post'] ?? '',
-            'started_at' => $status['started_at'] ?? '',
-            'last_activity' => $status['last_activity'] ?? '',
-            'completed_at' => $status['completed_at'] ?? ''
-        );
-    }
-
     // =========================================================================
     // LINK MANAGEMENT
     // =========================================================================
