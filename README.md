@@ -1,6 +1,6 @@
 # LendCity Tools Plugin
 
-**Version:** 12.2.1
+**Version:** 12.2.2
 **WordPress Plugin for AI-Powered Content Management**
 
 ## Overview
@@ -156,6 +156,11 @@ Main logic is in:
   - Every single page and post includes anchor phrase suggestions
   - Maximum information for optimal link selection
   - Works with sites up to 1000+ posts (fits within 200k token context)
+- v12.2.2: **Target Keywords Priority** - Manually selected keywords are now top priority:
+  - TARGET KEYWORDS shown with ★ marker for each page
+  - Rule #1 tells Claude to use TARGET KEYWORDS as anchor text when found in content
+  - Ownership map no longer required - Claude makes dynamic decisions
+  - Set keywords in SEO Settings → Priority Pages & Keywords table
 
 ## Installation
 
