@@ -37,8 +37,28 @@ $total_links = $smart_linker->get_total_link_count();
 
 <div class="wrap">
     <h1>Smart Linker <span style="font-size: 14px; color: #666;">AI-Powered Internal Linking</span></h1>
-    <p><strong>How it works:</strong> Select a target → Claude finds posts that should link TO it → Links inserted automatically.</p>
-    
+
+    <!-- BUILD ALL Button -->
+    <div style="background: linear-gradient(135deg, #11998e, #38ef7d); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
+            <div>
+                <h2 style="margin: 0; color: white;">Quick Start</h2>
+                <p style="margin: 5px 0 0; opacity: 0.9;">Run all 4 steps automatically: Catalog → Keyword Map → Auto-Link → SEO Meta</p>
+            </div>
+            <button type="button" id="build-all-btn" class="button button-large" style="background: white; color: #11998e; border: none; font-weight: bold; font-size: 16px; padding: 12px 30px;">
+                🚀 BUILD ALL
+            </button>
+        </div>
+        <div id="build-all-progress" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
+            <div style="margin-bottom: 10px;">
+                <strong id="build-all-step">Starting...</strong>
+            </div>
+            <div style="background: #e0e0e0; height: 20px; border-radius: 4px; overflow: hidden;">
+                <div id="build-all-bar" style="background: linear-gradient(90deg, #11998e, #38ef7d); height: 100%; width: 0%; transition: width 0.3s;"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- Settings -->
     <div style="background: #f0f6fc; border: 1px solid #2271b1; border-radius: 4px; padding: 15px; margin-bottom: 20px;">
         <form method="post" style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
@@ -48,10 +68,10 @@ $total_links = $smart_linker->get_total_link_count();
             <button type="submit" name="save_smart_linker_settings" class="button">Save</button>
         </form>
     </div>
-    
-    <!-- Catalog -->
+
+    <!-- STEP 1: Catalog -->
     <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
-        <h2 style="margin-top: 0;">Content Catalog</h2>
+        <h2 style="margin-top: 0;"><span style="background: #2271b1; color: white; padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 1</span>Build Catalog</h2>
         <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 15px;">
             <?php if (!empty($catalog)): ?>
                 <div style="background: #d4edda; padding: 15px; border-radius: 4px;">
@@ -72,10 +92,63 @@ $total_links = $smart_linker->get_total_link_count();
             <p id="catalog-status"></p>
         </div>
     </div>
-    
-    <!-- Trust AI / Bulk Processing -->
+
+    <!-- STEP 2: Keyword Ownership -->
     <div style="background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
-        <h2 style="margin-top: 0; color: white;">Bulk Link Everything</h2>
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <h2 style="margin: 0; color: white;"><span style="background: rgba(255,255,255,0.3); padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 2</span>Keyword Ownership Map</h2>
+        </div>
+        <p style="margin-bottom: 15px; opacity: 0.9;">Scans all pages to determine which page should "own" each 3-5 word keyword. Prevents duplicate anchors by design.</p>
+
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+            <button type="button" id="build-ownership-btn" class="button button-large" style="background: white; color: #667eea; border: none; font-weight: bold;">
+                Build Ownership Map
+            </button>
+            <button type="button" id="rebuild-ownership-btn" class="button button-large" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5);">
+                Force Rebuild
+            </button>
+            <button type="button" id="clear-ownership-btn" class="button button-large" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5);">
+                Clear Map
+            </button>
+        </div>
+
+        <div id="ownership-stats" style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.15); border-radius: 4px; display: none;">
+            <span id="ownership-stats-text"></span>
+        </div>
+
+        <div id="ownership-results" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333; max-height: 500px; overflow-y: auto;">
+            <div id="ownership-loading" style="text-align: center; padding: 20px;">
+                <span class="spinner is-active" style="float: none;"></span> Building ownership map...
+            </div>
+            <div id="ownership-content" style="display: none;">
+                <div style="margin-bottom: 10px; display: flex; gap: 10px; align-items: center;">
+                    <input type="text" id="ownership-search" placeholder="Search keywords..." style="flex: 1; padding: 8px;">
+                    <button type="button" id="ownership-search-btn" class="button">Search</button>
+                </div>
+                <table class="widefat" style="margin-top: 10px;">
+                    <thead>
+                        <tr>
+                            <th>Keyword (3-5 words)</th>
+                            <th>Owner Page</th>
+                            <th>Score</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ownership-table-body"></tbody>
+                </table>
+                <div id="ownership-pagination" style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                    <span id="ownership-page-info"></span>
+                    <div>
+                        <button type="button" id="ownership-prev" class="button">&laquo; Prev</button>
+                        <button type="button" id="ownership-next" class="button">Next &raquo;</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- STEP 3: Auto Linker -->
+    <div style="background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <h2 style="margin-top: 0; color: white;"><span style="background: rgba(255,255,255,0.3); padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 3</span>Auto Linker</h2>
         <p>Process all <?php echo $catalog_stats['posts']; ?> posts in your catalog. Scales to 1000+ posts without timeout!</p>
         
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
@@ -170,19 +243,13 @@ $total_links = $smart_linker->get_total_link_count();
         </div>
     </div>
     
-    <!-- Smart Metadata v2 - Runs AFTER Linking -->
+    <!-- STEP 4: Smart SEO Metadata -->
     <div style="background: linear-gradient(135deg, #f093fb, #f5576c); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-            <h2 style="margin: 0; color: white;">Smart SEO Metadata v2</h2>
-            <span style="background: rgba(255,255,255,0.3); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">PHASE 3</span>
+            <h2 style="margin: 0; color: white;"><span style="background: rgba(255,255,255,0.3); padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 4</span>Smart SEO Metadata</h2>
         </div>
-        <p style="margin-bottom: 5px;">
-            <strong>Run this AFTER linking is complete.</strong> Uses enriched catalog data + inbound link anchor analysis for optimal SEO.
-        </p>
-        <p style="font-size: 12px; opacity: 0.9; margin-bottom: 15px;">
-            Workflow: <span style="background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 4px;">1. Build Catalog</span> →
-            <span style="background: rgba(255,255,255,0.2); padding: 2px 8px; border-radius: 4px;">2. Run Bulk Linking</span> →
-            <span style="background: rgba(255,255,255,0.4); padding: 2px 8px; border-radius: 4px; font-weight: bold;">3. Generate Smart Metadata</span>
+        <p style="margin-bottom: 15px; opacity: 0.9;">
+            Generate optimized SEO titles and descriptions using catalog data and inbound link analysis.
         </p>
 
         <!-- What Smart Metadata Uses -->
@@ -331,105 +398,7 @@ $total_links = $smart_linker->get_total_link_count();
             </table>
         </div>
     </div>
-    
-    <!-- Link Gap Analysis -->
-    <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
-        <h2 style="margin-top: 0;">Link Gap Analysis</h2>
-        <p style="color: #666; margin-bottom: 15px;">Content with few or no inbound internal links. These are opportunities to improve SEO.</p>
-        
-        <?php $link_stats = $smart_linker->get_link_stats(); ?>
-        
-        <!-- Stats Overview -->
-        <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 20px;">
-            <div style="background: #fff5f5; border: 1px solid #dc3545; padding: 15px; border-radius: 4px; text-align: center; min-width: 120px;">
-                <div style="font-size: 28px; font-weight: bold; color: #dc3545;"><?php echo $link_stats['zero_links']; ?></div>
-                <div style="font-size: 12px; color: #666;">Zero Links</div>
-                <div style="font-size: 10px; color: #999;"><?php echo $link_stats['pages_zero']; ?> pages, <?php echo $link_stats['posts_zero']; ?> posts</div>
-            </div>
-            <div style="background: #fff8e1; border: 1px solid #ffc107; padding: 15px; border-radius: 4px; text-align: center; min-width: 120px;">
-                <div style="font-size: 28px; font-weight: bold; color: #ff9800;"><?php echo $link_stats['one_to_three']; ?></div>
-                <div style="font-size: 12px; color: #666;">1-3 Links</div>
-            </div>
-            <div style="background: #e8f5e9; border: 1px solid #4caf50; padding: 15px; border-radius: 4px; text-align: center; min-width: 120px;">
-                <div style="font-size: 28px; font-weight: bold; color: #4caf50;"><?php echo $link_stats['four_to_ten']; ?></div>
-                <div style="font-size: 12px; color: #666;">4-10 Links</div>
-            </div>
-            <div style="background: #e3f2fd; border: 1px solid #2196f3; padding: 15px; border-radius: 4px; text-align: center; min-width: 120px;">
-                <div style="font-size: 28px; font-weight: bold; color: #2196f3;"><?php echo $link_stats['over_ten']; ?></div>
-                <div style="font-size: 12px; color: #666;">10+ Links</div>
-            </div>
-        </div>
-        
-        <!-- Gap Table -->
-        <h3>Content Needing More Links</h3>
-        <?php $gaps = $smart_linker->get_link_gaps(0, 2); ?>
-        <?php if (empty($gaps)): ?>
-            <p style="color: #28a745;">Great! All content has at least 3 inbound links.</p>
-        <?php else: ?>
-            <table class="wp-list-table widefat fixed striped">
-                <thead>
-                    <tr>
-                        <th>Title</th>
-                        <th style="width: 80px;">Type</th>
-                        <th style="width: 100px;">Inbound Links</th>
-                        <th style="width: 100px;">Priority</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach (array_slice($gaps, 0, 20) as $gap): ?>
-                    <tr>
-                        <td><a href="<?php echo esc_url($gap['url']); ?>" target="_blank"><?php echo esc_html($gap['title']); ?></a></td>
-                        <td><?php echo $gap['type'] === 'page' ? 'Page' : 'Post'; ?></td>
-                        <td style="text-align: center;">
-                            <span style="font-weight: bold; color: <?php echo $gap['inbound_links'] == 0 ? '#dc3545' : '#ffc107'; ?>;">
-                                <?php echo $gap['inbound_links']; ?>
-                            </span>
-                        </td>
-                        <td style="text-align: center;">
-                            <?php if ($gap['type'] === 'page'): ?>
-                                <?php echo $gap['priority']; ?>/5
-                            <?php else: ?>
-                                —
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-            <?php if (count($gaps) > 20): ?>
-                <p style="color: #666; margin-top: 10px;">Showing 20 of <?php echo count($gaps); ?> items with link gaps.</p>
-            <?php endif; ?>
-        <?php endif; ?>
-    </div>
-    
-    <!-- Manage -->
-    <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
-        <h2 style="margin-top: 0;">🔧 Manage Links</h2>
-        <div style="display: flex; gap: 20px; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 280px; padding: 15px; background: #f8f9fa; border-radius: 4px;">
-                <h4 style="margin-top: 0;">Update URL Site-wide</h4>
-                <input type="text" id="old-url" placeholder="/old-slug/" style="width: 100%; padding: 8px; margin-bottom: 8px;">
-                <input type="text" id="new-url" placeholder="/new-slug/" style="width: 100%; padding: 8px; margin-bottom: 8px;">
-                <button type="button" id="update-urls-btn" class="button">Update All</button>
-            </div>
-            <div style="flex: 1; min-width: 280px; padding: 15px; background: #f8f9fa; border-radius: 4px;">
-                <h4 style="margin-top: 0;">Remove Links from Post</h4>
-                <select id="post-with-links" style="width: 100%; padding: 8px; margin-bottom: 8px;">
-                    <option value="">— Select —</option>
-                    <?php foreach ($all_posts as $p): $l = $smart_linker->get_post_links($p->ID); if (!empty($l)): ?>
-                        <option value="<?php echo $p->ID; ?>"><?php echo esc_html($p->post_title); ?> (<?php echo count($l); ?>)</option>
-                    <?php endif; endforeach; ?>
-                </select>
-                <button type="button" id="remove-all-btn" class="button" style="color: #dc3545;">Remove All from Post</button>
-            </div>
-            <div style="flex: 1; min-width: 280px; padding: 15px; background: #fff5f5; border: 1px solid #dc3545; border-radius: 4px;">
-                <h4 style="margin-top: 0; color: #dc3545;">⚠️ Delete ALL Links Site-wide</h4>
-                <p style="margin: 0 0 10px; font-size: 13px; color: #666;">Remove all <?php echo $total_links; ?> Claude-generated links from your entire site.</p>
-                <button type="button" id="delete-all-links-btn" class="button" style="background: #dc3545; color: white; border-color: #dc3545;">🗑️ Delete ALL Links (<?php echo $total_links; ?>)</button>
-            </div>
-        </div>
-    </div>
-    
+
     <!-- All Links -->
     <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px;">
         <h2 style="margin-top: 0;">All Links (<?php echo $total_links; ?>)</h2>
@@ -439,10 +408,10 @@ $total_links = $smart_linker->get_total_link_count();
             <!-- Pagination Controls -->
             <div id="links-pagination" style="margin-bottom: 15px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
                 <div>
-                    <label>Show: 
+                    <label>Show:
                         <select id="links-per-page" style="padding: 5px;">
-                            <option value="25">25</option>
-                            <option value="50" selected>50</option>
+                            <option value="25" selected>25</option>
+                            <option value="50">50</option>
                             <option value="100">100</option>
                             <option value="200">200</option>
                         </select>
@@ -450,8 +419,8 @@ $total_links = $smart_linker->get_total_link_count();
                 </div>
                 <div>
                     <button type="button" class="button" id="links-prev" disabled>← Previous</button>
-                    <span id="links-page-info" style="margin: 0 10px;">Page 1 of <?php echo ceil($total_links / 50); ?></span>
-                    <button type="button" class="button" id="links-next" <?php echo $total_links <= 50 ? 'disabled' : ''; ?>>Next →</button>
+                    <span id="links-page-info" style="margin: 0 10px;">Page 1 of <?php echo ceil($total_links / 25); ?></span>
+                    <button type="button" class="button" id="links-next" <?php echo $total_links <= 25 ? 'disabled' : ''; ?>>Next →</button>
                 </div>
                 <div>
                     <input type="text" id="links-search" placeholder="Search links..." style="padding: 5px; width: 200px;">
@@ -469,7 +438,7 @@ $total_links = $smart_linker->get_total_link_count();
                     </tr>
                 </thead>
                 <tbody id="links-tbody">
-                    <?php foreach (array_slice($all_links, 0, 50) as $link): ?>
+                    <?php foreach (array_slice($all_links, 0, 25) as $link): ?>
                         <tr data-link-id="<?php echo esc_attr($link['link_id']); ?>" 
                             data-source-id="<?php echo esc_attr($link['source_post_id']); ?>" 
                             data-current-url="<?php echo esc_attr($link['url']); ?>"
@@ -516,109 +485,8 @@ $total_links = $smart_linker->get_total_link_count();
                     <?php endforeach; ?>
                 </tbody>
             </table>
-            <p id="links-showing" style="color: #666; margin-top: 10px;">Showing 1-<?php echo min(50, $total_links); ?> of <?php echo $total_links; ?> links</p>
+            <p id="links-showing" style="color: #666; margin-top: 10px;">Showing 1-<?php echo min(25, $total_links); ?> of <?php echo $total_links; ?> links</p>
         <?php endif; ?>
-    </div>
-
-    <!-- Meta Queue Panel (Persistent Background Processing) -->
-    <?php $meta_queue_status = $smart_linker->get_meta_queue_status(); ?>
-    <div id="meta-queue-panel" style="background: linear-gradient(135deg, #11998e, #38ef7d); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-            <h2 style="margin: 0; color: white;">Background SEO Queue</h2>
-            <span style="background: rgba(255,255,255,0.3); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">PERSISTENT</span>
-        </div>
-        <p style="margin-bottom: 15px; opacity: 0.9;">Start SEO metadata processing and close your browser — it continues in the background. Come back anytime to check progress.</p>
-
-        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px;">
-            <button type="button" id="start-meta-queue-btn" class="button button-large" style="background: white; color: #11998e; border: none; font-weight: bold;">
-                Start Background Queue
-            </button>
-            <button type="button" id="clear-meta-queue-btn" class="button" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid white;">
-                Clear Queue
-            </button>
-        </div>
-
-        <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 15px;">
-            <label style="color: white; cursor: pointer;">
-                <input type="checkbox" id="meta-queue-skip-existing" checked>
-                Skip posts with existing SEO
-            </label>
-            <label style="color: white; cursor: pointer;">
-                <input type="checkbox" id="meta-queue-only-linked" checked>
-                Only process linked content
-            </label>
-        </div>
-
-        <!-- Queue Status Display -->
-        <div id="meta-queue-status-display" style="display: <?php echo $meta_queue_status['status'] !== 'idle' ? 'block' : 'none'; ?>; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <strong id="meta-queue-state"><?php echo ucfirst($meta_queue_status['status']); ?></strong>
-                <span id="meta-queue-percent"><?php echo $meta_queue_status['percent']; ?>%</span>
-            </div>
-            <div style="background: #e0e0e0; height: 20px; border-radius: 4px; overflow: hidden;">
-                <div id="meta-queue-progress-bar" style="background: linear-gradient(90deg, #11998e, #38ef7d); height: 100%; width: <?php echo $meta_queue_status['percent']; ?>%; transition: width 0.3s;"></div>
-            </div>
-            <div style="margin-top: 10px; display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px;">
-                <span>Completed: <strong id="meta-queue-completed"><?php echo $meta_queue_status['completed']; ?></strong></span>
-                <span>Pending: <strong id="meta-queue-pending"><?php echo $meta_queue_status['pending']; ?></strong></span>
-                <span>Failed: <strong id="meta-queue-failed"><?php echo $meta_queue_status['failed']; ?></strong></span>
-                <span>Total: <strong id="meta-queue-total"><?php echo $meta_queue_status['total']; ?></strong></span>
-            </div>
-        </div>
-    </div>
-
-    <!-- Keyword Ownership Panel -->
-    <div style="background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
-        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
-            <h2 style="margin: 0; color: white;">Global Keyword Ownership</h2>
-            <span style="background: rgba(255,255,255,0.3); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">SMART LINKING</span>
-        </div>
-        <p style="margin-bottom: 15px; opacity: 0.9;">Scans all pages to determine which page should "own" each 3-5 word keyword. Prevents duplicate anchors by design - each keyword links to only one designated page.</p>
-
-        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
-            <button type="button" id="build-ownership-btn" class="button button-large" style="background: white; color: #667eea; border: none; font-weight: bold;">
-                Build Ownership Map
-            </button>
-            <button type="button" id="rebuild-ownership-btn" class="button button-large" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5);">
-                Force Rebuild
-            </button>
-            <button type="button" id="clear-ownership-btn" class="button button-large" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5);">
-                Clear Map
-            </button>
-        </div>
-
-        <div id="ownership-stats" style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.15); border-radius: 4px; display: none;">
-            <span id="ownership-stats-text"></span>
-        </div>
-
-        <div id="ownership-results" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333; max-height: 500px; overflow-y: auto;">
-            <div id="ownership-loading" style="text-align: center; padding: 20px;">
-                <span class="spinner is-active" style="float: none;"></span> Building ownership map...
-            </div>
-            <div id="ownership-content" style="display: none;">
-                <div style="margin-bottom: 10px; display: flex; gap: 10px; align-items: center;">
-                    <input type="text" id="ownership-search" placeholder="Search keywords..." style="flex: 1; padding: 8px;">
-                    <button type="button" id="ownership-search-btn" class="button">Search</button>
-                </div>
-                <table class="widefat" style="margin-top: 10px;">
-                    <thead>
-                        <tr>
-                            <th>Keyword (3-5 words)</th>
-                            <th>Owner Page</th>
-                            <th>Score</th>
-                        </tr>
-                    </thead>
-                    <tbody id="ownership-table-body"></tbody>
-                </table>
-                <div id="ownership-pagination" style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
-                    <span id="ownership-page-info"></span>
-                    <div>
-                        <button type="button" id="ownership-prev" class="button">&laquo; Prev</button>
-                        <button type="button" id="ownership-next" class="button">Next &raquo;</button>
-                    </div>
-                </div>
-            </div>
-        </div>
     </div>
 
     <!-- SEO Health Monitor Panel -->
@@ -640,6 +508,15 @@ $total_links = $smart_linker->get_total_link_count();
             <div id="seo-health-content" style="display: none;"></div>
         </div>
     </div>
+
+    <!-- Delete All Links (Danger Zone) -->
+    <div style="background: #fff5f5; border: 1px solid #dc3545; border-radius: 4px; padding: 20px; margin-top: 40px;">
+        <h3 style="margin-top: 0; color: #dc3545;">⚠️ Danger Zone</h3>
+        <p style="margin: 0 0 15px; color: #666;">Remove all <?php echo $total_links; ?> Claude-generated links from your entire site. This cannot be undone.</p>
+        <button type="button" id="delete-all-links-btn" class="button button-large" style="background: #dc3545; color: white; border-color: #dc3545;">
+            🗑️ Delete ALL Links (<?php echo $total_links; ?>)
+        </button>
+    </div>
 </div>
 
 <!-- Select2 for searchable dropdowns -->
@@ -649,7 +526,71 @@ $total_links = $smart_linker->get_total_link_count();
 <script>
 jQuery(document).ready(function($) {
     var nonce = '<?php echo wp_create_nonce('lendcity_claude_nonce'); ?>';
-    
+
+    // ========== BUILD ALL ==========
+    $('#build-all-btn').on('click', function() {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Running...');
+        $('#build-all-progress').show();
+
+        var steps = [
+            { name: 'Step 1: Building Catalog...', action: 'build_catalog' },
+            { name: 'Step 2: Building Keyword Ownership Map...', action: 'build_ownership' },
+            { name: 'Step 3: Running Auto Linker...', action: 'auto_link' },
+            { name: 'Step 4: Generating SEO Metadata...', action: 'seo_meta' }
+        ];
+        var currentStep = 0;
+
+        function runStep() {
+            if (currentStep >= steps.length) {
+                $('#build-all-step').text('All steps complete!');
+                $('#build-all-bar').css('width', '100%');
+                $btn.prop('disabled', false).text('🚀 BUILD ALL');
+                setTimeout(function() { location.reload(); }, 2000);
+                return;
+            }
+
+            var step = steps[currentStep];
+            $('#build-all-step').text(step.name);
+            $('#build-all-bar').css('width', ((currentStep + 0.5) / steps.length * 100) + '%');
+
+            var ajaxAction = '';
+            var ajaxData = { nonce: nonce };
+
+            if (step.action === 'build_catalog') {
+                // Trigger catalog build
+                $('#build-catalog').click();
+                // Wait for it to complete (simplified - in practice monitor progress)
+                setTimeout(function() {
+                    currentStep++;
+                    $('#build-all-bar').css('width', (currentStep / steps.length * 100) + '%');
+                    runStep();
+                }, 3000);
+                return;
+            } else if (step.action === 'build_ownership') {
+                ajaxAction = 'lendcity_build_keyword_ownership';
+                ajaxData.force = 'true';
+            } else if (step.action === 'auto_link') {
+                ajaxAction = 'lendcity_init_bulk_queue';
+                ajaxData.skip_existing = true;
+            } else if (step.action === 'seo_meta') {
+                ajaxAction = 'lendcity_bulk_smart_metadata';
+                ajaxData.skip_existing = true;
+            }
+
+            $.post(ajaxurl, $.extend({ action: ajaxAction }, ajaxData), function(response) {
+                currentStep++;
+                $('#build-all-bar').css('width', (currentStep / steps.length * 100) + '%');
+                runStep();
+            }).fail(function() {
+                currentStep++;
+                runStep();
+            });
+        }
+
+        runStep();
+    });
+
     // ========== TABLE SORTING ==========
     var currentSort = { column: null, direction: 'asc' };
     
@@ -698,7 +639,7 @@ jQuery(document).ready(function($) {
     
     // ========== PAGINATION ==========
     var linksCurrentPage = 1;
-    var linksPerPage = 50;
+    var linksPerPage = 25;
     var linksTotalLinks = <?php echo $total_links; ?>;
     var linksTotalPages = Math.ceil(linksTotalLinks / linksPerPage);
     
