@@ -91,11 +91,6 @@ $total_links = $smart_linker->get_total_link_count();
                 <strong>Skip posts that already have links</strong>
                 <span style="opacity: 0.8; font-size: 12px;">(only process posts with 0 links)</span>
             </label>
-            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: white;">
-                <input type="checkbox" id="auto-update-metadata">
-                <strong>Auto-update metadata after linking</strong>
-                <span style="opacity: 0.8; font-size: 12px;">(uses link keywords for SEO title, description & tags)</span>
-            </label>
         </div>
         
         <p style="margin-top: 10px; font-size: 13px; opacity: 0.9;">

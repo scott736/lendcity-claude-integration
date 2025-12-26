@@ -1,9 +1,9 @@
 <?php
 /**
- * Plugin Name: LendCity Marketing
+ * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.2.2
+ * Version: 11.2.4
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -316,7 +316,7 @@ class LendCity_Claude_Integration {
         if ($catalog_count === 0) {
             ?>
             <div class="notice notice-info is-dismissible" id="lendcity-v11-notice">
-                <p><strong>LendCity Marketing v11.0 - Scalable Database Catalog</strong></p>
+                <p><strong>LendCity Tools v11.0 - Scalable Database Catalog</strong></p>
                 <p>This version features a new high-performance database-backed catalog with enriched metadata for smarter linking:</p>
                 <ul style="list-style: disc; margin-left: 20px;">
                     <li><strong>Topic Clusters</strong> - Group related content together</li>
@@ -334,8 +334,8 @@ class LendCity_Claude_Integration {
 
     public function add_admin_menu() {
         add_menu_page(
-            'LendCity Marketing',
-            'LendCity Marketing',
+            'LendCity Tools',
+            'LendCity Tools',
             'manage_options',
             'lendcity-claude',
             array($this, 'dashboard_page'),
