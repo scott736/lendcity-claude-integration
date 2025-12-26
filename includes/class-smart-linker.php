@@ -1198,12 +1198,34 @@ class LendCity_Smart_Linker {
             return array('success' => false, 'message' => 'Source not in catalog');
         }
 
+        // Dynamic link limits based on word count
+        $word_count = isset($source_entry['word_count']) ? intval($source_entry['word_count']) : 0;
+        if ($word_count == 0) {
+            // Fallback: estimate from content
+            $word_count = str_word_count(wp_strip_all_tags($source->post_content));
+        }
+
+        // Set limits based on article length
+        if ($word_count < 800) {
+            $max_total = 4;
+            $max_pages = 2;
+            $max_posts = 2;
+        } elseif ($word_count < 1500) {
+            $max_total = 7;
+            $max_pages = 3;
+            $max_posts = 4;
+        } else {
+            $max_total = 10;
+            $max_pages = 3;
+            $max_posts = 7;
+        }
+
         // Get existing links
         $existing_links = get_post_meta($source_id, $this->link_meta_key, true) ?: array();
         $current_link_count = count($existing_links);
 
-        if ($current_link_count >= 8) {
-            return array('success' => false, 'message' => 'Source already has 8 links');
+        if ($current_link_count >= $max_total) {
+            return array('success' => false, 'message' => 'Source already has ' . $max_total . ' links (max for ' . $word_count . ' words)');
         }
 
         // Get used anchors and linked URLs
@@ -1217,8 +1239,8 @@ class LendCity_Smart_Linker {
             if (!empty($link['is_page'])) $existing_page_links++;
         }
 
-        $page_slots = max(0, 3 - $existing_page_links);
-        $post_slots = max(0, 7 - ($current_link_count - $existing_page_links));
+        $page_slots = max(0, $max_pages - $existing_page_links);
+        $post_slots = max(0, $max_posts - ($current_link_count - $existing_page_links));
 
         if ($page_slots == 0 && $post_slots <= 0) {
             return array('success' => false, 'message' => 'No link slots available');
@@ -1302,9 +1324,9 @@ class LendCity_Smart_Linker {
                 continue;
             }
 
-            if ($is_page && $page_links_added >= 3) continue;
-            if (!$is_page && $post_links_added >= 7) continue;
-            if (count($links_created) + $current_link_count >= 10) break;
+            if ($is_page && $page_links_added >= $max_pages) continue;
+            if (!$is_page && $post_links_added >= $max_posts) continue;
+            if (count($links_created) + $current_link_count >= $max_total) break;
 
             $target_entry = $this->get_catalog_entry($target_id);
             if (!$target_entry) continue;
