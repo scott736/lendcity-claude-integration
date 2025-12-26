@@ -31,6 +31,7 @@ class LendCity_Smart_Linker {
     private $queue_status_option = 'lendcity_smart_linker_queue_status';
     private $meta_queue_option = 'lendcity_meta_queue';
     private $meta_queue_status_option = 'lendcity_meta_queue_status';
+    private $keyword_ownership_option = 'lendcity_keyword_ownership';
     private $catalog_cache = null;
     private $links_cache = null; // In-memory cache for get_all_site_links
 
@@ -833,8 +834,8 @@ class LendCity_Smart_Linker {
             $this->debug_log('Added post ' . $post_id . ' to catalog');
         }
 
-        // Create outgoing links
-        $result = $this->create_links_from_source($post_id);
+        // Create outgoing links using ownership map (faster, prevents duplicates)
+        $result = $this->create_links_using_ownership($post_id, true); // Falls back to API if needed
         $this->log('Auto-link result for post ' . $post_id . ' - ' .
             ($result['success'] ? 'Success: ' . ($result['links_created'] ?? 0) . ' links' : $result['message']));
 
@@ -1195,6 +1196,122 @@ class LendCity_Smart_Linker {
     // =========================================================================
     // INTELLIGENT LINKING (Uses Enriched Catalog Data)
     // =========================================================================
+
+    /**
+     * Create outgoing links using the Global Keyword Ownership map
+     * This is the preferred method - fast (no API calls) and prevents duplicates by design
+     *
+     * @param int $source_id The source post ID
+     * @param bool $fallback_to_api If true, falls back to Claude API if no owned keywords found
+     * @return array Result with links created
+     */
+    public function create_links_using_ownership($source_id, $fallback_to_api = true) {
+        $source = get_post($source_id);
+        if (!$source || $source->post_status !== 'publish') {
+            return array('success' => false, 'message' => 'Source post not found');
+        }
+
+        // Check if ownership map exists
+        $ownership_stats = $this->get_keyword_ownership_stats();
+        if (!$ownership_stats['has_map']) {
+            $this->debug_log("No ownership map - building first...");
+            $this->build_keyword_ownership_map();
+        }
+
+        // Get source content
+        $source_content = wp_strip_all_tags($source->post_content);
+
+        // Get existing links to avoid duplicates
+        $existing_links = get_post_meta($source_id, $this->link_meta_key, true) ?: array();
+        $used_anchors = array();
+        $linked_urls = array();
+
+        foreach ($existing_links as $link) {
+            $used_anchors[] = strtolower($link['anchor']);
+            $linked_urls[] = $link['url'];
+        }
+
+        // Dynamic link limits based on word count
+        $word_count = str_word_count($source_content);
+        if ($word_count < 800) {
+            $max_links = 4;
+        } elseif ($word_count < 1500) {
+            $max_links = 7;
+        } else {
+            $max_links = 10;
+        }
+
+        $available_slots = $max_links - count($existing_links);
+        if ($available_slots <= 0) {
+            return array('success' => false, 'message' => 'Max links reached');
+        }
+
+        // Find owned keywords in the source content
+        $matches = $this->find_owned_keywords_in_content($source_content, $source_id, $available_slots + 5);
+
+        if (empty($matches) && $fallback_to_api) {
+            $this->debug_log("No owned keywords found in post $source_id - falling back to API");
+            return $this->create_links_from_source($source_id);
+        }
+
+        if (empty($matches)) {
+            return array('success' => true, 'message' => 'No owned keywords found', 'links_created' => 0);
+        }
+
+        // Insert links for matched keywords
+        $links_created = array();
+        $errors = array();
+
+        foreach ($matches as $match) {
+            if (count($links_created) >= $available_slots) break;
+
+            $anchor = $match['anchor'];
+            $anchor_lower = strtolower($anchor);
+
+            // Skip if anchor already used
+            if (in_array($anchor_lower, $used_anchors)) {
+                continue;
+            }
+
+            // Skip if URL already linked
+            if (in_array($match['target_url'], $linked_urls)) {
+                continue;
+            }
+
+            // Get target info
+            $target_entry = $this->get_catalog_entry($match['target_post_id']);
+            $is_page = $target_entry ? $target_entry['is_page'] : false;
+
+            $result = $this->insert_link_in_post(
+                $source_id,
+                $anchor,
+                $match['target_url'],
+                $match['target_post_id'],
+                $is_page
+            );
+
+            if ($result['success']) {
+                $links_created[] = array(
+                    'target_id' => $match['target_post_id'],
+                    'anchor' => $anchor,
+                    'url' => $match['target_url']
+                );
+                $used_anchors[] = $anchor_lower;
+                $linked_urls[] = $match['target_url'];
+                $this->debug_log("Created ownership-based link: '$anchor' -> {$match['target_url']}");
+            } else {
+                $errors[] = $result['message'];
+            }
+        }
+
+        return array(
+            'success' => true,
+            'message' => 'Created ' . count($links_created) . ' links using ownership map',
+            'links_created' => count($links_created),
+            'links' => $links_created,
+            'errors' => $errors
+        );
+    }
 
     /**
      * Create outgoing links FROM a source post using intelligent matching
@@ -3589,6 +3706,339 @@ class LendCity_Smart_Linker {
             'post_id' => $post_id,
             'changes' => $changes,
             'new_seo' => $result
+        );
+    }
+
+    // =========================================================================
+    // GLOBAL KEYWORD OWNERSHIP SYSTEM
+    // =========================================================================
+    // Scans all pages once, determines which page should "own" each keyword,
+    // then uses this map for all linking decisions. Prevents duplicate anchors
+    // by design since each keyword only links to one designated page.
+
+    /**
+     * Build the global keyword ownership map from catalog data
+     * Uses existing good_anchor_phrases - no API calls needed
+     *
+     * Scoring algorithm for ownership:
+     * - is_pillar_content: +30 points (pillar pages are authoritative)
+     * - content_quality_score: 0-100 points
+     * - monetization_value * 5: 0-50 points (high-value pages priority)
+     * - link_gap_priority: 0-100 points (pages needing links get priority)
+     * - has_cta or has_lead_form: +10 points (conversion pages)
+     *
+     * @param bool $force_rebuild Force rebuild even if map exists
+     * @return array Ownership map with stats
+     */
+    public function build_keyword_ownership_map($force_rebuild = false) {
+        $existing = get_option($this->keyword_ownership_option, array());
+
+        if (!$force_rebuild && !empty($existing['map']) && !empty($existing['built_at'])) {
+            // Return existing if less than 24 hours old
+            $age = time() - strtotime($existing['built_at']);
+            if ($age < 86400) {
+                return $existing;
+            }
+        }
+
+        $this->debug_log("Building global keyword ownership map...");
+
+        // Get all catalog entries in batches to avoid memory issues
+        global $wpdb;
+        $batch_size = 100;
+        $offset = 0;
+
+        // keyword_normalized => array('post_id' => X, 'url' => Y, 'score' => Z, 'anchor' => original)
+        $keyword_map = array();
+        $total_keywords = 0;
+        $pages_processed = 0;
+
+        do {
+            $rows = $wpdb->get_results($wpdb->prepare(
+                "SELECT post_id, url, title, good_anchor_phrases, is_pillar_content,
+                        content_quality_score, monetization_value, link_gap_priority,
+                        has_cta, has_lead_form
+                 FROM {$this->table_name}
+                 ORDER BY post_id ASC
+                 LIMIT %d OFFSET %d",
+                $batch_size, $offset
+            ), ARRAY_A);
+
+            if (empty($rows)) {
+                break;
+            }
+
+            foreach ($rows as $row) {
+                $pages_processed++;
+                $post_id = intval($row['post_id']);
+                $url = $row['url'];
+
+                // Calculate page authority score
+                $score = 0;
+                $score += $row['is_pillar_content'] ? 30 : 0;
+                $score += intval($row['content_quality_score'] ?? 50);
+                $score += intval($row['monetization_value'] ?? 5) * 5;
+                $score += intval($row['link_gap_priority'] ?? 50);
+                $score += ($row['has_cta'] || $row['has_lead_form']) ? 10 : 0;
+
+                // Parse anchor phrases
+                $anchors = json_decode($row['good_anchor_phrases'] ?? '[]', true) ?: array();
+
+                foreach ($anchors as $anchor) {
+                    if (empty($anchor) || !is_string($anchor)) continue;
+
+                    // Normalize: lowercase, trim, single spaces
+                    $normalized = strtolower(trim(preg_replace('/\s+/', ' ', $anchor)));
+
+                    // Skip if too short (less than 3 words) or too long (more than 6 words)
+                    $word_count = str_word_count($normalized);
+                    if ($word_count < 3 || $word_count > 6) continue;
+
+                    $total_keywords++;
+
+                    // Check if this keyword already has an owner
+                    if (isset($keyword_map[$normalized])) {
+                        // Higher score wins ownership
+                        if ($score > $keyword_map[$normalized]['score']) {
+                            $keyword_map[$normalized] = array(
+                                'post_id' => $post_id,
+                                'url' => $url,
+                                'score' => $score,
+                                'anchor' => $anchor // Original case preserved
+                            );
+                        }
+                    } else {
+                        $keyword_map[$normalized] = array(
+                            'post_id' => $post_id,
+                            'url' => $url,
+                            'score' => $score,
+                            'anchor' => $anchor
+                        );
+                    }
+                }
+
+                // Memory cleanup
+                unset($anchors);
+            }
+
+            $offset += $batch_size;
+            unset($rows);
+
+        } while (true);
+
+        // Store the map
+        $ownership_data = array(
+            'map' => $keyword_map,
+            'built_at' => current_time('mysql'),
+            'stats' => array(
+                'total_keywords' => count($keyword_map),
+                'total_phrases_scanned' => $total_keywords,
+                'pages_processed' => $pages_processed
+            )
+        );
+
+        update_option($this->keyword_ownership_option, $ownership_data, false);
+
+        $this->debug_log("Keyword ownership map built: " . count($keyword_map) . " unique keywords from {$pages_processed} pages");
+
+        return $ownership_data;
+    }
+
+    /**
+     * Get the owner of a specific keyword/phrase
+     * Returns null if no owner found
+     *
+     * @param string $keyword The keyword to look up
+     * @return array|null Owner data or null
+     */
+    public function get_keyword_owner($keyword) {
+        $ownership = get_option($this->keyword_ownership_option, array());
+
+        if (empty($ownership['map'])) {
+            return null;
+        }
+
+        $normalized = strtolower(trim(preg_replace('/\s+/', ' ', $keyword)));
+
+        return $ownership['map'][$normalized] ?? null;
+    }
+
+    /**
+     * Find matching keywords in text content
+     * Returns keywords found in the text that have owners (excluding self)
+     *
+     * @param string $content The text to search
+     * @param int $exclude_post_id Post ID to exclude (don't link to self)
+     * @param int $limit Max keywords to return
+     * @return array Matching keywords with their owners
+     */
+    public function find_owned_keywords_in_content($content, $exclude_post_id = 0, $limit = 8) {
+        $ownership = get_option($this->keyword_ownership_option, array());
+
+        if (empty($ownership['map'])) {
+            return array();
+        }
+
+        $content_lower = strtolower($content);
+        $matches = array();
+
+        // Sort keywords by length (longer first) to match longer phrases before shorter ones
+        $keywords = $ownership['map'];
+        uksort($keywords, function($a, $b) {
+            return strlen($b) - strlen($a);
+        });
+
+        foreach ($keywords as $normalized => $owner) {
+            // Skip if this keyword points to the current post
+            if ($owner['post_id'] == $exclude_post_id) {
+                continue;
+            }
+
+            // Check if keyword exists in content (word boundary matching)
+            if (preg_match('/\b' . preg_quote($normalized, '/') . '\b/i', $content_lower)) {
+                $matches[] = array(
+                    'keyword' => $normalized,
+                    'anchor' => $owner['anchor'],
+                    'target_url' => $owner['url'],
+                    'target_post_id' => $owner['post_id'],
+                    'score' => $owner['score']
+                );
+
+                if (count($matches) >= $limit) {
+                    break;
+                }
+            }
+        }
+
+        return $matches;
+    }
+
+    /**
+     * Get keyword ownership statistics
+     *
+     * @return array Stats about the ownership map
+     */
+    public function get_keyword_ownership_stats() {
+        $ownership = get_option($this->keyword_ownership_option, array());
+
+        if (empty($ownership['map'])) {
+            return array(
+                'has_map' => false,
+                'total_keywords' => 0,
+                'pages_with_keywords' => 0,
+                'built_at' => null
+            );
+        }
+
+        // Count unique pages that own keywords
+        $pages = array();
+        foreach ($ownership['map'] as $data) {
+            $pages[$data['post_id']] = true;
+        }
+
+        return array(
+            'has_map' => true,
+            'total_keywords' => count($ownership['map']),
+            'pages_with_keywords' => count($pages),
+            'built_at' => $ownership['built_at'] ?? null,
+            'stats' => $ownership['stats'] ?? array()
+        );
+    }
+
+    /**
+     * Get keywords owned by a specific post
+     *
+     * @param int $post_id The post ID
+     * @return array Keywords owned by this post
+     */
+    public function get_keywords_for_post($post_id) {
+        $ownership = get_option($this->keyword_ownership_option, array());
+
+        if (empty($ownership['map'])) {
+            return array();
+        }
+
+        $post_keywords = array();
+        foreach ($ownership['map'] as $normalized => $data) {
+            if ($data['post_id'] == $post_id) {
+                $post_keywords[] = array(
+                    'keyword' => $normalized,
+                    'anchor' => $data['anchor'],
+                    'score' => $data['score']
+                );
+            }
+        }
+
+        // Sort by score descending
+        usort($post_keywords, function($a, $b) {
+            return $b['score'] - $a['score'];
+        });
+
+        return $post_keywords;
+    }
+
+    /**
+     * Clear the keyword ownership map
+     */
+    public function clear_keyword_ownership_map() {
+        delete_option($this->keyword_ownership_option);
+        $this->debug_log("Keyword ownership map cleared");
+    }
+
+    /**
+     * Get paginated view of keyword ownership for admin UI
+     *
+     * @param int $page Page number (1-based)
+     * @param int $per_page Items per page
+     * @param string $search Optional search term
+     * @return array Paginated data
+     */
+    public function get_keyword_ownership_paginated($page = 1, $per_page = 50, $search = '') {
+        $ownership = get_option($this->keyword_ownership_option, array());
+
+        if (empty($ownership['map'])) {
+            return array(
+                'items' => array(),
+                'total' => 0,
+                'page' => $page,
+                'per_page' => $per_page,
+                'total_pages' => 0
+            );
+        }
+
+        $items = array();
+        foreach ($ownership['map'] as $normalized => $data) {
+            // Apply search filter
+            if (!empty($search)) {
+                if (stripos($normalized, $search) === false && stripos($data['anchor'], $search) === false) {
+                    continue;
+                }
+            }
+
+            $items[] = array(
+                'keyword' => $normalized,
+                'anchor' => $data['anchor'],
+                'post_id' => $data['post_id'],
+                'url' => $data['url'],
+                'score' => $data['score']
+            );
+        }
+
+        // Sort by score descending
+        usort($items, function($a, $b) {
+            return $b['score'] - $a['score'];
+        });
+
+        $total = count($items);
+        $total_pages = ceil($total / $per_page);
+        $offset = ($page - 1) * $per_page;
+
+        return array(
+            'items' => array_slice($items, $offset, $per_page),
+            'total' => $total,
+            'page' => $page,
+            'per_page' => $per_page,
+            'total_pages' => $total_pages
         );
     }
 }

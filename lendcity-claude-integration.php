@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.4.5
+ * Version: 11.5.0
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.4.5');
+define('LENDCITY_CLAUDE_VERSION', '11.5.0');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -227,6 +227,12 @@ class LendCity_Claude_Integration {
         // SEO Health Monitor AJAX
         add_action('wp_ajax_lendcity_get_seo_health_issues', array($this, 'ajax_get_seo_health_issues'));
         add_action('wp_ajax_lendcity_auto_fix_seo', array($this, 'ajax_auto_fix_seo'));
+
+        // Keyword Ownership AJAX
+        add_action('wp_ajax_lendcity_build_keyword_ownership', array($this, 'ajax_build_keyword_ownership'));
+        add_action('wp_ajax_lendcity_get_keyword_ownership_stats', array($this, 'ajax_get_keyword_ownership_stats'));
+        add_action('wp_ajax_lendcity_get_keyword_ownership_list', array($this, 'ajax_get_keyword_ownership_list'));
+        add_action('wp_ajax_lendcity_clear_keyword_ownership', array($this, 'ajax_clear_keyword_ownership'));
 
         // Article Scheduler AJAX
         add_action('wp_ajax_lendcity_process_article', array($this, 'ajax_process_article'));
@@ -2778,6 +2784,78 @@ class LendCity_Claude_Integration {
         } else {
             wp_send_json_error($result['error']);
         }
+    }
+
+    // ==================== KEYWORD OWNERSHIP AJAX ====================
+
+    /**
+     * Build the keyword ownership map
+     */
+    public function ajax_build_keyword_ownership() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $force = isset($_POST['force']) && $_POST['force'] === 'true';
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->build_keyword_ownership_map($force);
+
+        wp_send_json_success(array(
+            'stats' => $result['stats'] ?? array(),
+            'built_at' => $result['built_at'] ?? null,
+            'total_keywords' => count($result['map'] ?? array())
+        ));
+    }
+
+    /**
+     * Get keyword ownership stats
+     */
+    public function ajax_get_keyword_ownership_stats() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $stats = $smart_linker->get_keyword_ownership_stats();
+
+        wp_send_json_success($stats);
+    }
+
+    /**
+     * Get paginated keyword ownership list
+     */
+    public function ajax_get_keyword_ownership_list() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $page = intval($_POST['page'] ?? 1);
+        $per_page = intval($_POST['per_page'] ?? 50);
+        $search = sanitize_text_field($_POST['search'] ?? '');
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->get_keyword_ownership_paginated($page, $per_page, $search);
+
+        wp_send_json_success($result);
+    }
+
+    /**
+     * Clear keyword ownership map
+     */
+    public function ajax_clear_keyword_ownership() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $smart_linker->clear_keyword_ownership_map();
+
+        wp_send_json_success(array('message' => 'Keyword ownership map cleared'));
     }
 
     // ==================== ARTICLE SCHEDULER AJAX ====================

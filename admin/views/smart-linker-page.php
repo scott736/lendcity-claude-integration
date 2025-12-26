@@ -567,6 +567,60 @@ $total_links = $smart_linker->get_total_link_count();
         </div>
     </div>
 
+    <!-- Keyword Ownership Panel -->
+    <div style="background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <h2 style="margin: 0; color: white;">Global Keyword Ownership</h2>
+            <span style="background: rgba(255,255,255,0.3); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">SMART LINKING</span>
+        </div>
+        <p style="margin-bottom: 15px; opacity: 0.9;">Scans all pages to determine which page should "own" each 3-5 word keyword. Prevents duplicate anchors by design - each keyword links to only one designated page.</p>
+
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+            <button type="button" id="build-ownership-btn" class="button button-large" style="background: white; color: #667eea; border: none; font-weight: bold;">
+                Build Ownership Map
+            </button>
+            <button type="button" id="rebuild-ownership-btn" class="button button-large" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5);">
+                Force Rebuild
+            </button>
+            <button type="button" id="clear-ownership-btn" class="button button-large" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5);">
+                Clear Map
+            </button>
+        </div>
+
+        <div id="ownership-stats" style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.15); border-radius: 4px; display: none;">
+            <span id="ownership-stats-text"></span>
+        </div>
+
+        <div id="ownership-results" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333; max-height: 500px; overflow-y: auto;">
+            <div id="ownership-loading" style="text-align: center; padding: 20px;">
+                <span class="spinner is-active" style="float: none;"></span> Building ownership map...
+            </div>
+            <div id="ownership-content" style="display: none;">
+                <div style="margin-bottom: 10px; display: flex; gap: 10px; align-items: center;">
+                    <input type="text" id="ownership-search" placeholder="Search keywords..." style="flex: 1; padding: 8px;">
+                    <button type="button" id="ownership-search-btn" class="button">Search</button>
+                </div>
+                <table class="widefat" style="margin-top: 10px;">
+                    <thead>
+                        <tr>
+                            <th>Keyword (3-5 words)</th>
+                            <th>Owner Page</th>
+                            <th>Score</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ownership-table-body"></tbody>
+                </table>
+                <div id="ownership-pagination" style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                    <span id="ownership-page-info"></span>
+                    <div>
+                        <button type="button" id="ownership-prev" class="button">&laquo; Prev</button>
+                        <button type="button" id="ownership-next" class="button">Next &raquo;</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- SEO Health Monitor Panel -->
     <div style="background: linear-gradient(135deg, #f093fb, #f5576c); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
@@ -1672,5 +1726,165 @@ jQuery(document).ready(function($) {
             $btn.prop('disabled', false).text('Auto Fix');
         });
     });
+
+    // ========== KEYWORD OWNERSHIP ==========
+    var ownershipPage = 1;
+    var ownershipSearch = '';
+
+    function loadOwnershipStats() {
+        $.post(ajaxurl, {
+            action: 'lendcity_get_keyword_ownership_stats',
+            nonce: nonce
+        }, function(response) {
+            if (response.success && response.data.has_map) {
+                var stats = response.data;
+                $('#ownership-stats').show();
+                $('#ownership-stats-text').html(
+                    '<strong>' + stats.total_keywords + '</strong> keywords assigned to <strong>' +
+                    stats.pages_with_keywords + '</strong> pages. Built: ' + (stats.built_at || 'Unknown')
+                );
+            } else {
+                $('#ownership-stats').hide();
+            }
+        });
+    }
+
+    function loadOwnershipList(page, search) {
+        ownershipPage = page || 1;
+        ownershipSearch = search || '';
+
+        $('#ownership-results').show();
+        $('#ownership-loading').show();
+        $('#ownership-content').hide();
+
+        $.post(ajaxurl, {
+            action: 'lendcity_get_keyword_ownership_list',
+            nonce: nonce,
+            page: ownershipPage,
+            per_page: 50,
+            search: ownershipSearch
+        }, function(response) {
+            $('#ownership-loading').hide();
+            $('#ownership-content').show();
+
+            if (response.success) {
+                var data = response.data;
+                var html = '';
+
+                if (data.items.length === 0) {
+                    html = '<tr><td colspan="3" style="text-align: center; padding: 20px;">No keywords found. Build the ownership map first.</td></tr>';
+                } else {
+                    data.items.forEach(function(item) {
+                        html += '<tr>';
+                        html += '<td><strong>' + escapeHtml(item.anchor) + '</strong></td>';
+                        html += '<td><a href="' + item.url + '" target="_blank">' + escapeHtml(item.url.replace(/^https?:\/\/[^\/]+/, '')) + '</a></td>';
+                        html += '<td>' + item.score + '</td>';
+                        html += '</tr>';
+                    });
+                }
+
+                $('#ownership-table-body').html(html);
+                $('#ownership-page-info').text('Page ' + data.page + ' of ' + data.total_pages + ' (' + data.total + ' keywords)');
+                $('#ownership-prev').prop('disabled', data.page <= 1);
+                $('#ownership-next').prop('disabled', data.page >= data.total_pages);
+
+                loadOwnershipStats();
+            }
+        }).fail(function() {
+            $('#ownership-loading').html('<p style="color: #dc3545;">Request failed. Please try again.</p>');
+        });
+    }
+
+    function escapeHtml(text) {
+        var div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    $('#build-ownership-btn').on('click', function() {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Building...');
+        $('#ownership-results').show();
+        $('#ownership-loading').show().html('<div style="text-align: center; padding: 20px;"><span class="spinner is-active" style="float: none;"></span> Building ownership map from catalog data...</div>');
+        $('#ownership-content').hide();
+
+        $.post(ajaxurl, {
+            action: 'lendcity_build_keyword_ownership',
+            nonce: nonce,
+            force: 'false'
+        }, function(response) {
+            $btn.prop('disabled', false).text('Build Ownership Map');
+            if (response.success) {
+                loadOwnershipList(1, '');
+            } else {
+                $('#ownership-loading').html('<p style="color: #dc3545;">Error: ' + response.data + '</p>');
+            }
+        }).fail(function() {
+            $btn.prop('disabled', false).text('Build Ownership Map');
+            $('#ownership-loading').html('<p style="color: #dc3545;">Request failed. Please try again.</p>');
+        });
+    });
+
+    $('#rebuild-ownership-btn').on('click', function() {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Rebuilding...');
+        $('#ownership-results').show();
+        $('#ownership-loading').show().html('<div style="text-align: center; padding: 20px;"><span class="spinner is-active" style="float: none;"></span> Force rebuilding ownership map...</div>');
+        $('#ownership-content').hide();
+
+        $.post(ajaxurl, {
+            action: 'lendcity_build_keyword_ownership',
+            nonce: nonce,
+            force: 'true'
+        }, function(response) {
+            $btn.prop('disabled', false).text('Force Rebuild');
+            if (response.success) {
+                loadOwnershipList(1, '');
+            } else {
+                $('#ownership-loading').html('<p style="color: #dc3545;">Error: ' + response.data + '</p>');
+            }
+        }).fail(function() {
+            $btn.prop('disabled', false).text('Force Rebuild');
+            $('#ownership-loading').html('<p style="color: #dc3545;">Request failed. Please try again.</p>');
+        });
+    });
+
+    $('#clear-ownership-btn').on('click', function() {
+        if (!confirm('Clear the keyword ownership map? You will need to rebuild it before auto-linking.')) return;
+
+        $.post(ajaxurl, {
+            action: 'lendcity_clear_keyword_ownership',
+            nonce: nonce
+        }, function(response) {
+            if (response.success) {
+                $('#ownership-stats').hide();
+                $('#ownership-results').hide();
+                alert('Keyword ownership map cleared.');
+            }
+        });
+    });
+
+    $('#ownership-search-btn').on('click', function() {
+        loadOwnershipList(1, $('#ownership-search').val());
+    });
+
+    $('#ownership-search').on('keypress', function(e) {
+        if (e.which === 13) {
+            loadOwnershipList(1, $(this).val());
+        }
+    });
+
+    $('#ownership-prev').on('click', function() {
+        if (ownershipPage > 1) {
+            loadOwnershipList(ownershipPage - 1, ownershipSearch);
+        }
+    });
+
+    $('#ownership-next').on('click', function() {
+        loadOwnershipList(ownershipPage + 1, ownershipSearch);
+    });
+
+    // Load stats on page load
+    loadOwnershipStats();
 });
 </script>
