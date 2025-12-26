@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Claude Integration
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.0.0
+ * Version: 11.1.0
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.0.0');
+define('LENDCITY_CLAUDE_VERSION', '11.1.0');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -178,6 +178,8 @@ class LendCity_Claude_Integration {
         add_action('wp_ajax_lendcity_get_all_content_ids', array($this, 'ajax_get_all_content_ids'));
         add_action('wp_ajax_lendcity_build_single_catalog', array($this, 'ajax_build_single_catalog'));
         add_action('wp_ajax_lendcity_build_catalog_batch', array($this, 'ajax_build_catalog_batch'));
+        add_action('wp_ajax_lendcity_build_parallel_catalog', array($this, 'ajax_build_parallel_catalog'));
+        add_action('wp_ajax_lendcity_update_link_counts', array($this, 'ajax_update_link_counts'));
         add_action('wp_ajax_lendcity_clear_catalog', array($this, 'ajax_clear_catalog'));
         add_action('wp_ajax_lendcity_create_links_to_target', array($this, 'ajax_create_links_to_target'));
         add_action('wp_ajax_lendcity_get_link_suggestions', array($this, 'ajax_get_link_suggestions'));
@@ -505,7 +507,54 @@ class LendCity_Claude_Integration {
             'results' => array_keys($entries)
         ));
     }
-    
+
+    /**
+     * Build catalog in PARALLEL - 3-5x faster using concurrent API calls
+     */
+    public function ajax_build_parallel_catalog() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        // Increase time limit for parallel processing
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(600);
+        }
+
+        $post_ids = isset($_POST['post_ids']) ? array_map('intval', $_POST['post_ids']) : array();
+        $concurrent = isset($_POST['concurrent']) ? min(5, max(1, intval($_POST['concurrent']))) : 3;
+
+        if (empty($post_ids)) {
+            wp_send_json_error('No post IDs provided');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $entries = $smart_linker->build_parallel_catalog($post_ids, $concurrent);
+
+        wp_send_json_success(array(
+            'processed' => count($post_ids),
+            'success' => count($entries),
+            'concurrent' => $concurrent,
+            'results' => array_keys($entries)
+        ));
+    }
+
+    /**
+     * Update link counts for all catalog entries
+     */
+    public function ajax_update_link_counts() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $smart_linker->update_link_counts();
+
+        wp_send_json_success(array('message' => 'Link counts updated'));
+    }
+
     /**
      * Clear the entire catalog
      */

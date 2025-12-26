@@ -36,8 +36,11 @@ class LendCity_Smart_Linker {
     private $keywords_meta_key = '_lendcity_target_keywords';
 
     // Database version for migrations
-    const DB_VERSION = '3.0';
+    const DB_VERSION = '4.0';
     const DB_VERSION_OPTION = 'lendcity_catalog_db_version';
+
+    // Parallel processing settings
+    private $parallel_batch_size = 5; // Posts per parallel request
 
     public function __construct() {
         global $wpdb;
@@ -81,7 +84,7 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Create the catalog table with proper indexes
+     * Create the catalog table with proper indexes - v4.0 SUPER SMART CATALOG
      */
     private function create_table() {
         global $wpdb;
@@ -101,6 +104,8 @@ class LendCity_Smart_Linker {
             entities JSON,
             content_themes JSON,
             good_anchor_phrases JSON,
+
+            -- Core Intelligence Fields (v3.0)
             reader_intent ENUM('educational','transactional','navigational') DEFAULT 'educational',
             difficulty_level ENUM('beginner','intermediate','advanced') DEFAULT 'intermediate',
             funnel_stage ENUM('awareness','consideration','decision') DEFAULT 'awareness',
@@ -109,7 +114,43 @@ class LendCity_Smart_Linker {
             is_pillar_content TINYINT(1) NOT NULL DEFAULT 0,
             word_count INT UNSIGNED DEFAULT 0,
             content_quality_score TINYINT UNSIGNED DEFAULT 50,
+
+            -- NEW: Seasonal/Evergreen (v4.0)
+            content_lifespan ENUM('evergreen','seasonal','time-sensitive','dated') DEFAULT 'evergreen',
+            publish_season VARCHAR(30) DEFAULT NULL,
+
+            -- NEW: Geographic Targeting (v4.0)
+            target_regions JSON,
+            target_cities JSON,
+
+            -- NEW: Audience Persona (v4.0)
+            target_persona ENUM('first-time-buyer','investor','realtor','refinancer','self-employed','general') DEFAULT 'general',
+
+            -- NEW: Freshness Tracking (v4.0)
+            content_last_updated DATE DEFAULT NULL,
+            freshness_score TINYINT UNSIGNED DEFAULT 100,
+
+            -- NEW: Link Velocity (v4.0)
+            inbound_link_count INT UNSIGNED DEFAULT 0,
+            outbound_link_count INT UNSIGNED DEFAULT 0,
+            link_gap_priority TINYINT UNSIGNED DEFAULT 50,
+
+            -- NEW: Conversion Signals (v4.0)
+            has_cta TINYINT(1) DEFAULT 0,
+            has_calculator TINYINT(1) DEFAULT 0,
+            has_lead_form TINYINT(1) DEFAULT 0,
+            monetization_value TINYINT UNSIGNED DEFAULT 5,
+
+            -- NEW: Content Format (v4.0)
+            content_format ENUM('guide','how-to','list','case-study','news','faq','comparison','calculator','landing-page','other') DEFAULT 'other',
+
+            -- NEW: Admin Overrides (v4.0)
+            must_link_to JSON,
+            never_link_to JSON,
+            preferred_anchors JSON,
+
             updated_at DATETIME NOT NULL,
+
             PRIMARY KEY (id),
             UNIQUE KEY idx_post_id (post_id),
             KEY idx_post_type (post_type),
@@ -119,6 +160,12 @@ class LendCity_Smart_Linker {
             KEY idx_funnel (funnel_stage),
             KEY idx_pillar (is_pillar_content),
             KEY idx_intent (reader_intent),
+            KEY idx_persona (target_persona),
+            KEY idx_lifespan (content_lifespan),
+            KEY idx_freshness (freshness_score),
+            KEY idx_monetization (monetization_value),
+            KEY idx_format (content_format),
+            KEY idx_link_gap (link_gap_priority),
             KEY idx_updated (updated_at),
             FULLTEXT idx_summary (summary),
             FULLTEXT idx_title (title)
@@ -183,7 +230,12 @@ class LendCity_Smart_Linker {
     public function insert_catalog_entry($post_id, $entry) {
         global $wpdb;
 
+        // Get post modified date for freshness
+        $post = get_post($post_id);
+        $last_modified = $post ? $post->post_modified : current_time('mysql');
+
         $data = array(
+            // Core fields
             'post_id' => intval($post_id),
             'post_type' => isset($entry['type']) ? $entry['type'] : 'post',
             'is_page' => isset($entry['is_page']) ? (int)$entry['is_page'] : 0,
@@ -195,6 +247,8 @@ class LendCity_Smart_Linker {
             'entities' => isset($entry['entities']) ? wp_json_encode($entry['entities']) : '[]',
             'content_themes' => isset($entry['content_themes']) ? wp_json_encode($entry['content_themes']) : '[]',
             'good_anchor_phrases' => isset($entry['good_anchor_phrases']) ? wp_json_encode($entry['good_anchor_phrases']) : '[]',
+
+            // v3.0 Intelligence fields
             'reader_intent' => isset($entry['reader_intent']) ? $entry['reader_intent'] : 'educational',
             'difficulty_level' => isset($entry['difficulty_level']) ? $entry['difficulty_level'] : 'intermediate',
             'funnel_stage' => isset($entry['funnel_stage']) ? $entry['funnel_stage'] : 'awareness',
@@ -203,6 +257,41 @@ class LendCity_Smart_Linker {
             'is_pillar_content' => isset($entry['is_pillar_content']) ? (int)$entry['is_pillar_content'] : 0,
             'word_count' => isset($entry['word_count']) ? intval($entry['word_count']) : 0,
             'content_quality_score' => isset($entry['content_quality_score']) ? intval($entry['content_quality_score']) : 50,
+
+            // v4.0 Seasonal/Evergreen
+            'content_lifespan' => isset($entry['content_lifespan']) ? $entry['content_lifespan'] : 'evergreen',
+            'publish_season' => isset($entry['publish_season']) ? $entry['publish_season'] : null,
+
+            // v4.0 Geographic
+            'target_regions' => isset($entry['target_regions']) ? wp_json_encode($entry['target_regions']) : '[]',
+            'target_cities' => isset($entry['target_cities']) ? wp_json_encode($entry['target_cities']) : '[]',
+
+            // v4.0 Persona
+            'target_persona' => isset($entry['target_persona']) ? $entry['target_persona'] : 'general',
+
+            // v4.0 Freshness
+            'content_last_updated' => date('Y-m-d', strtotime($last_modified)),
+            'freshness_score' => $this->calculate_freshness_score($last_modified),
+
+            // v4.0 Link Velocity (calculated separately)
+            'inbound_link_count' => isset($entry['inbound_link_count']) ? intval($entry['inbound_link_count']) : 0,
+            'outbound_link_count' => isset($entry['outbound_link_count']) ? intval($entry['outbound_link_count']) : 0,
+            'link_gap_priority' => isset($entry['link_gap_priority']) ? intval($entry['link_gap_priority']) : 50,
+
+            // v4.0 Conversion Signals
+            'has_cta' => isset($entry['has_cta']) ? (int)$entry['has_cta'] : 0,
+            'has_calculator' => isset($entry['has_calculator']) ? (int)$entry['has_calculator'] : 0,
+            'has_lead_form' => isset($entry['has_lead_form']) ? (int)$entry['has_lead_form'] : 0,
+            'monetization_value' => isset($entry['monetization_value']) ? intval($entry['monetization_value']) : 5,
+
+            // v4.0 Content Format
+            'content_format' => isset($entry['content_format']) ? $entry['content_format'] : 'other',
+
+            // v4.0 Admin Overrides
+            'must_link_to' => isset($entry['must_link_to']) ? wp_json_encode($entry['must_link_to']) : '[]',
+            'never_link_to' => isset($entry['never_link_to']) ? wp_json_encode($entry['never_link_to']) : '[]',
+            'preferred_anchors' => isset($entry['preferred_anchors']) ? wp_json_encode($entry['preferred_anchors']) : '[]',
+
             'updated_at' => isset($entry['updated_at']) ? $entry['updated_at'] : current_time('mysql')
         );
 
@@ -220,6 +309,20 @@ class LendCity_Smart_Linker {
 
         $this->clear_catalog_cache();
         return $result !== false;
+    }
+
+    /**
+     * Calculate freshness score based on last modified date (0-100)
+     */
+    private function calculate_freshness_score($last_modified) {
+        $days_old = (time() - strtotime($last_modified)) / 86400;
+
+        if ($days_old < 30) return 100;
+        if ($days_old < 90) return 85;
+        if ($days_old < 180) return 70;
+        if ($days_old < 365) return 50;
+        if ($days_old < 730) return 30;
+        return 10;
     }
 
     // =========================================================================
@@ -429,6 +532,7 @@ class LendCity_Smart_Linker {
      */
     private function hydrate_catalog_entry($row) {
         return array(
+            // Core fields
             'post_id' => intval($row['post_id']),
             'type' => $row['post_type'],
             'is_page' => (bool)$row['is_page'],
@@ -440,14 +544,51 @@ class LendCity_Smart_Linker {
             'entities' => json_decode($row['entities'], true) ?: array(),
             'content_themes' => json_decode($row['content_themes'], true) ?: array(),
             'good_anchor_phrases' => json_decode($row['good_anchor_phrases'], true) ?: array(),
-            'reader_intent' => $row['reader_intent'],
-            'difficulty_level' => $row['difficulty_level'],
-            'funnel_stage' => $row['funnel_stage'],
-            'topic_cluster' => $row['topic_cluster'],
-            'related_clusters' => json_decode($row['related_clusters'], true) ?: array(),
-            'is_pillar_content' => (bool)$row['is_pillar_content'],
-            'word_count' => intval($row['word_count']),
-            'content_quality_score' => intval($row['content_quality_score']),
+
+            // v3.0 Intelligence
+            'reader_intent' => $row['reader_intent'] ?? 'educational',
+            'difficulty_level' => $row['difficulty_level'] ?? 'intermediate',
+            'funnel_stage' => $row['funnel_stage'] ?? 'awareness',
+            'topic_cluster' => $row['topic_cluster'] ?? null,
+            'related_clusters' => json_decode($row['related_clusters'] ?? '[]', true) ?: array(),
+            'is_pillar_content' => (bool)($row['is_pillar_content'] ?? 0),
+            'word_count' => intval($row['word_count'] ?? 0),
+            'content_quality_score' => intval($row['content_quality_score'] ?? 50),
+
+            // v4.0 Seasonal/Evergreen
+            'content_lifespan' => $row['content_lifespan'] ?? 'evergreen',
+            'publish_season' => $row['publish_season'] ?? null,
+
+            // v4.0 Geographic
+            'target_regions' => json_decode($row['target_regions'] ?? '[]', true) ?: array(),
+            'target_cities' => json_decode($row['target_cities'] ?? '[]', true) ?: array(),
+
+            // v4.0 Persona
+            'target_persona' => $row['target_persona'] ?? 'general',
+
+            // v4.0 Freshness
+            'content_last_updated' => $row['content_last_updated'] ?? null,
+            'freshness_score' => intval($row['freshness_score'] ?? 100),
+
+            // v4.0 Link Velocity
+            'inbound_link_count' => intval($row['inbound_link_count'] ?? 0),
+            'outbound_link_count' => intval($row['outbound_link_count'] ?? 0),
+            'link_gap_priority' => intval($row['link_gap_priority'] ?? 50),
+
+            // v4.0 Conversion
+            'has_cta' => (bool)($row['has_cta'] ?? 0),
+            'has_calculator' => (bool)($row['has_calculator'] ?? 0),
+            'has_lead_form' => (bool)($row['has_lead_form'] ?? 0),
+            'monetization_value' => intval($row['monetization_value'] ?? 5),
+
+            // v4.0 Format
+            'content_format' => $row['content_format'] ?? 'other',
+
+            // v4.0 Admin Overrides
+            'must_link_to' => json_decode($row['must_link_to'] ?? '[]', true) ?: array(),
+            'never_link_to' => json_decode($row['never_link_to'] ?? '[]', true) ?: array(),
+            'preferred_anchors' => json_decode($row['preferred_anchors'] ?? '[]', true) ?: array(),
+
             'updated_at' => $row['updated_at']
         );
     }
@@ -752,25 +893,49 @@ class LendCity_Smart_Linker {
         $this->log('Successfully cataloged ' . $post->post_type . ' ' . $post_id . ' - ' . $post->post_title);
 
         return array(
+            // Core fields
             'post_id' => $post_id,
             'type' => $post->post_type,
             'is_page' => $is_page,
             'title' => $post->post_title,
             'url' => get_permalink($post_id),
-            'summary' => isset($data['summary']) ? $data['summary'] : '',
-            'main_topics' => isset($data['main_topics']) ? $data['main_topics'] : array(),
-            'semantic_keywords' => isset($data['semantic_keywords']) ? $data['semantic_keywords'] : array(),
-            'entities' => isset($data['entities']) ? $data['entities'] : array(),
-            'content_themes' => isset($data['content_themes']) ? $data['content_themes'] : array(),
-            'good_anchor_phrases' => isset($data['good_anchor_phrases']) ? $data['good_anchor_phrases'] : array(),
-            'reader_intent' => isset($data['reader_intent']) ? $data['reader_intent'] : 'educational',
-            'difficulty_level' => isset($data['difficulty_level']) ? $data['difficulty_level'] : 'intermediate',
-            'funnel_stage' => isset($data['funnel_stage']) ? $data['funnel_stage'] : 'awareness',
-            'topic_cluster' => isset($data['topic_cluster']) ? $data['topic_cluster'] : null,
-            'related_clusters' => isset($data['related_clusters']) ? $data['related_clusters'] : array(),
-            'is_pillar_content' => isset($data['is_pillar_content']) ? (bool)$data['is_pillar_content'] : false,
+            'summary' => $data['summary'] ?? '',
+            'main_topics' => $data['main_topics'] ?? array(),
+            'semantic_keywords' => $data['semantic_keywords'] ?? array(),
+            'entities' => $data['entities'] ?? array(),
+            'content_themes' => $data['content_themes'] ?? array(),
+            'good_anchor_phrases' => $data['good_anchor_phrases'] ?? array(),
+
+            // v3.0 Intelligence
+            'reader_intent' => $data['reader_intent'] ?? 'educational',
+            'difficulty_level' => $data['difficulty_level'] ?? 'intermediate',
+            'funnel_stage' => $data['funnel_stage'] ?? 'awareness',
+            'topic_cluster' => $data['topic_cluster'] ?? null,
+            'related_clusters' => $data['related_clusters'] ?? array(),
+            'is_pillar_content' => (bool)($data['is_pillar_content'] ?? false),
             'word_count' => $word_count,
-            'content_quality_score' => isset($data['content_quality_score']) ? intval($data['content_quality_score']) : 50,
+            'content_quality_score' => intval($data['content_quality_score'] ?? 50),
+
+            // v4.0 Seasonal/Evergreen
+            'content_lifespan' => $data['content_lifespan'] ?? 'evergreen',
+            'publish_season' => $data['publish_season'] ?? null,
+
+            // v4.0 Geographic
+            'target_regions' => $data['target_regions'] ?? array(),
+            'target_cities' => $data['target_cities'] ?? array(),
+
+            // v4.0 Persona
+            'target_persona' => $data['target_persona'] ?? 'general',
+
+            // v4.0 Conversion signals
+            'has_cta' => (bool)($data['has_cta'] ?? false),
+            'has_calculator' => (bool)($data['has_calculator'] ?? false),
+            'has_lead_form' => (bool)($data['has_lead_form'] ?? false),
+            'monetization_value' => intval($data['monetization_value'] ?? 5),
+
+            // v4.0 Content format
+            'content_format' => $data['content_format'] ?? 'other',
+
             'updated_at' => current_time('mysql')
         );
     }
@@ -779,35 +944,77 @@ class LendCity_Smart_Linker {
      * Build the enhanced catalog prompt for Claude
      */
     private function build_catalog_prompt($post, $content, $is_page) {
-        $prompt = "Analyze this " . ($is_page ? "SERVICE PAGE" : "blog post") . " for a Canadian mortgage/real estate investing website. Extract comprehensive metadata for internal linking.\n\n";
+        $prompt = "Analyze this " . ($is_page ? "SERVICE PAGE" : "blog post") . " for a Canadian mortgage/real estate investing website (LendCity). Extract COMPREHENSIVE metadata for intelligent internal linking.\n\n";
         $prompt .= "TITLE: " . $post->post_title . "\n";
-        $prompt .= "URL: " . get_permalink($post->ID) . "\n\n";
+        $prompt .= "URL: " . get_permalink($post->ID) . "\n";
+        $prompt .= "PUBLISHED: " . $post->post_date . "\n\n";
         $prompt .= "CONTENT:\n" . $content . "\n\n";
 
         if ($is_page) {
             $prompt .= "NOTE: This is a HIGH-VALUE SERVICE PAGE. Analyze based on title and URL if content is minimal.\n\n";
         }
 
-        $prompt .= "Respond with ONLY a JSON object containing ALL of these fields:\n";
+        $prompt .= "Respond with ONLY a JSON object containing ALL fields:\n";
         $prompt .= "{\n";
+
+        // Core content analysis
         $prompt .= '  "summary": "5-6 sentence comprehensive summary covering main points, key advice, unique insights, and target audience",' . "\n";
-        $prompt .= '  "main_topics": ["8-10 specific topics covered in the content"],' . "\n";
-        $prompt .= '  "semantic_keywords": ["12-15 related terms, synonyms, long-tail variations, and search phrases"],' . "\n";
-        $prompt .= '  "entities": ["all specific names, places, cities, provinces, products, programs, companies, regulations mentioned"],' . "\n";
-        $prompt .= '  "content_themes": ["broader themes: investment, financing, Canadian real estate, first-time buyers, etc"],' . "\n";
-        $prompt .= '  "good_anchor_phrases": ["10-12 natural 2-5 word phrases other posts could use to link here"],' . "\n";
+        $prompt .= '  "main_topics": ["8-10 specific topics covered"],' . "\n";
+        $prompt .= '  "semantic_keywords": ["12-15 related terms, synonyms, long-tail search phrases"],' . "\n";
+        $prompt .= '  "entities": ["names, cities, provinces, products, programs, companies, regulations mentioned"],' . "\n";
+        $prompt .= '  "content_themes": ["broader themes: investment, financing, Canadian real estate, etc"],' . "\n";
+        $prompt .= '  "good_anchor_phrases": ["10-12 natural 2-5 word phrases for linking TO this content"],' . "\n";
+
+        // v3.0 Intelligence
         $prompt .= '  "reader_intent": "educational|transactional|navigational",' . "\n";
         $prompt .= '  "difficulty_level": "beginner|intermediate|advanced",' . "\n";
         $prompt .= '  "funnel_stage": "awareness|consideration|decision",' . "\n";
-        $prompt .= '  "topic_cluster": "main-topic-slug (e.g., brrrr-strategy, mortgage-types, rental-investing, first-time-buyers)",' . "\n";
-        $prompt .= '  "related_clusters": ["other relevant topic clusters this content relates to"],' . "\n";
-        $prompt .= '  "is_pillar_content": true/false (is this comprehensive pillar content for its topic?),' . "\n";
-        $prompt .= '  "content_quality_score": 1-100 (based on depth, uniqueness, actionable advice)' . "\n";
+        $prompt .= '  "topic_cluster": "main-topic-slug",' . "\n";
+        $prompt .= '  "related_clusters": ["other relevant topic clusters"],' . "\n";
+        $prompt .= '  "is_pillar_content": true/false,' . "\n";
+        $prompt .= '  "content_quality_score": 1-100,' . "\n";
+
+        // v4.0 NEW: Seasonal/Evergreen
+        $prompt .= '  "content_lifespan": "evergreen|seasonal|time-sensitive|dated",' . "\n";
+        $prompt .= '  "publish_season": "spring-market|tax-season|year-end|rate-change|null",' . "\n";
+
+        // v4.0 NEW: Geographic
+        $prompt .= '  "target_regions": ["Ontario", "BC", "Alberta", "National", etc],' . "\n";
+        $prompt .= '  "target_cities": ["Toronto", "Vancouver", "Calgary", etc or empty if national],' . "\n";
+
+        // v4.0 NEW: Audience Persona
+        $prompt .= '  "target_persona": "first-time-buyer|investor|realtor|refinancer|self-employed|general",' . "\n";
+
+        // v4.0 NEW: Conversion signals
+        $prompt .= '  "has_cta": true/false (has clear call-to-action?),' . "\n";
+        $prompt .= '  "has_calculator": true/false (has mortgage/investment calculator?),' . "\n";
+        $prompt .= '  "has_lead_form": true/false (has contact form or lead capture?),' . "\n";
+        $prompt .= '  "monetization_value": 1-10 (business value: 10=service page, 1=general info),' . "\n";
+
+        // v4.0 NEW: Content format
+        $prompt .= '  "content_format": "guide|how-to|list|case-study|news|faq|comparison|calculator|landing-page|other"' . "\n";
+
         $prompt .= "}\n\n";
-        $prompt .= "TOPIC CLUSTER GUIDELINES:\n";
-        $prompt .= "- Use consistent slug format: lowercase, hyphens (e.g., 'brrrr-strategy', 'rental-properties', 'mortgage-approval')\n";
-        $prompt .= "- Common clusters: brrrr-strategy, rental-investing, mortgage-types, first-time-buyers, refinancing, investment-properties, market-analysis, tax-strategies, property-management\n";
-        $prompt .= "- Pillar content = comprehensive guides covering a topic thoroughly (usually 2000+ words)\n";
+
+        $prompt .= "=== GUIDELINES ===\n";
+        $prompt .= "TOPIC CLUSTERS (use consistent slugs):\n";
+        $prompt .= "- brrrr-strategy, rental-investing, mortgage-types, first-time-buyers\n";
+        $prompt .= "- refinancing, investment-properties, market-analysis, tax-strategies\n";
+        $prompt .= "- property-management, credit-repair, self-employed-mortgages, pre-approval\n";
+        $prompt .= "- down-payment, closing-costs, real-estate-agents, home-buying-process\n\n";
+
+        $prompt .= "PERSONA HINTS:\n";
+        $prompt .= "- first-time-buyer: FTHB, first home, saving for down payment, pre-approval\n";
+        $prompt .= "- investor: BRRRR, rental, ROI, cash flow, portfolio, multi-family\n";
+        $prompt .= "- realtor: agent tips, client advice, market insights for agents\n";
+        $prompt .= "- refinancer: refinance, equity, HELOC, debt consolidation\n";
+        $prompt .= "- self-employed: business owners, stated income, tax returns, BFS\n\n";
+
+        $prompt .= "LIFESPAN:\n";
+        $prompt .= "- evergreen: timeless advice (how to qualify, what is BRRRR)\n";
+        $prompt .= "- seasonal: spring market, tax season, year-end planning\n";
+        $prompt .= "- time-sensitive: rate announcements, policy changes (good for 1-2 years)\n";
+        $prompt .= "- dated: mentions specific years/rates that will become stale\n";
 
         return $prompt;
     }
@@ -1112,10 +1319,15 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Calculate relevance score between source and target
+     * Calculate relevance score between source and target using ALL v4.0 intelligence
+     * Higher score = better link match
      */
     private function calculate_relevance_score($source, $target) {
         $score = 0;
+
+        // =================================================================
+        // TOPIC & CLUSTER MATCHING (0-50 points)
+        // =================================================================
 
         // Same topic cluster = high relevance
         if ($source['topic_cluster'] && $source['topic_cluster'] === $target['topic_cluster']) {
@@ -1127,43 +1339,157 @@ class LendCity_Smart_Linker {
             $score += 20;
         }
 
-        // Matching funnel stage (adjacent stages are good for flow)
-        $funnel_order = array('awareness' => 1, 'consideration' => 2, 'decision' => 3);
-        $source_funnel = $funnel_order[$source['funnel_stage']] ?? 2;
-        $target_funnel = $funnel_order[$target['funnel_stage']] ?? 2;
-        if (abs($source_funnel - $target_funnel) <= 1) {
-            $score += 15;
-        }
-
-        // Matching difficulty (similar or slightly higher is good)
-        $diff_order = array('beginner' => 1, 'intermediate' => 2, 'advanced' => 3);
-        $source_diff = $diff_order[$source['difficulty_level']] ?? 2;
-        $target_diff = $diff_order[$target['difficulty_level']] ?? 2;
-        if ($target_diff >= $source_diff && $target_diff <= $source_diff + 1) {
-            $score += 10;
-        }
-
-        // Pillar content gets bonus
-        if (!empty($target['is_pillar_content'])) {
-            $score += 15;
-        }
-
-        // Quality score
-        $score += ($target['content_quality_score'] ?? 50) / 10;
-
         // Topic overlap
         $source_topics = $source['main_topics'] ?? array();
         $target_topics = $target['main_topics'] ?? array();
         $overlap = count(array_intersect($source_topics, $target_topics));
-        $score += $overlap * 5;
+        $score += min($overlap * 5, 25);
 
         // Keyword overlap
         $source_keywords = $source['semantic_keywords'] ?? array();
         $target_keywords = $target['semantic_keywords'] ?? array();
         $keyword_overlap = count(array_intersect($source_keywords, $target_keywords));
-        $score += $keyword_overlap * 3;
+        $score += min($keyword_overlap * 3, 15);
 
-        return $score;
+        // =================================================================
+        // FUNNEL PROGRESSION (0-25 points)
+        // =================================================================
+
+        $funnel_order = array('awareness' => 1, 'consideration' => 2, 'decision' => 3);
+        $source_funnel = $funnel_order[$source['funnel_stage']] ?? 2;
+        $target_funnel = $funnel_order[$target['funnel_stage']] ?? 2;
+
+        // Same stage or progressive flow (awareness→consideration→decision)
+        if ($target_funnel === $source_funnel) {
+            $score += 15; // Same stage - reinforcing content
+        } elseif ($target_funnel === $source_funnel + 1) {
+            $score += 25; // Next stage - advancing the reader!
+        } elseif (abs($source_funnel - $target_funnel) === 1) {
+            $score += 10; // Adjacent stage
+        }
+
+        // =================================================================
+        // DIFFICULTY PROGRESSION (0-15 points)
+        // =================================================================
+
+        $diff_order = array('beginner' => 1, 'intermediate' => 2, 'advanced' => 3);
+        $source_diff = $diff_order[$source['difficulty_level']] ?? 2;
+        $target_diff = $diff_order[$target['difficulty_level']] ?? 2;
+
+        if ($target_diff === $source_diff) {
+            $score += 10; // Same level
+        } elseif ($target_diff === $source_diff + 1) {
+            $score += 15; // Next level up - good progression
+        } elseif ($target_diff === $source_diff - 1) {
+            $score += 5; // Simpler content (for clarification)
+        }
+
+        // =================================================================
+        // PERSONA MATCHING (0-30 points) - NEW v4.0
+        // =================================================================
+
+        $source_persona = $source['target_persona'] ?? 'general';
+        $target_persona = $target['target_persona'] ?? 'general';
+
+        if ($source_persona === $target_persona && $source_persona !== 'general') {
+            $score += 30; // Same specific persona - very relevant!
+        } elseif ($source_persona === 'general' || $target_persona === 'general') {
+            $score += 10; // General content matches with anything
+        }
+        // Different specific personas = no bonus (avoid mixing investor/first-timer)
+
+        // =================================================================
+        // GEOGRAPHIC MATCHING (0-20 points) - NEW v4.0
+        // =================================================================
+
+        $source_regions = $source['target_regions'] ?? array();
+        $target_regions = $target['target_regions'] ?? array();
+
+        if (!empty($source_regions) && !empty($target_regions)) {
+            if (in_array('National', $source_regions) || in_array('National', $target_regions)) {
+                $score += 10; // National content is broadly relevant
+            }
+            $region_overlap = count(array_intersect($source_regions, $target_regions));
+            if ($region_overlap > 0) {
+                $score += min($region_overlap * 10, 20); // Same regions
+            }
+        } elseif (empty($source_regions) || empty($target_regions)) {
+            $score += 5; // One is unspecified, assume compatible
+        }
+
+        // =================================================================
+        // CONTENT LIFESPAN MATCHING (0-15 points) - NEW v4.0
+        // =================================================================
+
+        $source_lifespan = $source['content_lifespan'] ?? 'evergreen';
+        $target_lifespan = $target['content_lifespan'] ?? 'evergreen';
+
+        // Prefer linking evergreen to evergreen
+        if ($source_lifespan === 'evergreen' && $target_lifespan === 'evergreen') {
+            $score += 15;
+        } elseif ($source_lifespan === 'evergreen' && $target_lifespan === 'dated') {
+            $score -= 10; // Penalty: don't link evergreen to dated content
+        } elseif ($target_lifespan === 'evergreen') {
+            $score += 10; // Always good to link TO evergreen content
+        }
+
+        // =================================================================
+        // QUALITY & VALUE SIGNALS (0-30 points)
+        // =================================================================
+
+        // Pillar content gets bonus
+        if (!empty($target['is_pillar_content'])) {
+            $score += 20;
+        }
+
+        // Quality score (0-10 points)
+        $score += ($target['content_quality_score'] ?? 50) / 10;
+
+        // Freshness bonus (0-10 points) - NEW v4.0
+        $score += ($target['freshness_score'] ?? 50) / 10;
+
+        // Monetization value (0-10 points) - NEW v4.0
+        // Prioritize linking to money pages
+        $score += ($target['monetization_value'] ?? 5);
+
+        // =================================================================
+        // CONVERSION SIGNALS (0-15 points) - NEW v4.0
+        // =================================================================
+
+        // Bonus for linking to pages with CTAs/forms (conversion-focused)
+        if (!empty($target['has_cta'])) $score += 5;
+        if (!empty($target['has_calculator'])) $score += 5;
+        if (!empty($target['has_lead_form'])) $score += 5;
+
+        // =================================================================
+        // LINK GAP PRIORITY (0-15 points) - NEW v4.0
+        // =================================================================
+
+        // Prioritize content that needs links (orphaned content)
+        $gap = $target['link_gap_priority'] ?? 50;
+        $score += ($gap / 100) * 15;
+
+        // =================================================================
+        // CONTENT FORMAT MATCHING (0-10 points) - NEW v4.0
+        // =================================================================
+
+        $format_flow = array(
+            'how-to' => array('guide', 'calculator', 'comparison'),
+            'guide' => array('how-to', 'case-study', 'faq'),
+            'list' => array('guide', 'comparison', 'how-to'),
+            'case-study' => array('guide', 'how-to', 'landing-page'),
+            'faq' => array('guide', 'how-to', 'landing-page'),
+            'comparison' => array('calculator', 'landing-page', 'guide'),
+        );
+
+        $source_format = $source['content_format'] ?? 'other';
+        $target_format = $target['content_format'] ?? 'other';
+
+        if (isset($format_flow[$source_format]) && in_array($target_format, $format_flow[$source_format])) {
+            $score += 10; // Natural content format progression
+        }
+
+        return max(0, $score); // Never negative
     }
 
     /**
@@ -2328,5 +2654,251 @@ class LendCity_Smart_Linker {
         }
 
         return array('success' => true, 'text' => $body['content'][0]['text']);
+    }
+
+    // =========================================================================
+    // PARALLEL API PROCESSING (v4.0 - 3-5x FASTER catalog building)
+    // =========================================================================
+
+    /**
+     * Build catalog entries in PARALLEL using curl_multi
+     * Processes multiple posts simultaneously for much faster catalog building
+     *
+     * @param array $post_ids Array of post IDs to catalog
+     * @param int $concurrent Number of concurrent API requests (default 3)
+     * @return array Cataloged entries
+     */
+    public function build_parallel_catalog($post_ids, $concurrent = 3) {
+        if (empty($this->api_key)) {
+            $this->log('Parallel catalog: No API key');
+            return array();
+        }
+
+        $entries = array();
+        $chunks = array_chunk($post_ids, $concurrent);
+        $total_chunks = count($chunks);
+        $chunk_num = 0;
+
+        foreach ($chunks as $chunk) {
+            $chunk_num++;
+            $this->log("Parallel catalog: Processing chunk $chunk_num of $total_chunks (" . count($chunk) . " posts)");
+
+            $results = $this->call_claude_api_parallel($chunk);
+
+            foreach ($results as $post_id => $result) {
+                if ($result && isset($result['post_id'])) {
+                    $this->insert_catalog_entry($post_id, $result);
+                    $entries[$post_id] = $result;
+                }
+            }
+
+            // Small delay between chunks to avoid rate limits
+            if ($chunk_num < $total_chunks) {
+                usleep(500000); // 0.5 second
+            }
+        }
+
+        $this->log('Parallel catalog complete: ' . count($entries) . ' entries created');
+        return $entries;
+    }
+
+    /**
+     * Make parallel API calls using curl_multi
+     */
+    private function call_claude_api_parallel($post_ids) {
+        $multi_handle = curl_multi_init();
+        $curl_handles = array();
+        $posts_data = array();
+
+        // Prepare requests for each post
+        foreach ($post_ids as $post_id) {
+            $post = get_post($post_id);
+            if (!$post || $post->post_status !== 'publish') continue;
+
+            $content = wp_strip_all_tags($post->post_content);
+            if (strlen($content) < 100) {
+                $rendered = apply_filters('the_content', $post->post_content);
+                $content = wp_strip_all_tags($rendered);
+            }
+            if (strlen($content) < 50) {
+                $content = "Page title: " . $post->post_title . ". URL slug: " . $post->post_name;
+            }
+            if (strlen($content) > 12000) {
+                $content = substr($content, 0, 12000) . '...';
+            }
+
+            $is_page = ($post->post_type === 'page');
+            $prompt = $this->build_catalog_prompt($post, $content, $is_page);
+
+            $posts_data[$post_id] = array(
+                'post' => $post,
+                'is_page' => $is_page,
+                'word_count' => str_word_count($content)
+            );
+
+            // Create curl handle
+            $ch = curl_init();
+            curl_setopt_array($ch, array(
+                CURLOPT_URL => 'https://api.anthropic.com/v1/messages',
+                CURLOPT_POST => true,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 120,
+                CURLOPT_HTTPHEADER => array(
+                    'Content-Type: application/json',
+                    'x-api-key: ' . $this->api_key,
+                    'anthropic-version: 2023-06-01'
+                ),
+                CURLOPT_POSTFIELDS => json_encode(array(
+                    'model' => 'claude-sonnet-4-20250514',
+                    'max_tokens' => 1500,
+                    'messages' => array(array('role' => 'user', 'content' => $prompt))
+                ))
+            ));
+
+            curl_multi_add_handle($multi_handle, $ch);
+            $curl_handles[$post_id] = $ch;
+        }
+
+        // Execute all requests in parallel
+        $running = null;
+        do {
+            curl_multi_exec($multi_handle, $running);
+            curl_multi_select($multi_handle);
+        } while ($running > 0);
+
+        // Collect results
+        $results = array();
+        foreach ($curl_handles as $post_id => $ch) {
+            $response = curl_multi_getcontent($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+            curl_multi_remove_handle($multi_handle, $ch);
+            curl_close($ch);
+
+            if ($http_code !== 200) {
+                $this->log("Parallel API error for post $post_id: HTTP $http_code");
+                continue;
+            }
+
+            $body = json_decode($response, true);
+            if (!isset($body['content'][0]['text'])) {
+                $this->log("Parallel API invalid response for post $post_id");
+                continue;
+            }
+
+            $text = $body['content'][0]['text'];
+            $data = json_decode($text, true);
+            if (!$data && preg_match('/\{.*\}/s', $text, $matches)) {
+                $data = json_decode($matches[0], true);
+            }
+
+            if (!$data) {
+                $this->log("Failed to parse catalog JSON for post $post_id");
+                continue;
+            }
+
+            $pdata = $posts_data[$post_id];
+            $post = $pdata['post'];
+
+            $results[$post_id] = array(
+                // Core fields
+                'post_id' => $post_id,
+                'type' => $post->post_type,
+                'is_page' => $pdata['is_page'],
+                'title' => $post->post_title,
+                'url' => get_permalink($post_id),
+                'summary' => $data['summary'] ?? '',
+                'main_topics' => $data['main_topics'] ?? array(),
+                'semantic_keywords' => $data['semantic_keywords'] ?? array(),
+                'entities' => $data['entities'] ?? array(),
+                'content_themes' => $data['content_themes'] ?? array(),
+                'good_anchor_phrases' => $data['good_anchor_phrases'] ?? array(),
+
+                // v3.0 Intelligence
+                'reader_intent' => $data['reader_intent'] ?? 'educational',
+                'difficulty_level' => $data['difficulty_level'] ?? 'intermediate',
+                'funnel_stage' => $data['funnel_stage'] ?? 'awareness',
+                'topic_cluster' => $data['topic_cluster'] ?? null,
+                'related_clusters' => $data['related_clusters'] ?? array(),
+                'is_pillar_content' => (bool)($data['is_pillar_content'] ?? false),
+                'word_count' => $pdata['word_count'],
+                'content_quality_score' => intval($data['content_quality_score'] ?? 50),
+
+                // v4.0 NEW fields
+                'content_lifespan' => $data['content_lifespan'] ?? 'evergreen',
+                'publish_season' => $data['publish_season'] ?? null,
+                'target_regions' => $data['target_regions'] ?? array(),
+                'target_cities' => $data['target_cities'] ?? array(),
+                'target_persona' => $data['target_persona'] ?? 'general',
+                'has_cta' => (bool)($data['has_cta'] ?? false),
+                'has_calculator' => (bool)($data['has_calculator'] ?? false),
+                'has_lead_form' => (bool)($data['has_lead_form'] ?? false),
+                'monetization_value' => intval($data['monetization_value'] ?? 5),
+                'content_format' => $data['content_format'] ?? 'other',
+
+                'updated_at' => current_time('mysql')
+            );
+
+            $this->log("Parallel: Cataloged post $post_id - " . $post->post_title);
+        }
+
+        curl_multi_close($multi_handle);
+
+        return $results;
+    }
+
+    /**
+     * Update link counts for all catalog entries (run periodically)
+     */
+    public function update_link_counts() {
+        global $wpdb;
+
+        $all_links = $this->get_all_site_links(5000);
+
+        // Count inbound links per URL
+        $inbound_counts = array();
+        $outbound_counts = array();
+
+        foreach ($all_links as $link) {
+            $url = $link['url'];
+            $source_id = $link['source_post_id'];
+
+            if (!isset($inbound_counts[$url])) $inbound_counts[$url] = 0;
+            $inbound_counts[$url]++;
+
+            if (!isset($outbound_counts[$source_id])) $outbound_counts[$source_id] = 0;
+            $outbound_counts[$source_id]++;
+        }
+
+        // Update catalog entries
+        $catalog = $this->get_catalog();
+        foreach ($catalog as $post_id => $entry) {
+            $inbound = isset($inbound_counts[$entry['url']]) ? $inbound_counts[$entry['url']] : 0;
+            $outbound = isset($outbound_counts[$post_id]) ? $outbound_counts[$post_id] : 0;
+
+            // Calculate link gap priority (higher = needs more links)
+            $gap_priority = 50;
+            if ($inbound == 0) $gap_priority = 100;
+            elseif ($inbound <= 2) $gap_priority = 80;
+            elseif ($inbound <= 5) $gap_priority = 60;
+            elseif ($inbound > 10) $gap_priority = 20;
+
+            // Boost priority for high-value pages
+            if ($entry['is_page'] || $entry['monetization_value'] >= 8) {
+                $gap_priority = min(100, $gap_priority + 20);
+            }
+
+            $wpdb->update(
+                $this->table_name,
+                array(
+                    'inbound_link_count' => $inbound,
+                    'outbound_link_count' => $outbound,
+                    'link_gap_priority' => $gap_priority
+                ),
+                array('post_id' => $post_id)
+            );
+        }
+
+        $this->log('Updated link counts for ' . count($catalog) . ' catalog entries');
     }
 }
