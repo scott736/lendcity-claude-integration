@@ -3148,11 +3148,8 @@ class LendCity_Smart_Linker {
             }
         }
 
-        // 4. Get target keywords for pages
-        $target_keywords = '';
-        if ($post->post_type === 'page') {
-            $target_keywords = get_post_meta($post_id, $this->keywords_meta_key, true);
-        }
+        // 4. Get target keywords (for both pages AND posts)
+        $target_keywords = get_post_meta($post_id, $this->keywords_meta_key, true);
 
         // 5. Get existing site tags for consistency
         $existing_tags = get_tags(array('hide_empty' => false, 'number' => 100));
