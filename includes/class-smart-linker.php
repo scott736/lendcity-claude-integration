@@ -2842,7 +2842,7 @@ class LendCity_Smart_Linker {
                 'anthropic-version' => '2023-06-01'
             ),
             'body' => json_encode(array(
-                'model' => 'claude-sonnet-4-20250514',
+                'model' => 'claude-3-5-sonnet-20241022',
                 'max_tokens' => $max_tokens,
                 'messages' => array(array('role' => 'user', 'content' => $prompt))
             ))
@@ -2963,7 +2963,7 @@ class LendCity_Smart_Linker {
                     'anthropic-version: 2023-06-01'
                 ),
                 CURLOPT_POSTFIELDS => json_encode(array(
-                    'model' => 'claude-sonnet-4-20250514',
+                    'model' => 'claude-3-5-sonnet-20241022',
                     'max_tokens' => 1500,
                     'messages' => array(array('role' => 'user', 'content' => $prompt))
                 ))
