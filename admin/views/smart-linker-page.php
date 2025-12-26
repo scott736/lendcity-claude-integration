@@ -14,11 +14,14 @@ $catalog = $smart_linker->get_catalog();
 $catalog_stats = $smart_linker->get_catalog_stats();
 $catalog_built_at = get_option('lendcity_post_catalog_built_at', '');
 $auto_linking = get_option('lendcity_smart_linker_auto', 'yes');
+$auto_seo = get_option('lendcity_auto_seo_metadata', 'yes');
 $queue_status = $smart_linker->get_queue_status();
 
 if (isset($_POST['save_smart_linker_settings']) && check_admin_referer('smart_linker_settings')) {
     update_option('lendcity_smart_linker_auto', isset($_POST['auto_linking']) ? 'yes' : 'no');
+    update_option('lendcity_auto_seo_metadata', isset($_POST['auto_seo']) ? 'yes' : 'no');
     $auto_linking = get_option('lendcity_smart_linker_auto');
+    $auto_seo = get_option('lendcity_auto_seo_metadata');
     echo '<div class="notice notice-success"><p>Settings saved!</p></div>';
 }
 
@@ -34,20 +37,41 @@ $total_links = $smart_linker->get_total_link_count();
 
 <div class="wrap">
     <h1>Smart Linker <span style="font-size: 14px; color: #666;">AI-Powered Internal Linking</span></h1>
-    <p><strong>How it works:</strong> Select a target → Claude finds posts that should link TO it → Links inserted automatically.</p>
-    
+
+    <!-- BUILD ALL Button -->
+    <div style="background: linear-gradient(135deg, #11998e, #38ef7d); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
+            <div>
+                <h2 style="margin: 0; color: white;">Quick Start</h2>
+                <p style="margin: 5px 0 0; opacity: 0.9;">Run all 4 steps automatically: Catalog → Keyword Map → Auto-Link → SEO Meta</p>
+            </div>
+            <button type="button" id="build-all-btn" class="button button-large" style="background: white; color: #11998e; border: none; font-weight: bold; font-size: 16px; padding: 12px 30px;">
+                🚀 BUILD ALL
+            </button>
+        </div>
+        <div id="build-all-progress" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
+            <div style="margin-bottom: 10px;">
+                <strong id="build-all-step">Starting...</strong>
+            </div>
+            <div style="background: #e0e0e0; height: 20px; border-radius: 4px; overflow: hidden;">
+                <div id="build-all-bar" style="background: linear-gradient(90deg, #11998e, #38ef7d); height: 100%; width: 0%; transition: width 0.3s;"></div>
+            </div>
+        </div>
+    </div>
+
     <!-- Settings -->
     <div style="background: #f0f6fc; border: 1px solid #2271b1; border-radius: 4px; padding: 15px; margin-bottom: 20px;">
-        <form method="post" style="display: flex; align-items: center; gap: 20px;">
+        <form method="post" style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
             <?php wp_nonce_field('smart_linker_settings'); ?>
             <label><input type="checkbox" name="auto_linking" <?php checked($auto_linking, 'yes'); ?>> <strong>Auto-link new posts on publish</strong></label>
+            <label><input type="checkbox" name="auto_seo" <?php checked($auto_seo, 'yes'); ?>> <strong>Auto-generate SEO title/description</strong></label>
             <button type="submit" name="save_smart_linker_settings" class="button">Save</button>
         </form>
     </div>
-    
-    <!-- Catalog -->
+
+    <!-- STEP 1: Catalog -->
     <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
-        <h2 style="margin-top: 0;">Content Catalog</h2>
+        <h2 style="margin-top: 0;"><span style="background: #2271b1; color: white; padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 1</span>Build Catalog</h2>
         <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 15px;">
             <?php if (!empty($catalog)): ?>
                 <div style="background: #d4edda; padding: 15px; border-radius: 4px;">
@@ -68,10 +92,63 @@ $total_links = $smart_linker->get_total_link_count();
             <p id="catalog-status"></p>
         </div>
     </div>
-    
-    <!-- Trust AI / Bulk Processing -->
+
+    <!-- STEP 2: Keyword Ownership -->
     <div style="background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
-        <h2 style="margin-top: 0; color: white;">Bulk Link Everything</h2>
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <h2 style="margin: 0; color: white;"><span style="background: rgba(255,255,255,0.3); padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 2</span>Keyword Ownership Map</h2>
+        </div>
+        <p style="margin-bottom: 15px; opacity: 0.9;">Scans all pages to determine which page should "own" each 3-5 word keyword. Prevents duplicate anchors by design.</p>
+
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center;">
+            <button type="button" id="build-ownership-btn" class="button button-large" style="background: white; color: #667eea; border: none; font-weight: bold;">
+                Build Ownership Map
+            </button>
+            <button type="button" id="rebuild-ownership-btn" class="button button-large" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5);">
+                Force Rebuild
+            </button>
+            <button type="button" id="clear-ownership-btn" class="button button-large" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.5);">
+                Clear Map
+            </button>
+        </div>
+
+        <div id="ownership-stats" style="margin-top: 15px; padding: 10px; background: rgba(255,255,255,0.15); border-radius: 4px; display: none;">
+            <span id="ownership-stats-text"></span>
+        </div>
+
+        <div id="ownership-results" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333; max-height: 500px; overflow-y: auto;">
+            <div id="ownership-loading" style="text-align: center; padding: 20px;">
+                <span class="spinner is-active" style="float: none;"></span> Building ownership map...
+            </div>
+            <div id="ownership-content" style="display: none;">
+                <div style="margin-bottom: 10px; display: flex; gap: 10px; align-items: center;">
+                    <input type="text" id="ownership-search" placeholder="Search keywords..." style="flex: 1; padding: 8px;">
+                    <button type="button" id="ownership-search-btn" class="button">Search</button>
+                </div>
+                <table class="widefat" style="margin-top: 10px;">
+                    <thead>
+                        <tr>
+                            <th>Keyword (3-5 words)</th>
+                            <th>Owner Page</th>
+                            <th>Score</th>
+                        </tr>
+                    </thead>
+                    <tbody id="ownership-table-body"></tbody>
+                </table>
+                <div id="ownership-pagination" style="margin-top: 10px; display: flex; justify-content: space-between; align-items: center;">
+                    <span id="ownership-page-info"></span>
+                    <div>
+                        <button type="button" id="ownership-prev" class="button">&laquo; Prev</button>
+                        <button type="button" id="ownership-next" class="button">Next &raquo;</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- STEP 3: Auto Linker -->
+    <div style="background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <h2 style="margin-top: 0; color: white;"><span style="background: rgba(255,255,255,0.3); padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 3</span>Auto Linker</h2>
         <p>Process all <?php echo $catalog_stats['posts']; ?> posts in your catalog. Scales to 1000+ posts without timeout!</p>
         
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
@@ -90,11 +167,6 @@ $total_links = $smart_linker->get_total_link_count();
                 <input type="checkbox" id="skip-posts-with-links" checked>
                 <strong>Skip posts that already have links</strong>
                 <span style="opacity: 0.8; font-size: 12px;">(only process posts with 0 links)</span>
-            </label>
-            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: white;">
-                <input type="checkbox" id="auto-update-metadata">
-                <strong>Auto-update metadata after linking</strong>
-                <span style="opacity: 0.8; font-size: 12px;">(uses link keywords for SEO title, description & tags)</span>
             </label>
         </div>
         
@@ -171,15 +243,30 @@ $total_links = $smart_linker->get_total_link_count();
         </div>
     </div>
     
-    <!-- Generate Metadata from Links -->
-    <div style="background: linear-gradient(135deg, #11998e, #38ef7d); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
-        <h2 style="margin-top: 0; color: white;">📝 Generate SEO Metadata</h2>
-        <p>Generate SEO titles, descriptions, and tags. Uses link keywords if available, or manually enter keywords, or analyze content directly.</p>
-        
+    <!-- STEP 4: Smart SEO Metadata -->
+    <div style="background: linear-gradient(135deg, #f093fb, #f5576c); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <h2 style="margin: 0; color: white;"><span style="background: rgba(255,255,255,0.3); padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 4</span>Smart SEO Metadata</h2>
+        </div>
+        <p style="margin-bottom: 15px; opacity: 0.9;">
+            Generate optimized SEO titles and descriptions using catalog data and inbound link analysis.
+        </p>
+
+        <!-- What Smart Metadata Uses -->
+        <div style="background: rgba(255,255,255,0.15); padding: 12px 15px; border-radius: 4px; margin-bottom: 15px; font-size: 13px;">
+            <strong>Smart Metadata analyzes:</strong>
+            <ul style="margin: 8px 0 0; padding-left: 20px;">
+                <li><strong>Inbound Link Anchors</strong> — How other content links TO this page (reveals search intent)</li>
+                <li><strong>Catalog Data</strong> — Topic clusters, funnel stage, persona, semantic keywords</li>
+                <li><strong>Content Format</strong> — Guide, comparison, calculator, etc. for appropriate title style</li>
+                <li><strong>Geographic Targeting</strong> — Canadian regions/cities for local SEO</li>
+            </ul>
+        </div>
+
         <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end;">
             <div style="flex: 1; min-width: 300px;">
                 <label><strong>Select Post/Page:</strong></label>
-                <select id="metadata-post-select" style="width: 100%; padding: 10px; margin-top: 5px; color: #333;">
+                <select id="smart-metadata-post-select" style="width: 100%; padding: 10px; margin-top: 5px; color: #333;">
                     <option value="">— Select post/page —</option>
                     <?php foreach ($all_posts as $p): ?>
                         <option value="<?php echo $p->ID; ?>"><?php echo esc_html($p->post_title); ?></option>
@@ -189,86 +276,77 @@ $total_links = $smart_linker->get_total_link_count();
                     <?php endforeach; ?>
                 </select>
             </div>
-            <button type="button" id="generate-single-metadata-btn" class="button button-large" style="background: white; color: #11998e; border: none; font-weight: bold;">
-                Generate Metadata
+            <button type="button" id="generate-smart-metadata-btn" class="button button-large" style="background: white; color: #f5576c; border: none; font-weight: bold;">
+                Generate Smart Metadata
             </button>
-            <button type="button" id="generate-all-metadata-btn" class="button button-large" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid white;">
-                Generate for All Linked Content
+            <button type="button" id="bulk-smart-metadata-btn" class="button button-large" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid white;">
+                Bulk Generate for All Linked Content
             </button>
         </div>
-        
-        <!-- Manual Keywords Option -->
-        <div id="manual-keywords-section" style="margin-top: 15px; background: rgba(255,255,255,0.15); padding: 15px; border-radius: 4px;">
-            <label style="display: block; margin-bottom: 8px;"><strong>Manual Keywords (optional):</strong></label>
-            <input type="text" id="manual-keywords-input" placeholder="e.g., investment property, mortgage rates, Canadian real estate" style="width: 100%; padding: 10px; border-radius: 4px; border: none; color: #333;">
-            <p style="margin: 8px 0 0; font-size: 12px; opacity: 0.9;">
-                Leave empty to use link keywords (if available) or analyze content directly. Enter comma-separated keywords to guide metadata generation.
-            </p>
+        <div style="margin-top: 10px;">
+            <label style="color: white; cursor: pointer;">
+                <input type="checkbox" id="skip-existing-meta" checked style="margin-right: 5px;">
+                <strong>Skip posts with existing SEO title/description</strong>
+                <span style="opacity: 0.8;">(only process posts missing metadata)</span>
+            </label>
         </div>
-        
-        <div id="metadata-result" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
-            <h4 style="margin-top: 0;">✅ Metadata Updated</h4>
-            <p id="metadata-source" style="font-size: 12px; color: #666; margin-bottom: 10px;"></p>
+
+        <!-- Smart Metadata Result -->
+        <div id="smart-metadata-result" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
+            <h4 style="margin-top: 0;">Smart Metadata Generated</h4>
+            <div id="smart-metadata-sources" style="font-size: 12px; color: #666; margin-bottom: 10px; padding: 8px; background: #f5f5f5; border-radius: 4px;">
+                <strong>Data Sources Used:</strong>
+                <span id="smart-meta-catalog-badge" style="display: inline-block; margin-left: 8px; padding: 2px 6px; border-radius: 3px; font-size: 11px;"></span>
+                <span id="smart-meta-inbound-badge" style="display: inline-block; margin-left: 4px; padding: 2px 6px; border-radius: 3px; font-size: 11px;"></span>
+                <span id="smart-meta-outbound-badge" style="display: inline-block; margin-left: 4px; padding: 2px 6px; border-radius: 3px; font-size: 11px;"></span>
+            </div>
+            <div id="smart-meta-reasoning" style="display: none; font-size: 12px; color: #666; margin-bottom: 10px; padding: 8px; background: #e8f4ff; border-radius: 4px; border-left: 3px solid #2271b1;">
+                <strong>AI Reasoning:</strong> <span id="smart-meta-reasoning-text"></span>
+            </div>
             <table style="width: 100%; border-collapse: collapse;">
                 <tr style="border-bottom: 1px solid #ddd;">
-                    <th style="text-align: left; padding: 8px; width: 120px;"></th>
+                    <th style="text-align: left; padding: 8px; width: 140px;"></th>
                     <th style="text-align: left; padding: 8px; color: #999;">Before</th>
                     <th style="text-align: left; padding: 8px; color: #28a745;">After</th>
                 </tr>
                 <tr style="border-bottom: 1px solid #eee;">
                     <td style="padding: 8px; font-weight: bold;">SEO Title</td>
-                    <td style="padding: 8px; color: #999;"><span id="meta-title-before">—</span></td>
-                    <td style="padding: 8px; color: #28a745;"><span id="meta-title-after"></span></td>
+                    <td style="padding: 8px; color: #999;"><span id="smart-meta-title-before">—</span></td>
+                    <td style="padding: 8px; color: #28a745;"><span id="smart-meta-title-after"></span></td>
                 </tr>
                 <tr style="border-bottom: 1px solid #eee;">
                     <td style="padding: 8px; font-weight: bold;">Description</td>
-                    <td style="padding: 8px; color: #999;"><span id="meta-desc-before">—</span></td>
-                    <td style="padding: 8px; color: #28a745;"><span id="meta-desc-after"></span></td>
+                    <td style="padding: 8px; color: #999;"><span id="smart-meta-desc-before">—</span></td>
+                    <td style="padding: 8px; color: #28a745;"><span id="smart-meta-desc-after"></span></td>
+                </tr>
+                <tr style="border-bottom: 1px solid #eee;">
+                    <td style="padding: 8px; font-weight: bold;">Focus Keyphrase</td>
+                    <td style="padding: 8px; color: #999;"><span id="smart-meta-keyphrase-before">—</span></td>
+                    <td style="padding: 8px; color: #28a745;"><span id="smart-meta-keyphrase-after"></span></td>
                 </tr>
                 <tr>
                     <td style="padding: 8px; font-weight: bold;">Tags</td>
-                    <td style="padding: 8px; color: #999;"><span id="meta-tags-before">—</span></td>
-                    <td style="padding: 8px; color: #28a745;"><span id="meta-tags-after"></span></td>
+                    <td style="padding: 8px; color: #999;"><span id="smart-meta-tags-before">—</span></td>
+                    <td style="padding: 8px; color: #28a745;"><span id="smart-meta-tags-after"></span></td>
                 </tr>
             </table>
-            <p style="color: #28a745; margin: 10px 0 0; font-size: 13px;">✓ Saved to SEOPress automatically</p>
+            <p style="color: #28a745; margin: 10px 0 0; font-size: 13px;">Saved to SEOPress automatically</p>
         </div>
-        
-        <div id="metadata-bulk-progress" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
+
+        <!-- Bulk Progress -->
+        <div id="smart-metadata-bulk-progress" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <strong id="smart-bulk-state">Processing...</strong>
+                <button type="button" id="smart-bulk-stop" class="button" style="color: #dc3545;">Stop</button>
+            </div>
             <div style="background: #e0e0e0; height: 20px; border-radius: 4px; overflow: hidden;">
-                <div id="metadata-bulk-bar" style="background: #11998e; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                <div id="smart-metadata-bulk-bar" style="background: linear-gradient(90deg, #f093fb, #f5576c); height: 100%; width: 0%; transition: width 0.3s;"></div>
             </div>
-            <p id="metadata-bulk-status" style="margin: 10px 0 0;">Processing...</p>
-            <div id="metadata-bulk-log" style="margin-top: 10px; max-height: 200px; overflow-y: auto; font-size: 12px; font-family: monospace;"></div>
+            <p id="smart-metadata-bulk-status" style="margin: 10px 0 0;">Initializing...</p>
+            <div id="smart-metadata-bulk-log" style="margin-top: 10px; max-height: 200px; overflow-y: auto; font-size: 12px; font-family: monospace;"></div>
         </div>
     </div>
-    
-    <!-- Manual Link Creation -->
-    <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
-        <h2 style="margin-top: 0;">Create Links to Target</h2>
-        <div style="display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end;">
-            <div style="flex: 1; min-width: 300px;">
-                <label><strong>Target (receive links):</strong></label>
-                <select id="target-select" style="width: 100%; padding: 10px; margin-top: 5px;">
-                    <option value="">— Select target —</option>
-                    <optgroup label="Pages">
-                        <?php foreach ($all_pages as $p): ?><option value="<?php echo $p->ID; ?>"><?php echo esc_html($p->post_title); ?></option><?php endforeach; ?>
-                    </optgroup>
-                    <optgroup label="Posts">
-                        <?php foreach (array_slice($all_posts, 0, 100) as $p): ?><option value="<?php echo $p->ID; ?>"><?php echo esc_html($p->post_title); ?></option><?php endforeach; ?>
-                    </optgroup>
-                </select>
-            </div>
-            <div>
-                <label><strong>Max links:</strong></label>
-                <select id="max-links" style="padding: 10px; margin-top: 5px;"><option value="5" selected>5</option><option value="10">10</option></select>
-            </div>
-            <button type="button" id="create-links-btn" class="button button-primary button-large" <?php echo empty($catalog) ? 'disabled' : ''; ?>>Find & Create Links</button>
-        </div>
-        <div id="link-progress" style="display: none; margin-top: 15px; padding: 15px; background: #f0f6fc; border-radius: 4px;">Finding posts...</div>
-        <div id="link-result" style="display: none; margin-top: 15px;"></div>
-    </div>
-    
+
     <!-- SEO Settings: Priority Pages & Keywords -->
     <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
         <h2 style="margin-top: 0;">SEO Settings: Priority Pages & Keywords</h2>
@@ -320,105 +398,7 @@ $total_links = $smart_linker->get_total_link_count();
             </table>
         </div>
     </div>
-    
-    <!-- Link Gap Analysis -->
-    <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
-        <h2 style="margin-top: 0;">Link Gap Analysis</h2>
-        <p style="color: #666; margin-bottom: 15px;">Content with few or no inbound internal links. These are opportunities to improve SEO.</p>
-        
-        <?php $link_stats = $smart_linker->get_link_stats(); ?>
-        
-        <!-- Stats Overview -->
-        <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 20px;">
-            <div style="background: #fff5f5; border: 1px solid #dc3545; padding: 15px; border-radius: 4px; text-align: center; min-width: 120px;">
-                <div style="font-size: 28px; font-weight: bold; color: #dc3545;"><?php echo $link_stats['zero_links']; ?></div>
-                <div style="font-size: 12px; color: #666;">Zero Links</div>
-                <div style="font-size: 10px; color: #999;"><?php echo $link_stats['pages_zero']; ?> pages, <?php echo $link_stats['posts_zero']; ?> posts</div>
-            </div>
-            <div style="background: #fff8e1; border: 1px solid #ffc107; padding: 15px; border-radius: 4px; text-align: center; min-width: 120px;">
-                <div style="font-size: 28px; font-weight: bold; color: #ff9800;"><?php echo $link_stats['one_to_three']; ?></div>
-                <div style="font-size: 12px; color: #666;">1-3 Links</div>
-            </div>
-            <div style="background: #e8f5e9; border: 1px solid #4caf50; padding: 15px; border-radius: 4px; text-align: center; min-width: 120px;">
-                <div style="font-size: 28px; font-weight: bold; color: #4caf50;"><?php echo $link_stats['four_to_ten']; ?></div>
-                <div style="font-size: 12px; color: #666;">4-10 Links</div>
-            </div>
-            <div style="background: #e3f2fd; border: 1px solid #2196f3; padding: 15px; border-radius: 4px; text-align: center; min-width: 120px;">
-                <div style="font-size: 28px; font-weight: bold; color: #2196f3;"><?php echo $link_stats['over_ten']; ?></div>
-                <div style="font-size: 12px; color: #666;">10+ Links</div>
-            </div>
-        </div>
-        
-        <!-- Gap Table -->
-        <h3>Content Needing More Links</h3>
-        <?php $gaps = $smart_linker->get_link_gaps(0, 2); ?>
-        <?php if (empty($gaps)): ?>
-            <p style="color: #28a745;">Great! All content has at least 3 inbound links.</p>
-        <?php else: ?>
-            <table class="wp-list-table widefat fixed striped">
-                <thead>
-                    <tr>
-                        <th>Title</th>
-                        <th style="width: 80px;">Type</th>
-                        <th style="width: 100px;">Inbound Links</th>
-                        <th style="width: 100px;">Priority</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    <?php foreach (array_slice($gaps, 0, 20) as $gap): ?>
-                    <tr>
-                        <td><a href="<?php echo esc_url($gap['url']); ?>" target="_blank"><?php echo esc_html($gap['title']); ?></a></td>
-                        <td><?php echo $gap['type'] === 'page' ? 'Page' : 'Post'; ?></td>
-                        <td style="text-align: center;">
-                            <span style="font-weight: bold; color: <?php echo $gap['inbound_links'] == 0 ? '#dc3545' : '#ffc107'; ?>;">
-                                <?php echo $gap['inbound_links']; ?>
-                            </span>
-                        </td>
-                        <td style="text-align: center;">
-                            <?php if ($gap['type'] === 'page'): ?>
-                                <?php echo $gap['priority']; ?>/5
-                            <?php else: ?>
-                                —
-                            <?php endif; ?>
-                        </td>
-                    </tr>
-                    <?php endforeach; ?>
-                </tbody>
-            </table>
-            <?php if (count($gaps) > 20): ?>
-                <p style="color: #666; margin-top: 10px;">Showing 20 of <?php echo count($gaps); ?> items with link gaps.</p>
-            <?php endif; ?>
-        <?php endif; ?>
-    </div>
-    
-    <!-- Manage -->
-    <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
-        <h2 style="margin-top: 0;">🔧 Manage Links</h2>
-        <div style="display: flex; gap: 20px; flex-wrap: wrap;">
-            <div style="flex: 1; min-width: 280px; padding: 15px; background: #f8f9fa; border-radius: 4px;">
-                <h4 style="margin-top: 0;">Update URL Site-wide</h4>
-                <input type="text" id="old-url" placeholder="/old-slug/" style="width: 100%; padding: 8px; margin-bottom: 8px;">
-                <input type="text" id="new-url" placeholder="/new-slug/" style="width: 100%; padding: 8px; margin-bottom: 8px;">
-                <button type="button" id="update-urls-btn" class="button">Update All</button>
-            </div>
-            <div style="flex: 1; min-width: 280px; padding: 15px; background: #f8f9fa; border-radius: 4px;">
-                <h4 style="margin-top: 0;">Remove Links from Post</h4>
-                <select id="post-with-links" style="width: 100%; padding: 8px; margin-bottom: 8px;">
-                    <option value="">— Select —</option>
-                    <?php foreach ($all_posts as $p): $l = $smart_linker->get_post_links($p->ID); if (!empty($l)): ?>
-                        <option value="<?php echo $p->ID; ?>"><?php echo esc_html($p->post_title); ?> (<?php echo count($l); ?>)</option>
-                    <?php endif; endforeach; ?>
-                </select>
-                <button type="button" id="remove-all-btn" class="button" style="color: #dc3545;">Remove All from Post</button>
-            </div>
-            <div style="flex: 1; min-width: 280px; padding: 15px; background: #fff5f5; border: 1px solid #dc3545; border-radius: 4px;">
-                <h4 style="margin-top: 0; color: #dc3545;">⚠️ Delete ALL Links Site-wide</h4>
-                <p style="margin: 0 0 10px; font-size: 13px; color: #666;">Remove all <?php echo $total_links; ?> Claude-generated links from your entire site.</p>
-                <button type="button" id="delete-all-links-btn" class="button" style="background: #dc3545; color: white; border-color: #dc3545;">🗑️ Delete ALL Links (<?php echo $total_links; ?>)</button>
-            </div>
-        </div>
-    </div>
-    
+
     <!-- All Links -->
     <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px;">
         <h2 style="margin-top: 0;">All Links (<?php echo $total_links; ?>)</h2>
@@ -428,10 +408,10 @@ $total_links = $smart_linker->get_total_link_count();
             <!-- Pagination Controls -->
             <div id="links-pagination" style="margin-bottom: 15px; display: flex; align-items: center; gap: 15px; flex-wrap: wrap;">
                 <div>
-                    <label>Show: 
+                    <label>Show:
                         <select id="links-per-page" style="padding: 5px;">
-                            <option value="25">25</option>
-                            <option value="50" selected>50</option>
+                            <option value="25" selected>25</option>
+                            <option value="50">50</option>
                             <option value="100">100</option>
                             <option value="200">200</option>
                         </select>
@@ -439,8 +419,8 @@ $total_links = $smart_linker->get_total_link_count();
                 </div>
                 <div>
                     <button type="button" class="button" id="links-prev" disabled>← Previous</button>
-                    <span id="links-page-info" style="margin: 0 10px;">Page 1 of <?php echo ceil($total_links / 50); ?></span>
-                    <button type="button" class="button" id="links-next" <?php echo $total_links <= 50 ? 'disabled' : ''; ?>>Next →</button>
+                    <span id="links-page-info" style="margin: 0 10px;">Page 1 of <?php echo ceil($total_links / 25); ?></span>
+                    <button type="button" class="button" id="links-next" <?php echo $total_links <= 25 ? 'disabled' : ''; ?>>Next →</button>
                 </div>
                 <div>
                     <input type="text" id="links-search" placeholder="Search links..." style="padding: 5px; width: 200px;">
@@ -458,7 +438,7 @@ $total_links = $smart_linker->get_total_link_count();
                     </tr>
                 </thead>
                 <tbody id="links-tbody">
-                    <?php foreach (array_slice($all_links, 0, 50) as $link): ?>
+                    <?php foreach (array_slice($all_links, 0, 25) as $link): ?>
                         <tr data-link-id="<?php echo esc_attr($link['link_id']); ?>" 
                             data-source-id="<?php echo esc_attr($link['source_post_id']); ?>" 
                             data-current-url="<?php echo esc_attr($link['url']); ?>"
@@ -505,8 +485,37 @@ $total_links = $smart_linker->get_total_link_count();
                     <?php endforeach; ?>
                 </tbody>
             </table>
-            <p id="links-showing" style="color: #666; margin-top: 10px;">Showing 1-<?php echo min(50, $total_links); ?> of <?php echo $total_links; ?> links</p>
+            <p id="links-showing" style="color: #666; margin-top: 10px;">Showing 1-<?php echo min(25, $total_links); ?> of <?php echo $total_links; ?> links</p>
         <?php endif; ?>
+    </div>
+
+    <!-- SEO Health Monitor Panel -->
+    <div style="background: linear-gradient(135deg, #f093fb, #f5576c); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <h2 style="margin: 0; color: white;">SEO Health Monitor</h2>
+            <span style="background: rgba(255,255,255,0.3); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">AI ALERTS</span>
+        </div>
+        <p style="margin-bottom: 15px; opacity: 0.9;">Detects when SEO metadata should be updated based on inbound link patterns. Posts with high-frequency anchors missing from titles are flagged.</p>
+
+        <button type="button" id="scan-seo-health-btn" class="button button-large" style="background: white; color: #f5576c; border: none; font-weight: bold;">
+            Scan for SEO Issues
+        </button>
+
+        <div id="seo-health-results" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333; max-height: 400px; overflow-y: auto;">
+            <div id="seo-health-loading" style="text-align: center; padding: 20px;">
+                <span class="spinner is-active" style="float: none;"></span> Analyzing...
+            </div>
+            <div id="seo-health-content" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- Delete All Links (Danger Zone) -->
+    <div style="background: #fff5f5; border: 1px solid #dc3545; border-radius: 4px; padding: 20px; margin-top: 40px;">
+        <h3 style="margin-top: 0; color: #dc3545;">⚠️ Danger Zone</h3>
+        <p style="margin: 0 0 15px; color: #666;">Remove all <?php echo $total_links; ?> Claude-generated links from your entire site. This cannot be undone.</p>
+        <button type="button" id="delete-all-links-btn" class="button button-large" style="background: #dc3545; color: white; border-color: #dc3545;">
+            🗑️ Delete ALL Links (<?php echo $total_links; ?>)
+        </button>
     </div>
 </div>
 
@@ -517,7 +526,71 @@ $total_links = $smart_linker->get_total_link_count();
 <script>
 jQuery(document).ready(function($) {
     var nonce = '<?php echo wp_create_nonce('lendcity_claude_nonce'); ?>';
-    
+
+    // ========== BUILD ALL ==========
+    $('#build-all-btn').on('click', function() {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Running...');
+        $('#build-all-progress').show();
+
+        var steps = [
+            { name: 'Step 1: Building Catalog...', action: 'build_catalog' },
+            { name: 'Step 2: Building Keyword Ownership Map...', action: 'build_ownership' },
+            { name: 'Step 3: Running Auto Linker...', action: 'auto_link' },
+            { name: 'Step 4: Generating SEO Metadata...', action: 'seo_meta' }
+        ];
+        var currentStep = 0;
+
+        function runStep() {
+            if (currentStep >= steps.length) {
+                $('#build-all-step').text('All steps complete!');
+                $('#build-all-bar').css('width', '100%');
+                $btn.prop('disabled', false).text('🚀 BUILD ALL');
+                setTimeout(function() { location.reload(); }, 2000);
+                return;
+            }
+
+            var step = steps[currentStep];
+            $('#build-all-step').text(step.name);
+            $('#build-all-bar').css('width', ((currentStep + 0.5) / steps.length * 100) + '%');
+
+            var ajaxAction = '';
+            var ajaxData = { nonce: nonce };
+
+            if (step.action === 'build_catalog') {
+                // Trigger catalog build
+                $('#build-catalog').click();
+                // Wait for it to complete (simplified - in practice monitor progress)
+                setTimeout(function() {
+                    currentStep++;
+                    $('#build-all-bar').css('width', (currentStep / steps.length * 100) + '%');
+                    runStep();
+                }, 3000);
+                return;
+            } else if (step.action === 'build_ownership') {
+                ajaxAction = 'lendcity_build_keyword_ownership';
+                ajaxData.force = 'true';
+            } else if (step.action === 'auto_link') {
+                ajaxAction = 'lendcity_init_bulk_queue';
+                ajaxData.skip_existing = true;
+            } else if (step.action === 'seo_meta') {
+                ajaxAction = 'lendcity_bulk_smart_metadata';
+                ajaxData.skip_existing = true;
+            }
+
+            $.post(ajaxurl, $.extend({ action: ajaxAction }, ajaxData), function(response) {
+                currentStep++;
+                $('#build-all-bar').css('width', (currentStep / steps.length * 100) + '%');
+                runStep();
+            }).fail(function() {
+                currentStep++;
+                runStep();
+            });
+        }
+
+        runStep();
+    });
+
     // ========== TABLE SORTING ==========
     var currentSort = { column: null, direction: 'asc' };
     
@@ -566,7 +639,7 @@ jQuery(document).ready(function($) {
     
     // ========== PAGINATION ==========
     var linksCurrentPage = 1;
-    var linksPerPage = 50;
+    var linksPerPage = 25;
     var linksTotalLinks = <?php echo $total_links; ?>;
     var linksTotalPages = Math.ceil(linksTotalLinks / linksPerPage);
     
@@ -1061,34 +1134,6 @@ jQuery(document).ready(function($) {
         $.post(ajaxurl, {action: 'lendcity_clear_link_queue', nonce: nonce}, function() { location.reload(); });
     });
     
-    // Create Links to Target
-    $('#create-links-btn').on('click', function() {
-        var targetId = $('#target-select').val();
-        var maxLinks = $('#max-links').val();
-        if (!targetId) { alert('Select a target'); return; }
-        
-        var $btn = $(this).prop('disabled', true);
-        $('#link-progress').show().text('Finding posts that should link to this target...');
-        $('#link-result').hide();
-        
-        $.post(ajaxurl, {action: 'lendcity_create_links_to_target', nonce: nonce, target_id: targetId, max_links: maxLinks}, function(r) {
-            $('#link-progress').hide();
-            $btn.prop('disabled', false);
-            
-            if (r.success) {
-                var html = '<div style="background: #d4edda; padding: 15px; border-radius: 4px;">';
-                html += '<strong>✅ Created ' + r.data.links_created + ' links to "' + r.data.target_title + '"</strong><ul>';
-                r.data.links.forEach(function(l) {
-                    html += '<li>"' + l.anchor + '" in <em>' + l.source_title + '</em></li>';
-                });
-                html += '</ul></div>';
-                $('#link-result').html(html).show();
-            } else {
-                $('#link-result').html('<div style="background: #f8d7da; padding: 15px; border-radius: 4px;">Error: ' + r.data + '</div>').show();
-            }
-        });
-    });
-    
     // Update URLs
     $('#update-urls-btn').on('click', function() {
         var oldUrl = $('#old-url').val(), newUrl = $('#new-url').val();
@@ -1258,140 +1303,529 @@ jQuery(document).ready(function($) {
             $btn.text('Save').prop('disabled', false);
         });
     });
-    
-    // ========== METADATA FROM LINKS ==========
-    
-    // Generate metadata for single post/page
-    $('#generate-single-metadata-btn').on('click', function() {
-        var postId = $('#metadata-post-select').val();
+
+    // ========== SMART METADATA v2 ==========
+
+    // Generate smart metadata for single post
+    $('#generate-smart-metadata-btn').on('click', function() {
+        var postId = $('#smart-metadata-post-select').val();
         if (!postId) {
             alert('Please select a post or page first');
             return;
         }
-        
+
         var $btn = $(this).prop('disabled', true).text('Generating...');
-        $('#metadata-result').hide();
-        
-        var manualKeywords = $('#manual-keywords-input').val().trim();
-        
+        $('#smart-metadata-result').hide();
+
         $.post(ajaxurl, {
-            action: 'lendcity_generate_metadata_from_links',
+            action: 'lendcity_generate_smart_metadata',
             nonce: nonce,
-            post_id: postId,
-            manual_keywords: manualKeywords
+            post_id: postId
         }, function(r) {
             if (r.success) {
-                // Show source of keywords
-                $('#metadata-source').text('Keywords source: ' + (r.data.keyword_source || 'content analysis'));
-                
-                // Show before values
-                $('#meta-title-before').text(r.data.before.title || '(empty)');
-                $('#meta-desc-before').text(r.data.before.description || '(empty)');
-                $('#meta-tags-before').text(r.data.before.tags || '(none)');
-                
-                // Show after values
-                $('#meta-title-after').text(r.data.after.title);
-                $('#meta-desc-after').text(r.data.after.description);
-                $('#meta-tags-after').text(r.data.after.tags);
-                
-                $('#metadata-result').show();
+                // Show data sources badges
+                var d = r.data.data_sources;
+                $('#smart-meta-catalog-badge')
+                    .text(d.catalog_used ? 'Catalog' : 'No Catalog')
+                    .css('background', d.catalog_used ? '#d4edda' : '#f8d7da')
+                    .css('color', d.catalog_used ? '#155724' : '#721c24');
+                $('#smart-meta-inbound-badge')
+                    .text(d.inbound_anchors + ' Inbound')
+                    .css('background', d.inbound_anchors > 0 ? '#d4edda' : '#fff3cd')
+                    .css('color', d.inbound_anchors > 0 ? '#155724' : '#856404');
+                $('#smart-meta-outbound-badge')
+                    .text(d.outbound_anchors + ' Outbound')
+                    .css('background', d.outbound_anchors > 0 ? '#d4edda' : '#e2e3e5')
+                    .css('color', d.outbound_anchors > 0 ? '#155724' : '#383d41');
+
+                // Show reasoning if available
+                if (r.data.reasoning) {
+                    $('#smart-meta-reasoning-text').text(r.data.reasoning);
+                    $('#smart-meta-reasoning').show();
+                } else {
+                    $('#smart-meta-reasoning').hide();
+                }
+
+                // Show before/after values
+                $('#smart-meta-title-before').text(r.data.before.title || '(empty)');
+                $('#smart-meta-desc-before').text(r.data.before.description || '(empty)');
+                $('#smart-meta-keyphrase-before').text(r.data.before.focus_keyphrase || '(empty)');
+                $('#smart-meta-tags-before').text(r.data.before.tags || '(none)');
+
+                $('#smart-meta-title-after').text(r.data.after.title);
+                $('#smart-meta-desc-after').text(r.data.after.description);
+                $('#smart-meta-keyphrase-after').text(r.data.after.focus_keyphrase);
+                $('#smart-meta-tags-after').text(r.data.after.tags);
+
+                $('#smart-metadata-result').show();
             } else {
                 alert('Error: ' + (r.data || 'Failed to generate metadata'));
             }
-            $btn.prop('disabled', false).text('Generate Metadata');
+            $btn.prop('disabled', false).text('Generate Smart Metadata');
         }).fail(function() {
             alert('Request failed');
-            $btn.prop('disabled', false).text('Generate Metadata');
+            $btn.prop('disabled', false).text('Generate Smart Metadata');
         });
     });
-    
-    // Generate metadata for all linked content (posts AND pages)
-    $('#generate-all-metadata-btn').on('click', function() {
-        if (!confirm('Generate metadata for all posts and pages that have internal links?\n\nThis will update SEO titles, descriptions, and tags based on link keywords.\n\nContinue?')) {
+
+    // Bulk smart metadata generation
+    var smartBulkRunning = false;
+
+    $('#bulk-smart-metadata-btn').on('click', function() {
+        var skipExisting = $('#skip-existing-meta').is(':checked');
+        var skipMsg = skipExisting ? '\n\nSkipping posts that already have SEO metadata.' : '';
+
+        if (!confirm('Generate smart metadata for all posts and pages with internal links?' + skipMsg + '\n\nThis uses the enriched catalog + inbound link analysis for optimal SEO.\n\nMake sure you have:\n1. Built the catalog\n2. Run bulk linking\n\nContinue?')) {
             return;
         }
-        
-        var $btn = $(this).prop('disabled', true).text('Processing...');
-        $('#metadata-bulk-progress').show();
-        $('#metadata-bulk-log').html('');
-        $('#metadata-result').hide();
-        
-        // Get all posts AND pages with links (outgoing or incoming)
-        var contentWithLinks = [];
-        <?php 
-        // Posts with outgoing links
-        foreach ($all_posts as $p) {
-            $links = get_post_meta($p->ID, '_lendcity_smart_links', true);
-            if (!empty($links)) {
-                echo "contentWithLinks.push({id: " . $p->ID . ", title: '" . esc_js($p->post_title) . "', type: 'post'});\n";
-            }
-        }
-        // Pages with incoming links (check if they're linked TO)
-        $smart_linker_temp = new LendCity_Smart_Linker();
-        $all_site_links = $smart_linker_temp->get_all_site_links(2000);
-        $pages_with_incoming = array();
-        foreach ($all_site_links as $link) {
-            // Find the page ID from URL
-            $linked_post_id = url_to_postid($link['url']);
-            if ($linked_post_id && get_post_type($linked_post_id) === 'page') {
-                $pages_with_incoming[$linked_post_id] = true;
-            }
-        }
-        foreach ($all_pages as $p) {
-            if (isset($pages_with_incoming[$p->ID])) {
-                echo "contentWithLinks.push({id: " . $p->ID . ", title: '" . esc_js($p->post_title) . "', type: 'page'});\n";
-            }
-        }
-        ?>
-        
-        if (contentWithLinks.length === 0) {
-            alert('No content with internal links found. Run bulk linking first.');
-            $btn.prop('disabled', false).text('Generate for All Linked Content');
-            $('#metadata-bulk-progress').hide();
-            return;
-        }
-        
-        var total = contentWithLinks.length;
-        var current = 0;
-        var success = 0;
-        
-        function processNext() {
-            if (current >= total) {
-                $('#metadata-bulk-bar').css('width', '100%');
-                $('#metadata-bulk-status').html('<span style="color: #28a745;">✅ Complete! Updated ' + success + ' of ' + total + ' items.</span>');
-                $btn.prop('disabled', false).text('Generate for All Linked Content');
+
+        var $btn = $(this).prop('disabled', true).text('Loading...');
+        $('#smart-metadata-bulk-progress').show();
+        $('#smart-metadata-result').hide();
+        $('#smart-metadata-bulk-log').html('');
+        $('#smart-bulk-state').text('Fetching posts...');
+
+        // Get list of posts to process
+        $.post(ajaxurl, {
+            action: 'lendcity_get_smart_metadata_posts',
+            nonce: nonce,
+            only_linked: true,
+            skip_existing: skipExisting
+        }, function(r) {
+            if (!r.success || r.data.posts.length === 0) {
+                var msg = 'No posts to process.';
+                if (r.data && r.data.skipped > 0) {
+                    msg = 'All ' + r.data.skipped + ' posts already have SEO metadata.\n\nUncheck "Skip posts with existing SEO title/description" to reprocess them.';
+                } else {
+                    msg = 'No posts with links found. Run bulk linking first.';
+                }
+                alert(msg);
+                $btn.prop('disabled', false).text('Bulk Generate for All Linked Content');
+                $('#smart-metadata-bulk-progress').hide();
                 return;
             }
-            
-            var item = contentWithLinks[current];
-            var pct = (current / total * 100).toFixed(0);
-            $('#metadata-bulk-bar').css('width', pct + '%');
-            $('#metadata-bulk-status').text('Processing ' + (current + 1) + ' of ' + total + ': ' + item.title);
-            
-            $.post(ajaxurl, {
-                action: 'lendcity_generate_metadata_from_links',
-                nonce: nonce,
-                post_id: item.id
-            }, function(r) {
-                if (r.success) {
-                    success++;
-                    var logEntry = '<div style="color: #28a745;">✓ ' + item.title + ' (' + item.type + ')</div>';
-                    $('#metadata-bulk-log').prepend(logEntry);
-                } else {
-                    var logEntry = '<div style="color: #dc3545;">✗ ' + item.title + ': ' + (r.data || 'Failed') + '</div>';
-                    $('#metadata-bulk-log').prepend(logEntry);
+
+            var posts = r.data.posts;
+            var total = posts.length;
+            var skippedCount = r.data.skipped || 0;
+            var current = 0;
+            var success = 0;
+            var errors = 0;
+            smartBulkRunning = true;
+
+            $btn.text('Processing...');
+            var stateText = 'Processing ' + total + ' items';
+            if (skippedCount > 0) stateText += ' (' + skippedCount + ' skipped with existing meta)';
+            $('#smart-bulk-state').text(stateText);
+
+            function processNextSmartMeta() {
+                if (!smartBulkRunning || current >= total) {
+                    // Done
+                    smartBulkRunning = false;
+                    $('#smart-metadata-bulk-bar').css('width', '100%');
+                    $('#smart-bulk-state').html('<span style="color: #28a745;">Complete! ' + success + ' updated, ' + errors + ' errors</span>');
+                    $btn.prop('disabled', false).text('Bulk Generate for All Linked Content');
+                    return;
                 }
-                current++;
-                setTimeout(processNext, 2000); // 2 sec delay for rate limits
-            }).fail(function() {
-                var logEntry = '<div style="color: #dc3545;">✗ ' + item.title + ': Request failed</div>';
-                $('#metadata-bulk-log').prepend(logEntry);
-                current++;
-                setTimeout(processNext, 2000);
-            });
-        }
-        
-        processNext();
+
+                var item = posts[current];
+                var pct = (current / total * 100).toFixed(0);
+                $('#smart-metadata-bulk-bar').css('width', pct + '%');
+                $('#smart-metadata-bulk-status').text('Processing ' + (current + 1) + ' of ' + total + ': ' + item.title);
+
+                $.post(ajaxurl, {
+                    action: 'lendcity_generate_smart_metadata',
+                    nonce: nonce,
+                    post_id: item.id
+                }, function(resp) {
+                    if (resp.success) {
+                        success++;
+                        var sources = resp.data.data_sources;
+                        var badges = '';
+                        if (sources.catalog_used) badges += '<span style="background:#d4edda;color:#155724;padding:1px 4px;border-radius:2px;margin-right:3px;">Catalog</span>';
+                        if (sources.inbound_anchors > 0) badges += '<span style="background:#cce5ff;color:#004085;padding:1px 4px;border-radius:2px;">' + sources.inbound_anchors + ' inbound</span>';
+
+                        var logEntry = '<div style="color: #28a745;">✓ <strong>' + item.title + '</strong> ' + badges + '</div>';
+                        $('#smart-metadata-bulk-log').prepend(logEntry);
+                    } else {
+                        errors++;
+                        var logEntry = '<div style="color: #dc3545;">✗ ' + item.title + ': ' + (resp.data || 'Failed') + '</div>';
+                        $('#smart-metadata-bulk-log').prepend(logEntry);
+                    }
+                    current++;
+                    setTimeout(processNextSmartMeta, 500); // 500ms delay
+                }).fail(function() {
+                    errors++;
+                    var logEntry = '<div style="color: #dc3545;">✗ ' + item.title + ': Request failed</div>';
+                    $('#smart-metadata-bulk-log').prepend(logEntry);
+                    current++;
+                    setTimeout(processNextSmartMeta, 1000); // 1 sec on failure
+                });
+            }
+
+            processNextSmartMeta();
+        }).fail(function() {
+            alert('Failed to get post list');
+            $btn.prop('disabled', false).text('Bulk Generate for All Linked Content');
+            $('#smart-metadata-bulk-progress').hide();
+        });
     });
+
+    // Stop bulk smart metadata
+    $('#smart-bulk-stop').on('click', function() {
+        smartBulkRunning = false;
+        $('#smart-bulk-state').text('Stopped');
+        $('#bulk-smart-metadata-btn').prop('disabled', false).text('Bulk Generate for All Linked Content');
+    });
+
+    // ========== META QUEUE (PERSISTENT BACKGROUND) ==========
+    var metaQueuePolling = null;
+
+    function updateMetaQueueUI(status) {
+        $('#meta-queue-state').text(status.status.charAt(0).toUpperCase() + status.status.slice(1));
+        $('#meta-queue-percent').text(status.percent + '%');
+        $('#meta-queue-progress-bar').css('width', status.percent + '%');
+        $('#meta-queue-completed').text(status.completed);
+        $('#meta-queue-pending').text(status.pending);
+        $('#meta-queue-failed').text(status.failed);
+        $('#meta-queue-total').text(status.total);
+
+        if (status.status !== 'idle' && status.total > 0) {
+            $('#meta-queue-status-display').show();
+        }
+
+        if (status.status === 'completed' || status.status === 'idle') {
+            if (metaQueuePolling) {
+                clearInterval(metaQueuePolling);
+                metaQueuePolling = null;
+            }
+            $('#start-meta-queue-btn').prop('disabled', false).text('Start Background Queue');
+        }
+    }
+
+    function pollMetaQueueStatus() {
+        $.post(ajaxurl, {
+            action: 'lendcity_get_meta_queue_status',
+            nonce: nonce
+        }, function(response) {
+            if (response.success) {
+                updateMetaQueueUI(response.data);
+            }
+        });
+    }
+
+    // Start meta queue
+    $('#start-meta-queue-btn').on('click', function() {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Starting...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_init_meta_queue',
+            nonce: nonce,
+            skip_existing: $('#meta-queue-skip-existing').is(':checked') ? 'true' : 'false',
+            only_linked: $('#meta-queue-only-linked').is(':checked') ? 'true' : 'false'
+        }, function(response) {
+            if (response.success) {
+                $('#meta-queue-status-display').show();
+                updateMetaQueueUI({ status: 'running', percent: 0, completed: 0, pending: response.data.total, failed: 0, total: response.data.total });
+
+                // Start polling
+                if (!metaQueuePolling) {
+                    metaQueuePolling = setInterval(pollMetaQueueStatus, 5000);
+                }
+                $btn.text('Processing...');
+            } else {
+                alert('Error: ' + response.data);
+                $btn.prop('disabled', false).text('Start Background Queue');
+            }
+        }).fail(function() {
+            alert('Request failed');
+            $btn.prop('disabled', false).text('Start Background Queue');
+        });
+    });
+
+    // Clear meta queue
+    $('#clear-meta-queue-btn').on('click', function() {
+        if (!confirm('Clear the metadata queue?')) return;
+
+        $.post(ajaxurl, {
+            action: 'lendcity_clear_meta_queue',
+            nonce: nonce
+        }, function(response) {
+            if (response.success) {
+                if (metaQueuePolling) {
+                    clearInterval(metaQueuePolling);
+                    metaQueuePolling = null;
+                }
+                $('#meta-queue-status-display').hide();
+                $('#start-meta-queue-btn').prop('disabled', false).text('Start Background Queue');
+            }
+        });
+    });
+
+    // Check queue status on page load
+    if ($('#meta-queue-status-display').is(':visible')) {
+        pollMetaQueueStatus();
+        metaQueuePolling = setInterval(pollMetaQueueStatus, 5000);
+    }
+
+    // ========== SEO HEALTH MONITOR (Paginated) ==========
+    function runSeoHealthScan(reset) {
+        $.post(ajaxurl, {
+            action: 'lendcity_get_seo_health_issues',
+            nonce: nonce,
+            reset: reset ? 'true' : 'false'
+        }, function(response) {
+            if (!response.success) {
+                $('#seo-health-loading').html('<p style="color: #dc3545;">Error: ' + response.data + '</p>');
+                $('#scan-seo-health-btn').prop('disabled', false).text('Scan for SEO Issues');
+                return;
+            }
+
+            var data = response.data;
+
+            if (data.status === 'scanning') {
+                // Update progress
+                $('#seo-health-loading').html(
+                    '<div style="margin-bottom: 10px;"><strong>Scanning... ' + data.percent + '%</strong></div>' +
+                    '<div style="background: #e0e0e0; height: 20px; border-radius: 4px; overflow: hidden;">' +
+                    '<div style="background: linear-gradient(90deg, #f093fb, #f5576c); height: 100%; width: ' + data.percent + '%; transition: width 0.3s;"></div>' +
+                    '</div>' +
+                    '<p style="margin-top: 10px; font-size: 12px; color: #666;">Processed ' + data.processed + ' of ' + data.total + ' posts</p>'
+                );
+                // Continue scanning
+                setTimeout(function() { runSeoHealthScan(false); }, 500);
+            } else {
+                // Complete - show results
+                $('#seo-health-loading').hide();
+                $('#seo-health-content').show();
+                $('#scan-seo-health-btn').prop('disabled', false).text('Scan for SEO Issues');
+
+                if (data.issues && data.issues.length > 0) {
+                    var html = '<p style="margin-top: 0;"><strong>' + data.count + ' SEO issues found</strong></p>';
+                    html += '<table class="wp-list-table widefat fixed striped" style="margin-top: 10px;">';
+                    html += '<thead><tr><th>Page/Post</th><th>Issues</th><th>Top Anchors</th><th>Action</th></tr></thead><tbody>';
+
+                    data.issues.forEach(function(issue) {
+                        var severityColor = issue.severity === 'high' ? '#dc3545' : '#ffc107';
+                        var anchors = Object.keys(issue.top_anchors).slice(0, 3).join(', ');
+
+                        html += '<tr data-post-id="' + issue.post_id + '">';
+                        html += '<td><a href="' + issue.url + '" target="_blank">' + issue.post_title + '</a>';
+                        html += '<span style="font-size: 11px; color: #666; margin-left: 5px;">(' + issue.post_type + ')</span></td>';
+                        html += '<td>';
+                        issue.suggestions.forEach(function(s) {
+                            html += '<div style="font-size: 12px; color: ' + severityColor + '; margin-bottom: 3px;">• ' + s + '</div>';
+                        });
+                        html += '</td>';
+                        html += '<td style="font-size: 12px; color: #666;">' + anchors + '</td>';
+                        html += '<td><button type="button" class="button auto-fix-seo-btn" data-post-id="' + issue.post_id + '">Auto Fix</button></td>';
+                        html += '</tr>';
+                    });
+
+                    html += '</tbody></table>';
+                    $('#seo-health-content').html(html);
+                } else {
+                    $('#seo-health-content').html('<p style="color: #28a745; margin: 0;">✓ No SEO issues detected. All content looks healthy!</p>');
+                }
+            }
+        }).fail(function() {
+            $('#seo-health-loading').html('<p style="color: #dc3545;">Request failed. Please try again.</p>');
+            $('#scan-seo-health-btn').prop('disabled', false).text('Scan for SEO Issues');
+        });
+    }
+
+    $('#scan-seo-health-btn').on('click', function() {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Scanning...');
+        $('#seo-health-results').show();
+        $('#seo-health-loading').show().html('<div style="text-align: center; padding: 20px;"><span class="spinner is-active" style="float: none;"></span> Starting scan...</div>');
+        $('#seo-health-content').hide();
+
+        runSeoHealthScan(true);
+    });
+
+    // Auto-fix SEO
+    $(document).on('click', '.auto-fix-seo-btn', function() {
+        var $btn = $(this);
+        var postId = $btn.data('post-id');
+        $btn.prop('disabled', true).text('Fixing...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_auto_fix_seo',
+            nonce: nonce,
+            post_id: postId
+        }, function(response) {
+            if (response.success) {
+                $btn.closest('tr').fadeOut(300, function() { $(this).remove(); });
+            } else {
+                alert('Error: ' + response.data);
+                $btn.prop('disabled', false).text('Auto Fix');
+            }
+        }).fail(function() {
+            alert('Request failed');
+            $btn.prop('disabled', false).text('Auto Fix');
+        });
+    });
+
+    // ========== KEYWORD OWNERSHIP ==========
+    var ownershipPage = 1;
+    var ownershipSearch = '';
+
+    function loadOwnershipStats() {
+        $.post(ajaxurl, {
+            action: 'lendcity_get_keyword_ownership_stats',
+            nonce: nonce
+        }, function(response) {
+            if (response.success && response.data.has_map) {
+                var stats = response.data;
+                $('#ownership-stats').show();
+                $('#ownership-stats-text').html(
+                    '<strong>' + stats.total_keywords + '</strong> keywords assigned to <strong>' +
+                    stats.pages_with_keywords + '</strong> pages. Built: ' + (stats.built_at || 'Unknown')
+                );
+            } else {
+                $('#ownership-stats').hide();
+            }
+        });
+    }
+
+    function loadOwnershipList(page, search) {
+        ownershipPage = page || 1;
+        ownershipSearch = search || '';
+
+        $('#ownership-results').show();
+        $('#ownership-loading').show();
+        $('#ownership-content').hide();
+
+        $.post(ajaxurl, {
+            action: 'lendcity_get_keyword_ownership_list',
+            nonce: nonce,
+            page: ownershipPage,
+            per_page: 50,
+            search: ownershipSearch
+        }, function(response) {
+            $('#ownership-loading').hide();
+            $('#ownership-content').show();
+
+            if (response.success) {
+                var data = response.data;
+                var html = '';
+
+                if (data.items.length === 0) {
+                    html = '<tr><td colspan="3" style="text-align: center; padding: 20px;">No keywords found. Build the ownership map first.</td></tr>';
+                } else {
+                    data.items.forEach(function(item) {
+                        html += '<tr>';
+                        html += '<td><strong>' + escapeHtml(item.anchor) + '</strong></td>';
+                        html += '<td><a href="' + item.url + '" target="_blank">' + escapeHtml(item.url.replace(/^https?:\/\/[^\/]+/, '')) + '</a></td>';
+                        html += '<td>' + item.score + '</td>';
+                        html += '</tr>';
+                    });
+                }
+
+                $('#ownership-table-body').html(html);
+                $('#ownership-page-info').text('Page ' + data.page + ' of ' + data.total_pages + ' (' + data.total + ' keywords)');
+                $('#ownership-prev').prop('disabled', data.page <= 1);
+                $('#ownership-next').prop('disabled', data.page >= data.total_pages);
+
+                loadOwnershipStats();
+            }
+        }).fail(function() {
+            $('#ownership-loading').html('<p style="color: #dc3545;">Request failed. Please try again.</p>');
+        });
+    }
+
+    function escapeHtml(text) {
+        var div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    $('#build-ownership-btn').on('click', function() {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Building...');
+        $('#ownership-results').show();
+        $('#ownership-loading').show().html('<div style="text-align: center; padding: 20px;"><span class="spinner is-active" style="float: none;"></span> Building ownership map from catalog data...</div>');
+        $('#ownership-content').hide();
+
+        $.post(ajaxurl, {
+            action: 'lendcity_build_keyword_ownership',
+            nonce: nonce,
+            force: 'false'
+        }, function(response) {
+            $btn.prop('disabled', false).text('Build Ownership Map');
+            if (response.success) {
+                loadOwnershipList(1, '');
+            } else {
+                $('#ownership-loading').html('<p style="color: #dc3545;">Error: ' + response.data + '</p>');
+            }
+        }).fail(function() {
+            $btn.prop('disabled', false).text('Build Ownership Map');
+            $('#ownership-loading').html('<p style="color: #dc3545;">Request failed. Please try again.</p>');
+        });
+    });
+
+    $('#rebuild-ownership-btn').on('click', function() {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Rebuilding...');
+        $('#ownership-results').show();
+        $('#ownership-loading').show().html('<div style="text-align: center; padding: 20px;"><span class="spinner is-active" style="float: none;"></span> Force rebuilding ownership map...</div>');
+        $('#ownership-content').hide();
+
+        $.post(ajaxurl, {
+            action: 'lendcity_build_keyword_ownership',
+            nonce: nonce,
+            force: 'true'
+        }, function(response) {
+            $btn.prop('disabled', false).text('Force Rebuild');
+            if (response.success) {
+                loadOwnershipList(1, '');
+            } else {
+                $('#ownership-loading').html('<p style="color: #dc3545;">Error: ' + response.data + '</p>');
+            }
+        }).fail(function() {
+            $btn.prop('disabled', false).text('Force Rebuild');
+            $('#ownership-loading').html('<p style="color: #dc3545;">Request failed. Please try again.</p>');
+        });
+    });
+
+    $('#clear-ownership-btn').on('click', function() {
+        if (!confirm('Clear the keyword ownership map? You will need to rebuild it before auto-linking.')) return;
+
+        $.post(ajaxurl, {
+            action: 'lendcity_clear_keyword_ownership',
+            nonce: nonce
+        }, function(response) {
+            if (response.success) {
+                $('#ownership-stats').hide();
+                $('#ownership-results').hide();
+                alert('Keyword ownership map cleared.');
+            }
+        });
+    });
+
+    $('#ownership-search-btn').on('click', function() {
+        loadOwnershipList(1, $('#ownership-search').val());
+    });
+
+    $('#ownership-search').on('keypress', function(e) {
+        if (e.which === 13) {
+            loadOwnershipList(1, $(this).val());
+        }
+    });
+
+    $('#ownership-prev').on('click', function() {
+        if (ownershipPage > 1) {
+            loadOwnershipList(ownershipPage - 1, ownershipSearch);
+        }
+    });
+
+    $('#ownership-next').on('click', function() {
+        loadOwnershipList(ownershipPage + 1, ownershipSearch);
+    });
+
+    // Load stats on page load
+    loadOwnershipStats();
 });
 </script>
