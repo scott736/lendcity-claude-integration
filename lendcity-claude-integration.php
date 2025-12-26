@@ -319,17 +319,31 @@ class LendCity_Claude_Integration {
      * Save show mappings when settings are saved
      */
     public function save_show_mappings() {
-        if (isset($_POST['lendcity_show_id_1']) || isset($_POST['lendcity_show_id_2'])) {
-            $shows = array();
-            if (!empty($_POST['lendcity_show_id_1']) && !empty($_POST['lendcity_show_category_1'])) {
-                $shows[sanitize_text_field($_POST['lendcity_show_id_1'])] = sanitize_text_field($_POST['lendcity_show_category_1']);
-            }
-            if (!empty($_POST['lendcity_show_id_2']) && !empty($_POST['lendcity_show_category_2'])) {
-                $shows[sanitize_text_field($_POST['lendcity_show_id_2'])] = sanitize_text_field($_POST['lendcity_show_category_2']);
-            }
-            if (!empty($shows)) {
-                update_option('lendcity_transistor_shows', json_encode($shows));
-            }
+        // Only run on settings save (check for settings page and proper nonce)
+        if (!isset($_POST['option_page']) || $_POST['option_page'] !== 'lendcity_claude_settings') {
+            return;
+        }
+
+        // Verify the settings nonce (WordPress adds this automatically)
+        if (!isset($_POST['_wpnonce']) || !wp_verify_nonce($_POST['_wpnonce'], 'lendcity_claude_settings-options')) {
+            return;
+        }
+
+        // Check user permissions
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+
+        // Build and save show mappings
+        $shows = array();
+        if (!empty($_POST['lendcity_show_id_1']) && !empty($_POST['lendcity_show_category_1'])) {
+            $shows[sanitize_text_field($_POST['lendcity_show_id_1'])] = sanitize_text_field($_POST['lendcity_show_category_1']);
+        }
+        if (!empty($_POST['lendcity_show_id_2']) && !empty($_POST['lendcity_show_category_2'])) {
+            $shows[sanitize_text_field($_POST['lendcity_show_id_2'])] = sanitize_text_field($_POST['lendcity_show_category_2']);
+        }
+        if (!empty($shows)) {
+            update_option('lendcity_transistor_shows', json_encode($shows));
         }
     }
     
