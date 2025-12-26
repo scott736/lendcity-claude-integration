@@ -3831,7 +3831,7 @@ class LendCity_Smart_Linker {
 
         do {
             $rows = $wpdb->get_results($wpdb->prepare(
-                "SELECT post_id, url, title, good_anchor_phrases, is_page, is_pillar_content,
+                "SELECT post_id, url, title, good_anchor_phrases, main_topics, is_page, is_pillar_content,
                         content_quality_score, monetization_value, link_gap_priority,
                         has_cta, has_lead_form
                  FROM {$this->table_name}
@@ -3848,6 +3848,7 @@ class LendCity_Smart_Linker {
                 $pages_processed++;
                 $post_id = intval($row['post_id']);
                 $url = $row['url'];
+                $title = $row['title'] ?? '';
 
                 // Calculate page authority score
                 // PAGES GET TOP PRIORITY (+100 bonus) so they win keyword ownership over posts
@@ -3859,18 +3860,45 @@ class LendCity_Smart_Linker {
                 $score += intval($row['link_gap_priority'] ?? 50);
                 $score += ($row['has_cta'] || $row['has_lead_form']) ? 10 : 0;
 
-                // Parse anchor phrases
+                // Collect all potential keywords from multiple sources
+                $all_keywords = array();
+
+                // 1. good_anchor_phrases (primary source)
                 $anchors = json_decode($row['good_anchor_phrases'] ?? '[]', true) ?: array();
-
                 foreach ($anchors as $anchor) {
-                    if (empty($anchor) || !is_string($anchor)) continue;
+                    if (!empty($anchor) && is_string($anchor)) {
+                        $all_keywords[] = $anchor;
+                    }
+                }
 
+                // 2. main_topics (additional keywords)
+                $topics = json_decode($row['main_topics'] ?? '[]', true) ?: array();
+                foreach ($topics as $topic) {
+                    if (!empty($topic) && is_string($topic)) {
+                        $all_keywords[] = $topic;
+                    }
+                }
+
+                // 3. Page title (clean it up - remove site name, pipes, dashes at end)
+                if (!empty($title)) {
+                    $clean_title = preg_replace('/\s*[\|\-–—]\s*[^|\-–—]+$/', '', $title);
+                    $clean_title = trim($clean_title);
+                    if (strlen($clean_title) > 10 && strlen($clean_title) < 80) {
+                        $all_keywords[] = $clean_title;
+                    }
+                }
+
+                // Process all keywords
+                foreach ($all_keywords as $anchor) {
                     // Normalize: lowercase, trim, single spaces
                     $normalized = strtolower(trim(preg_replace('/\s+/', ' ', $anchor)));
 
-                    // Skip if too short (less than 3 words) or too long (more than 6 words)
+                    // Skip if too short (less than 2 words) or too long (more than 8 words)
                     $word_count = str_word_count($normalized);
-                    if ($word_count < 3 || $word_count > 6) continue;
+                    if ($word_count < 2 || $word_count > 8) continue;
+
+                    // Skip common filler phrases
+                    if (in_array($normalized, array('read more', 'click here', 'learn more', 'find out', 'get started'))) continue;
 
                     $total_keywords++;
 
@@ -3896,7 +3924,7 @@ class LendCity_Smart_Linker {
                 }
 
                 // Memory cleanup
-                unset($anchors);
+                unset($anchors, $topics, $all_keywords);
             }
 
             $offset += $batch_size;
