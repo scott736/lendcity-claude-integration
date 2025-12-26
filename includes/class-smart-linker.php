@@ -2138,46 +2138,51 @@ class LendCity_Smart_Linker {
 
         // v12.2.1: NO LIMITS - Show ALL pages with anchor suggestions
         if ($page_slots > 0 && !empty($available_pages)) {
-            $prompt .= "=== ALL SERVICE PAGES WITH ANCHOR SUGGESTIONS (" . count($available_pages) . " pages, max " . $page_slots . " links) ===\n";
+            $prompt .= "=== ALL SERVICE PAGES (" . count($available_pages) . " pages, max " . $page_slots . " links) ===\n";
+            $prompt .= "TARGET KEYWORDS are manually selected by the site owner - USE THESE AS TOP PRIORITY anchors!\n\n";
             foreach ($available_pages as $id => $entry) {
                 $priority = $this->get_page_priority($id);
                 $inbound = $entry['inbound_link_count'] ?? 0;
-                $prompt .= "\nID:" . $id . " | " . $entry['title'] . " | P" . $priority . " | Inbound:" . $inbound;
+                $target_keywords = $this->get_page_keywords($id);
+                $prompt .= "ID:" . $id . " | " . $entry['title'] . " | P" . $priority . " | Inbound:" . $inbound;
+
+                // Show TARGET KEYWORDS first (top priority)
+                if (!empty($target_keywords)) {
+                    $prompt .= "\n  ★ TARGET KEYWORDS: " . $target_keywords;
+                }
 
                 // Add anchor phrases for selection
                 $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
                 if (!empty($anchor_phrases)) {
                     $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 5));
                 }
-                $prompt .= "\n";
+                $prompt .= "\n\n";
             }
-            $prompt .= "\n";
             $links_requested[] = "Up to $page_slots page links";
         }
 
         // v12.2.1: NO LIMITS - Show ALL posts with anchor suggestions
         if ($post_slots > 0 && !empty($available_posts)) {
-            $prompt .= "=== ALL BLOG POSTS WITH ANCHOR SUGGESTIONS (" . count($available_posts) . " posts, max " . $post_slots . " links) ===\n";
+            $prompt .= "=== ALL BLOG POSTS (" . count($available_posts) . " posts, max " . $post_slots . " links) ===\n\n";
             foreach ($available_posts as $id => $entry) {
                 $inbound = $entry['inbound_link_count'] ?? 0;
-                $prompt .= "\nID:" . $id . " | " . $entry['title'] . " | Inbound:" . $inbound;
+                $prompt .= "ID:" . $id . " | " . $entry['title'] . " | Inbound:" . $inbound;
 
                 // Add anchor phrases for selection
                 $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
                 if (!empty($anchor_phrases)) {
                     $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 4));
                 }
-                $prompt .= "\n";
+                $prompt .= "\n\n";
             }
-            $prompt .= "\n";
             $links_requested[] = "Up to $post_slots post links";
         }
 
         $prompt .= "=== TASK ===\n";
         $prompt .= "Find: " . implode(' + ', $links_requested) . "\n\n";
 
-        $prompt .= "=== v12.2 FULL CATALOG LINKING RULES ===\n";
-        $prompt .= "1. SITE-WIDE STRATEGY: You can see ALL pages/posts - make strategic choices\n";
+        $prompt .= "=== LINKING RULES (v12.2.1) ===\n";
+        $prompt .= "1. ★ TARGET KEYWORDS ARE TOP PRIORITY: If a page has TARGET KEYWORDS, use those as anchor text when they appear in content!\n";
         $prompt .= "2. PRIORITIZE ORPHANS: Pages with Inbound# < 5 NEED links - prioritize them\n";
         $prompt .= "3. RESPECT PRIORITY: P5 pages are most important, P1 least important\n";
         $prompt .= "4. CLUSTER INTEGRITY: Link within same/related topic clusters for topical authority\n";
