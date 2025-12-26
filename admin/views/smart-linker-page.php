@@ -212,6 +212,13 @@ $total_links = $smart_linker->get_total_link_count();
                 Bulk Generate for All Linked Content
             </button>
         </div>
+        <div style="margin-top: 10px;">
+            <label style="color: white; cursor: pointer;">
+                <input type="checkbox" id="skip-existing-meta" checked style="margin-right: 5px;">
+                <strong>Skip posts with existing SEO title/description</strong>
+                <span style="opacity: 0.8;">(only process posts missing metadata)</span>
+            </label>
+        </div>
 
         <!-- Smart Metadata Result -->
         <div id="smart-metadata-result" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
@@ -1299,7 +1306,10 @@ jQuery(document).ready(function($) {
     var smartBulkRunning = false;
 
     $('#bulk-smart-metadata-btn').on('click', function() {
-        if (!confirm('Generate smart metadata for all posts and pages with internal links?\n\nThis uses the enriched catalog + inbound link analysis for optimal SEO.\n\nMake sure you have:\n1. Built the catalog\n2. Run bulk linking\n\nContinue?')) {
+        var skipExisting = $('#skip-existing-meta').is(':checked');
+        var skipMsg = skipExisting ? '\n\nSkipping posts that already have SEO metadata.' : '';
+
+        if (!confirm('Generate smart metadata for all posts and pages with internal links?' + skipMsg + '\n\nThis uses the enriched catalog + inbound link analysis for optimal SEO.\n\nMake sure you have:\n1. Built the catalog\n2. Run bulk linking\n\nContinue?')) {
             return;
         }
 
@@ -1313,10 +1323,17 @@ jQuery(document).ready(function($) {
         $.post(ajaxurl, {
             action: 'lendcity_get_smart_metadata_posts',
             nonce: nonce,
-            only_linked: true
+            only_linked: true,
+            skip_existing: skipExisting
         }, function(r) {
             if (!r.success || r.data.posts.length === 0) {
-                alert('No posts with links found. Run bulk linking first.');
+                var msg = 'No posts to process.';
+                if (r.data && r.data.skipped > 0) {
+                    msg = 'All ' + r.data.skipped + ' posts already have SEO metadata.\n\nUncheck "Skip posts with existing SEO title/description" to reprocess them.';
+                } else {
+                    msg = 'No posts with links found. Run bulk linking first.';
+                }
+                alert(msg);
                 $btn.prop('disabled', false).text('Bulk Generate for All Linked Content');
                 $('#smart-metadata-bulk-progress').hide();
                 return;
@@ -1324,13 +1341,16 @@ jQuery(document).ready(function($) {
 
             var posts = r.data.posts;
             var total = posts.length;
+            var skippedCount = r.data.skipped || 0;
             var current = 0;
             var success = 0;
             var errors = 0;
             smartBulkRunning = true;
 
             $btn.text('Processing...');
-            $('#smart-bulk-state').text('Processing ' + total + ' items');
+            var stateText = 'Processing ' + total + ' items';
+            if (skippedCount > 0) stateText += ' (' + skippedCount + ' skipped with existing meta)';
+            $('#smart-bulk-state').text(stateText);
 
             function processNextSmartMeta() {
                 if (!smartBulkRunning || current >= total) {
@@ -1367,13 +1387,13 @@ jQuery(document).ready(function($) {
                         $('#smart-metadata-bulk-log').prepend(logEntry);
                     }
                     current++;
-                    setTimeout(processNextSmartMeta, 2000); // 2 sec delay for rate limits
+                    setTimeout(processNextSmartMeta, 500); // 500ms delay
                 }).fail(function() {
                     errors++;
                     var logEntry = '<div style="color: #dc3545;">✗ ' + item.title + ': Request failed</div>';
                     $('#smart-metadata-bulk-log').prepend(logEntry);
                     current++;
-                    setTimeout(processNextSmartMeta, 2000);
+                    setTimeout(processNextSmartMeta, 1000); // 1 sec on failure
                 });
             }
 

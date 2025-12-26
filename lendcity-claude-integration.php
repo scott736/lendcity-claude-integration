@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.3.3
+ * Version: 11.3.4
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.3.3');
+define('LENDCITY_CLAUDE_VERSION', '11.3.4');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -2557,26 +2557,39 @@ class LendCity_Claude_Integration {
         }
 
         $only_linked = isset($_POST['only_linked']) ? (bool) $_POST['only_linked'] : true;
+        $skip_existing = isset($_POST['skip_existing']) ? ($_POST['skip_existing'] === 'true' || $_POST['skip_existing'] === '1') : true;
 
         $smart_linker = new LendCity_Smart_Linker();
         $post_ids = $smart_linker->get_posts_for_smart_metadata($only_linked);
 
-        // Get post details
+        // Get post details and optionally filter by existing meta
         $posts = array();
+        $skipped = 0;
         foreach ($post_ids as $post_id) {
             $post = get_post($post_id);
-            if ($post) {
-                $posts[] = array(
-                    'id' => $post_id,
-                    'title' => $post->post_title,
-                    'type' => $post->post_type
-                );
+            if (!$post) continue;
+
+            // Skip posts with existing SEO meta if requested
+            if ($skip_existing) {
+                $existing_title = get_post_meta($post_id, '_seopress_titles_title', true);
+                $existing_desc = get_post_meta($post_id, '_seopress_titles_desc', true);
+                if (!empty($existing_title) && !empty($existing_desc)) {
+                    $skipped++;
+                    continue;
+                }
             }
+
+            $posts[] = array(
+                'id' => $post_id,
+                'title' => $post->post_title,
+                'type' => $post->post_type
+            );
         }
 
         wp_send_json_success(array(
             'posts' => $posts,
-            'total' => count($posts)
+            'total' => count($posts),
+            'skipped' => $skipped
         ));
     }
 
