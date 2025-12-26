@@ -1,19 +1,20 @@
 <?php
 /**
- * Smart Linker Class v2.2 - Optimized
- * Claude-powered internal linking system
- * 
+ * Smart Linker Class v3.0 - Database-Backed Scalable Architecture
+ * Claude-powered internal linking system with custom database table
+ *
  * REVERSED LOGIC:
  * - Select a TARGET page/post you want links TO
  * - Claude finds all posts that should link TO your target
  * - Inserts links in those source posts pointing to your target
- * 
+ *
  * Features:
- * - Catalog of all posts AND pages with AI summaries
- * - Background queue processing for bulk operations (scales to 1000+ posts)
- * - "Trust AI" one-click bulk linking
+ * - Custom MySQL database table for 10,000+ post scalability
+ * - Enriched catalog with intent, difficulty, funnel stage, topic clusters
+ * - FULLTEXT search for semantic matching
+ * - Indexed queries for fast lookups
+ * - Background queue processing for bulk operations
  * - Full link management and URL updates
- * - Debug mode toggle for cleaner logs
  */
 
 if (!defined('ABSPATH')) {
@@ -23,182 +24,709 @@ if (!defined('ABSPATH')) {
 class LendCity_Smart_Linker {
 
     private $api_key;
+    private $table_name;
     private $link_meta_key = '_lendcity_smart_links';
     private $original_content_meta = '_lendcity_original_content';
     private $queue_option = 'lendcity_smart_linker_queue';
     private $queue_status_option = 'lendcity_smart_linker_queue_status';
-
-    /**
-     * Catalog Database instance
-     *
-     * PERFORMANCE NOTE: This replaces the old serialized wp_options storage.
-     * The LendCity_Catalog_DB class stores each post as a separate row with
-     * proper indexing, enabling fast lookups and updates without loading
-     * the entire catalog into memory.
-     *
-     * @var LendCity_Catalog_DB
-     */
-    private $catalog_db = null;
+    private $catalog_cache = null;
 
     // SEO Enhancement meta keys
-    private $priority_meta_key = '_lendcity_link_priority'; // 1-5, higher = more links
-    private $keywords_meta_key = '_lendcity_target_keywords'; // comma-separated keywords for anchor text
+    private $priority_meta_key = '_lendcity_link_priority';
+    private $keywords_meta_key = '_lendcity_target_keywords';
+
+    // Database version for migrations
+    const DB_VERSION = '4.1';
+    const DB_VERSION_OPTION = 'lendcity_catalog_db_version';
+
+    // Parallel processing settings
+    private $parallel_batch_size = 5; // Posts per parallel request
 
     public function __construct() {
+        global $wpdb;
+        $this->table_name = $wpdb->prefix . 'lendcity_catalog';
         $this->api_key = get_option('lendcity_claude_api_key');
 
-        // Initialize the catalog database handler
-        // This creates the table if needed and handles migration from wp_options
-        $this->catalog_db = new LendCity_Catalog_DB();
-        
+        // Check if database needs to be created/upgraded
+        $this->maybe_create_table();
+
         // Hook into post publish to auto-catalog and auto-link
         add_action('transition_post_status', array($this, 'on_post_publish'), 10, 3);
-        
+
         // Hook into post delete to remove from catalog and clean up links
         add_action('before_delete_post', array($this, 'on_post_delete'));
         add_action('trashed_post', array($this, 'on_post_trash'));
-        
+
         // Background processing hooks
         add_action('lendcity_process_link_queue', array($this, 'process_queue_batch'));
         add_action('lendcity_process_queue_batch', array($this, 'process_queue_batch'));
         add_action('lendcity_auto_link_new_post', array($this, 'process_new_post_auto_link'));
-        
+
         // Loopback processing (non-cron)
         add_action('wp_ajax_lendcity_background_process', array($this, 'ajax_background_process'));
         add_action('wp_ajax_nopriv_lendcity_background_process', array($this, 'ajax_background_process'));
     }
-    
+
+    // =========================================================================
+    // DATABASE TABLE MANAGEMENT
+    // =========================================================================
+
     /**
-     * Debug logging helper - only logs if debug mode is enabled
+     * Create or upgrade the catalog database table
      */
+    public function maybe_create_table() {
+        $installed_version = get_option(self::DB_VERSION_OPTION, '0');
+
+        if (version_compare($installed_version, self::DB_VERSION, '<')) {
+            $this->create_table();
+            update_option(self::DB_VERSION_OPTION, self::DB_VERSION);
+        }
+    }
+
+    /**
+     * Create the catalog table - uses direct SQL to avoid dbDelta parsing issues
+     */
+    private function create_table() {
+        global $wpdb;
+
+        $charset_collate = $wpdb->get_charset_collate();
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$this->table_name}'") === $this->table_name;
+
+        if (!$table_exists) {
+            $sql = "CREATE TABLE {$this->table_name} (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+                post_id BIGINT UNSIGNED NOT NULL,
+                post_type VARCHAR(20) NOT NULL DEFAULT 'post',
+                is_page TINYINT(1) NOT NULL DEFAULT 0,
+                title VARCHAR(255) NOT NULL DEFAULT '',
+                url VARCHAR(500) NOT NULL DEFAULT '',
+                summary TEXT,
+                main_topics LONGTEXT,
+                semantic_keywords LONGTEXT,
+                entities LONGTEXT,
+                content_themes LONGTEXT,
+                good_anchor_phrases LONGTEXT,
+                reader_intent VARCHAR(20) DEFAULT 'educational',
+                difficulty_level VARCHAR(20) DEFAULT 'intermediate',
+                funnel_stage VARCHAR(20) DEFAULT 'awareness',
+                topic_cluster VARCHAR(100) DEFAULT NULL,
+                related_clusters LONGTEXT,
+                is_pillar_content TINYINT(1) NOT NULL DEFAULT 0,
+                word_count INT UNSIGNED DEFAULT 0,
+                content_quality_score TINYINT UNSIGNED DEFAULT 50,
+                content_lifespan VARCHAR(20) DEFAULT 'evergreen',
+                publish_season VARCHAR(30) DEFAULT NULL,
+                target_regions LONGTEXT,
+                target_cities LONGTEXT,
+                target_persona VARCHAR(30) DEFAULT 'general',
+                content_last_updated DATE DEFAULT NULL,
+                freshness_score TINYINT UNSIGNED DEFAULT 100,
+                inbound_link_count INT UNSIGNED DEFAULT 0,
+                outbound_link_count INT UNSIGNED DEFAULT 0,
+                link_gap_priority TINYINT UNSIGNED DEFAULT 50,
+                has_cta TINYINT(1) DEFAULT 0,
+                has_calculator TINYINT(1) DEFAULT 0,
+                has_lead_form TINYINT(1) DEFAULT 0,
+                monetization_value TINYINT UNSIGNED DEFAULT 5,
+                content_format VARCHAR(30) DEFAULT 'other',
+                must_link_to LONGTEXT,
+                never_link_to LONGTEXT,
+                preferred_anchors LONGTEXT,
+                updated_at DATETIME NOT NULL,
+                PRIMARY KEY (id),
+                UNIQUE KEY idx_post_id (post_id),
+                KEY idx_topic_cluster (topic_cluster),
+                KEY idx_persona (target_persona)
+            ) $charset_collate";
+
+            $result = $wpdb->query($sql);
+
+            if ($wpdb->last_error) {
+                $this->log('Table creation error: ' . $wpdb->last_error);
+            } else {
+                $this->log('Created catalog database table v' . self::DB_VERSION);
+            }
+        } else {
+            $this->maybe_upgrade_table();
+        }
+    }
+
+    /**
+     * Add missing columns to existing table (for v4 upgrades)
+     */
+    private function maybe_upgrade_table() {
+        global $wpdb;
+
+        $columns = $wpdb->get_col("SHOW COLUMNS FROM {$this->table_name}", 0);
+
+        $v4_columns = array(
+            'content_lifespan' => "VARCHAR(20) DEFAULT 'evergreen'",
+            'publish_season' => "VARCHAR(30) DEFAULT NULL",
+            'target_regions' => "LONGTEXT",
+            'target_cities' => "LONGTEXT",
+            'target_persona' => "VARCHAR(30) DEFAULT 'general'",
+            'content_last_updated' => "DATE DEFAULT NULL",
+            'freshness_score' => "TINYINT UNSIGNED DEFAULT 100",
+            'inbound_link_count' => "INT UNSIGNED DEFAULT 0",
+            'outbound_link_count' => "INT UNSIGNED DEFAULT 0",
+            'link_gap_priority' => "TINYINT UNSIGNED DEFAULT 50",
+            'has_cta' => "TINYINT(1) DEFAULT 0",
+            'has_calculator' => "TINYINT(1) DEFAULT 0",
+            'has_lead_form' => "TINYINT(1) DEFAULT 0",
+            'monetization_value' => "TINYINT UNSIGNED DEFAULT 5",
+            'content_format' => "VARCHAR(30) DEFAULT 'other'",
+            'must_link_to' => "LONGTEXT",
+            'never_link_to' => "LONGTEXT",
+            'preferred_anchors' => "LONGTEXT"
+        );
+
+        $added = 0;
+        foreach ($v4_columns as $col => $def) {
+            if (!in_array($col, $columns)) {
+                $wpdb->query("ALTER TABLE {$this->table_name} ADD COLUMN {$col} {$def}");
+                $added++;
+            }
+        }
+
+        if ($added > 0) {
+            $this->log("Added {$added} new v4 columns to catalog table");
+        }
+    }
+
+    /**
+     * Insert or update a catalog entry in the database
+     */
+    public function insert_catalog_entry($post_id, $entry) {
+        global $wpdb;
+
+        // Get post modified date for freshness
+        $post = get_post($post_id);
+        $last_modified = $post ? $post->post_modified : current_time('mysql');
+
+        $data = array(
+            // Core fields
+            'post_id' => intval($post_id),
+            'post_type' => isset($entry['type']) ? $entry['type'] : 'post',
+            'is_page' => isset($entry['is_page']) ? (int)$entry['is_page'] : 0,
+            'title' => isset($entry['title']) ? $entry['title'] : '',
+            'url' => isset($entry['url']) ? $entry['url'] : '',
+            'summary' => isset($entry['summary']) ? $entry['summary'] : '',
+            'main_topics' => isset($entry['main_topics']) ? wp_json_encode($entry['main_topics']) : '[]',
+            'semantic_keywords' => isset($entry['semantic_keywords']) ? wp_json_encode($entry['semantic_keywords']) : '[]',
+            'entities' => isset($entry['entities']) ? wp_json_encode($entry['entities']) : '[]',
+            'content_themes' => isset($entry['content_themes']) ? wp_json_encode($entry['content_themes']) : '[]',
+            'good_anchor_phrases' => isset($entry['good_anchor_phrases']) ? wp_json_encode($entry['good_anchor_phrases']) : '[]',
+
+            // v3.0 Intelligence fields
+            'reader_intent' => isset($entry['reader_intent']) ? $entry['reader_intent'] : 'educational',
+            'difficulty_level' => isset($entry['difficulty_level']) ? $entry['difficulty_level'] : 'intermediate',
+            'funnel_stage' => isset($entry['funnel_stage']) ? $entry['funnel_stage'] : 'awareness',
+            'topic_cluster' => isset($entry['topic_cluster']) ? $entry['topic_cluster'] : null,
+            'related_clusters' => isset($entry['related_clusters']) ? wp_json_encode($entry['related_clusters']) : '[]',
+            'is_pillar_content' => isset($entry['is_pillar_content']) ? (int)$entry['is_pillar_content'] : 0,
+            'word_count' => isset($entry['word_count']) ? intval($entry['word_count']) : 0,
+            'content_quality_score' => isset($entry['content_quality_score']) ? intval($entry['content_quality_score']) : 50,
+
+            // v4.0 Seasonal/Evergreen
+            'content_lifespan' => isset($entry['content_lifespan']) ? $entry['content_lifespan'] : 'evergreen',
+            'publish_season' => isset($entry['publish_season']) ? $entry['publish_season'] : null,
+
+            // v4.0 Geographic
+            'target_regions' => isset($entry['target_regions']) ? wp_json_encode($entry['target_regions']) : '[]',
+            'target_cities' => isset($entry['target_cities']) ? wp_json_encode($entry['target_cities']) : '[]',
+
+            // v4.0 Persona
+            'target_persona' => isset($entry['target_persona']) ? $entry['target_persona'] : 'general',
+
+            // v4.0 Freshness
+            'content_last_updated' => date('Y-m-d', strtotime($last_modified)),
+            'freshness_score' => $this->calculate_freshness_score($last_modified),
+
+            // v4.0 Link Velocity (calculated separately)
+            'inbound_link_count' => isset($entry['inbound_link_count']) ? intval($entry['inbound_link_count']) : 0,
+            'outbound_link_count' => isset($entry['outbound_link_count']) ? intval($entry['outbound_link_count']) : 0,
+            'link_gap_priority' => isset($entry['link_gap_priority']) ? intval($entry['link_gap_priority']) : 50,
+
+            // v4.0 Conversion Signals
+            'has_cta' => isset($entry['has_cta']) ? (int)$entry['has_cta'] : 0,
+            'has_calculator' => isset($entry['has_calculator']) ? (int)$entry['has_calculator'] : 0,
+            'has_lead_form' => isset($entry['has_lead_form']) ? (int)$entry['has_lead_form'] : 0,
+            'monetization_value' => isset($entry['monetization_value']) ? intval($entry['monetization_value']) : 5,
+
+            // v4.0 Content Format
+            'content_format' => isset($entry['content_format']) ? $entry['content_format'] : 'other',
+
+            // v4.0 Admin Overrides
+            'must_link_to' => isset($entry['must_link_to']) ? wp_json_encode($entry['must_link_to']) : '[]',
+            'never_link_to' => isset($entry['never_link_to']) ? wp_json_encode($entry['never_link_to']) : '[]',
+            'preferred_anchors' => isset($entry['preferred_anchors']) ? wp_json_encode($entry['preferred_anchors']) : '[]',
+
+            'updated_at' => isset($entry['updated_at']) ? $entry['updated_at'] : current_time('mysql')
+        );
+
+        // Check if entry exists
+        $existing = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$this->table_name} WHERE post_id = %d",
+            $post_id
+        ));
+
+        if ($existing) {
+            $result = $wpdb->update($this->table_name, $data, array('post_id' => $post_id));
+        } else {
+            $result = $wpdb->insert($this->table_name, $data);
+        }
+
+        $this->clear_catalog_cache();
+        return $result !== false;
+    }
+
+    /**
+     * Calculate freshness score based on last modified date (0-100)
+     */
+    private function calculate_freshness_score($last_modified) {
+        $days_old = (time() - strtotime($last_modified)) / 86400;
+
+        if ($days_old < 30) return 100;
+        if ($days_old < 90) return 85;
+        if ($days_old < 180) return 70;
+        if ($days_old < 365) return 50;
+        if ($days_old < 730) return 30;
+        return 10;
+    }
+
+    // =========================================================================
+    // CATALOG QUERY METHODS (Fast Database Queries)
+    // =========================================================================
+
+    /**
+     * Get catalog entry by post ID
+     */
+    public function get_catalog_entry($post_id) {
+        global $wpdb;
+
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$this->table_name} WHERE post_id = %d",
+            $post_id
+        ), ARRAY_A);
+
+        if (!$row) return null;
+
+        return $this->hydrate_catalog_entry($row);
+    }
+
+    /**
+     * Get all catalog entries (with optional filters)
+     */
+    public function get_catalog($filters = array()) {
+        global $wpdb;
+
+        // Build query with filters
+        $where = array('1=1');
+        $params = array();
+
+        if (isset($filters['is_page'])) {
+            $where[] = 'is_page = %d';
+            $params[] = (int)$filters['is_page'];
+        }
+
+        if (isset($filters['topic_cluster'])) {
+            $where[] = 'topic_cluster = %s';
+            $params[] = $filters['topic_cluster'];
+        }
+
+        if (isset($filters['difficulty_level'])) {
+            $where[] = 'difficulty_level = %s';
+            $params[] = $filters['difficulty_level'];
+        }
+
+        if (isset($filters['funnel_stage'])) {
+            $where[] = 'funnel_stage = %s';
+            $params[] = $filters['funnel_stage'];
+        }
+
+        if (isset($filters['reader_intent'])) {
+            $where[] = 'reader_intent = %s';
+            $params[] = $filters['reader_intent'];
+        }
+
+        if (isset($filters['is_pillar_content'])) {
+            $where[] = 'is_pillar_content = %d';
+            $params[] = (int)$filters['is_pillar_content'];
+        }
+
+        $where_clause = implode(' AND ', $where);
+        $sql = "SELECT * FROM {$this->table_name} WHERE $where_clause ORDER BY updated_at DESC";
+
+        if (!empty($params)) {
+            $sql = $wpdb->prepare($sql, $params);
+        }
+
+        $rows = $wpdb->get_results($sql, ARRAY_A);
+
+        // Convert to keyed array by post_id for backward compatibility
+        $catalog = array();
+        foreach ($rows as $row) {
+            $catalog[$row['post_id']] = $this->hydrate_catalog_entry($row);
+        }
+
+        return $catalog;
+    }
+
+    /**
+     * Get catalog entries by topic cluster (fast indexed query)
+     */
+    public function get_by_topic_cluster($cluster, $limit = 50) {
+        global $wpdb;
+
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM {$this->table_name}
+             WHERE topic_cluster = %s
+             ORDER BY is_pillar_content DESC, content_quality_score DESC
+             LIMIT %d",
+            $cluster, $limit
+        ), ARRAY_A);
+
+        $catalog = array();
+        foreach ($rows as $row) {
+            $catalog[$row['post_id']] = $this->hydrate_catalog_entry($row);
+        }
+        return $catalog;
+    }
+
+    /**
+     * Get catalog entries by funnel stage (fast indexed query)
+     */
+    public function get_by_funnel_stage($stage, $limit = 50) {
+        global $wpdb;
+
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM {$this->table_name}
+             WHERE funnel_stage = %s
+             ORDER BY content_quality_score DESC
+             LIMIT %d",
+            $stage, $limit
+        ), ARRAY_A);
+
+        $catalog = array();
+        foreach ($rows as $row) {
+            $catalog[$row['post_id']] = $this->hydrate_catalog_entry($row);
+        }
+        return $catalog;
+    }
+
+    /**
+     * Search catalog using FULLTEXT (fast semantic matching)
+     */
+    public function search_catalog($search_term, $limit = 20) {
+        global $wpdb;
+
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT *, MATCH(summary) AGAINST(%s IN NATURAL LANGUAGE MODE) as relevance
+             FROM {$this->table_name}
+             WHERE MATCH(summary) AGAINST(%s IN NATURAL LANGUAGE MODE)
+             ORDER BY relevance DESC
+             LIMIT %d",
+            $search_term, $search_term, $limit
+        ), ARRAY_A);
+
+        $catalog = array();
+        foreach ($rows as $row) {
+            $catalog[$row['post_id']] = $this->hydrate_catalog_entry($row);
+        }
+        return $catalog;
+    }
+
+    /**
+     * Get related content by matching clusters and topics
+     */
+    public function get_related_content($post_id, $limit = 10) {
+        global $wpdb;
+
+        $entry = $this->get_catalog_entry($post_id);
+        if (!$entry) return array();
+
+        $cluster = $entry['topic_cluster'];
+        $funnel = $entry['funnel_stage'];
+
+        // Get content from same cluster or adjacent funnel stages
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT * FROM {$this->table_name}
+             WHERE post_id != %d
+             AND (topic_cluster = %s OR funnel_stage = %s)
+             ORDER BY
+                CASE WHEN topic_cluster = %s THEN 0 ELSE 1 END,
+                content_quality_score DESC
+             LIMIT %d",
+            $post_id, $cluster, $funnel, $cluster, $limit
+        ), ARRAY_A);
+
+        $catalog = array();
+        foreach ($rows as $row) {
+            $catalog[$row['post_id']] = $this->hydrate_catalog_entry($row);
+        }
+        return $catalog;
+    }
+
+    /**
+     * Get all unique topic clusters
+     */
+    public function get_all_clusters() {
+        global $wpdb;
+
+        return $wpdb->get_col(
+            "SELECT DISTINCT topic_cluster FROM {$this->table_name}
+             WHERE topic_cluster IS NOT NULL AND topic_cluster != ''
+             ORDER BY topic_cluster"
+        );
+    }
+
+    /**
+     * Get pillar content for a cluster
+     */
+    public function get_pillar_for_cluster($cluster) {
+        global $wpdb;
+
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$this->table_name}
+             WHERE topic_cluster = %s AND is_pillar_content = 1
+             LIMIT 1",
+            $cluster
+        ), ARRAY_A);
+
+        return $row ? $this->hydrate_catalog_entry($row) : null;
+    }
+
+    /**
+     * Hydrate a database row into a catalog entry array
+     */
+    private function hydrate_catalog_entry($row) {
+        return array(
+            // Core fields
+            'post_id' => intval($row['post_id']),
+            'type' => $row['post_type'],
+            'is_page' => (bool)$row['is_page'],
+            'title' => $row['title'],
+            'url' => $row['url'],
+            'summary' => $row['summary'],
+            'main_topics' => json_decode($row['main_topics'], true) ?: array(),
+            'semantic_keywords' => json_decode($row['semantic_keywords'], true) ?: array(),
+            'entities' => json_decode($row['entities'], true) ?: array(),
+            'content_themes' => json_decode($row['content_themes'], true) ?: array(),
+            'good_anchor_phrases' => json_decode($row['good_anchor_phrases'], true) ?: array(),
+
+            // v3.0 Intelligence
+            'reader_intent' => $row['reader_intent'] ?? 'educational',
+            'difficulty_level' => $row['difficulty_level'] ?? 'intermediate',
+            'funnel_stage' => $row['funnel_stage'] ?? 'awareness',
+            'topic_cluster' => $row['topic_cluster'] ?? null,
+            'related_clusters' => json_decode($row['related_clusters'] ?? '[]', true) ?: array(),
+            'is_pillar_content' => (bool)($row['is_pillar_content'] ?? 0),
+            'word_count' => intval($row['word_count'] ?? 0),
+            'content_quality_score' => intval($row['content_quality_score'] ?? 50),
+
+            // v4.0 Seasonal/Evergreen
+            'content_lifespan' => $row['content_lifespan'] ?? 'evergreen',
+            'publish_season' => $row['publish_season'] ?? null,
+
+            // v4.0 Geographic
+            'target_regions' => json_decode($row['target_regions'] ?? '[]', true) ?: array(),
+            'target_cities' => json_decode($row['target_cities'] ?? '[]', true) ?: array(),
+
+            // v4.0 Persona
+            'target_persona' => $row['target_persona'] ?? 'general',
+
+            // v4.0 Freshness
+            'content_last_updated' => $row['content_last_updated'] ?? null,
+            'freshness_score' => intval($row['freshness_score'] ?? 100),
+
+            // v4.0 Link Velocity
+            'inbound_link_count' => intval($row['inbound_link_count'] ?? 0),
+            'outbound_link_count' => intval($row['outbound_link_count'] ?? 0),
+            'link_gap_priority' => intval($row['link_gap_priority'] ?? 50),
+
+            // v4.0 Conversion
+            'has_cta' => (bool)($row['has_cta'] ?? 0),
+            'has_calculator' => (bool)($row['has_calculator'] ?? 0),
+            'has_lead_form' => (bool)($row['has_lead_form'] ?? 0),
+            'monetization_value' => intval($row['monetization_value'] ?? 5),
+
+            // v4.0 Format
+            'content_format' => $row['content_format'] ?? 'other',
+
+            // v4.0 Admin Overrides
+            'must_link_to' => json_decode($row['must_link_to'] ?? '[]', true) ?: array(),
+            'never_link_to' => json_decode($row['never_link_to'] ?? '[]', true) ?: array(),
+            'preferred_anchors' => json_decode($row['preferred_anchors'] ?? '[]', true) ?: array(),
+
+            'updated_at' => $row['updated_at']
+        );
+    }
+
+    /**
+     * Get catalog stats (fast count queries)
+     */
+    public function get_catalog_stats() {
+        global $wpdb;
+
+        $total = $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name}");
+        $posts = $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name} WHERE is_page = 0");
+        $pages = $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name} WHERE is_page = 1");
+        $pillars = $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name} WHERE is_pillar_content = 1");
+        $clusters = $wpdb->get_var("SELECT COUNT(DISTINCT topic_cluster) FROM {$this->table_name} WHERE topic_cluster IS NOT NULL");
+
+        return array(
+            'total' => intval($total),
+            'posts' => intval($posts),
+            'pages' => intval($pages),
+            'pillars' => intval($pillars),
+            'clusters' => intval($clusters)
+        );
+    }
+
+    /**
+     * Get catalog count (very fast)
+     */
+    public function get_catalog_count() {
+        global $wpdb;
+        return intval($wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name}"));
+    }
+
+    /**
+     * Delete catalog entry
+     */
+    public function delete_catalog_entry($post_id) {
+        global $wpdb;
+        $result = $wpdb->delete($this->table_name, array('post_id' => $post_id));
+        $this->clear_catalog_cache();
+        return $result !== false;
+    }
+
+    /**
+     * Clear entire catalog
+     */
+    public function clear_catalog() {
+        global $wpdb;
+        $wpdb->query("TRUNCATE TABLE {$this->table_name}");
+        $this->clear_catalog_cache();
+        $this->log('Cleared entire catalog');
+    }
+
+    /**
+     * Clear the in-memory catalog cache
+     */
+    public function clear_catalog_cache() {
+        $this->catalog_cache = null;
+    }
+
+    // =========================================================================
+    // LOGGING HELPERS
+    // =========================================================================
+
     private function debug_log($message) {
         if (get_option('lendcity_debug_mode', 'no') === 'yes') {
             error_log('LendCity Smart Linker: ' . $message);
         }
     }
-    
-    /**
-     * Always log - for important messages (errors, success)
-     */
+
     private function log($message) {
         error_log('LendCity Smart Linker: ' . $message);
     }
-    
+
+    // =========================================================================
+    // POST LIFECYCLE HOOKS
+    // =========================================================================
+
     /**
      * Auto-catalog and auto-link when a post is published
-     * Schedules background processing to avoid blocking the save and rate limits
      */
     public function on_post_publish($new_status, $old_status, $post) {
-        // Only trigger when transitioning TO publish
         if ($new_status !== 'publish' || $old_status === 'publish') {
             return;
         }
-        
-        // Only for posts (pages are manually managed)
+
         if ($post->post_type !== 'post') {
             return;
         }
-        
-        // Check if auto-linking is enabled
+
         if (get_option('lendcity_smart_linker_auto', 'yes') !== 'yes') {
             return;
         }
-        
-        // Check if API key exists
+
         if (empty($this->api_key)) {
             return;
         }
-        
-        error_log('LendCity Smart Linker: Scheduling auto-link for new post ' . $post->ID . ' - ' . $post->post_title);
-        
-        // Schedule background processing in 60 seconds (avoids blocking save, respects rate limits)
+
+        $this->log('Scheduling auto-link for new post ' . $post->ID . ' - ' . $post->post_title);
         wp_schedule_single_event(time() + 60, 'lendcity_auto_link_new_post', array($post->ID));
     }
-    
+
     /**
-     * Handle post deletion - remove from catalog and clean up links
+     * Handle post deletion
      */
     public function on_post_delete($post_id) {
         $this->cleanup_deleted_post($post_id);
     }
-    
+
     /**
-     * Handle post trash - remove from catalog and clean up links
+     * Handle post trash
      */
     public function on_post_trash($post_id) {
         $this->cleanup_deleted_post($post_id);
     }
-    
+
     /**
      * Clean up when a post is deleted or trashed
-     * 1. Remove from catalog
-     * 2. Remove all links pointing TO this post from other posts
-     * 3. Clean up link meta
      */
     private function cleanup_deleted_post($post_id) {
         $post = get_post($post_id);
-        if (!$post) {
+        if (!$post || !in_array($post->post_type, array('post', 'page'))) {
             return;
         }
-        
-        // Only handle posts and pages
-        if (!in_array($post->post_type, array('post', 'page'))) {
-            return;
-        }
-        
+
         $this->debug_log('Cleaning up deleted post ' . $post_id . ' - ' . $post->post_title);
 
-        // 1. Remove from catalog (using optimized database table)
-        if ($this->catalog_db->entry_exists($post_id)) {
-            $this->catalog_db->delete_entry($post_id);
-            $this->debug_log('Removed post ' . $post_id . ' from catalog');
-        }
-        
-        // 2. Get the URL of the deleted post to find links pointing to it
+        // Remove from catalog database
+        $this->delete_catalog_entry($post_id);
+
+        // Get URL for link cleanup
         $deleted_url = get_permalink($post_id);
         if (!$deleted_url) {
-            $deleted_url = home_url('/?p=' . $post_id); // Fallback
+            $deleted_url = home_url('/?p=' . $post_id);
         }
-        
-        // 3. Find and remove all links pointing TO this post
+
+        // Remove all links pointing TO this post
         $links_removed = $this->remove_links_to_post($post_id, $deleted_url);
-        
+
         if ($links_removed > 0) {
             $this->log('Removed ' . $links_removed . ' links pointing to deleted post ' . $post_id);
         }
-        
-        // 4. Clean up any link meta on the deleted post itself
+
+        // Clean up link meta
         delete_post_meta($post_id, $this->link_meta_key);
         delete_post_meta($post_id, $this->original_content_meta);
     }
-    
+
     /**
-     * Remove all links pointing to a specific post from other posts
+     * Remove all links pointing to a specific post
      */
     private function remove_links_to_post($target_post_id, $target_url) {
         global $wpdb;
-        
+
         $links_removed = 0;
-        
-        // Find all posts that have links to this target
-        $posts_with_links = $wpdb->get_results(
-            $wpdb->prepare(
-                "SELECT pm.post_id, pm.meta_value 
-                FROM {$wpdb->postmeta} pm 
-                WHERE pm.meta_key = %s",
-                $this->link_meta_key
-            )
-        );
-        
+
+        $posts_with_links = $wpdb->get_results($wpdb->prepare(
+            "SELECT pm.post_id, pm.meta_value
+            FROM {$wpdb->postmeta} pm
+            WHERE pm.meta_key = %s",
+            $this->link_meta_key
+        ));
+
         foreach ($posts_with_links as $row) {
             $source_post_id = $row->post_id;
             $links = maybe_unserialize($row->meta_value);
-            
-            if (!is_array($links)) {
-                continue;
-            }
-            
-            // Check if any links point to our target
+
+            if (!is_array($links)) continue;
+
             $links_to_remove = array();
             foreach ($links as $index => $link) {
                 if (isset($link['target_post_id']) && intval($link['target_post_id']) === intval($target_post_id)) {
@@ -206,39 +734,27 @@ class LendCity_Smart_Linker {
                     unset($links[$index]);
                 }
             }
-            
-            if (empty($links_to_remove)) {
-                continue;
-            }
-            
-            // Remove the actual link HTML from post content
+
+            if (empty($links_to_remove)) continue;
+
             $post = get_post($source_post_id);
-            if (!$post) {
-                continue;
-            }
-            
+            if (!$post) continue;
+
             $content = $post->post_content;
             $original_content = $content;
-            
+
             foreach ($links_to_remove as $link) {
                 if (isset($link['link_id'])) {
-                    // Remove by link_id attribute
                     $pattern = '/<a[^>]*data-link-id="' . preg_quote($link['link_id'], '/') . '"[^>]*>([^<]*)<\/a>/i';
                     $content = preg_replace($pattern, '$1', $content);
                 }
             }
-            
-            // If content changed, update the post
+
             if ($content !== $original_content) {
-                wp_update_post(array(
-                    'ID' => $source_post_id,
-                    'post_content' => $content
-                ));
+                wp_update_post(array('ID' => $source_post_id, 'post_content' => $content));
                 $links_removed += count($links_to_remove);
-                $this->debug_log('Removed ' . count($links_to_remove) . ' link(s) from post ' . $source_post_id);
             }
-            
-            // Update the links meta (re-index array)
+
             $links = array_values($links);
             if (empty($links)) {
                 delete_post_meta($source_post_id, $this->link_meta_key);
@@ -246,465 +762,337 @@ class LendCity_Smart_Linker {
                 update_post_meta($source_post_id, $this->link_meta_key, $links);
             }
         }
-        
+
         return $links_removed;
     }
-    
+
+    // =========================================================================
+    // CATALOG BUILDING (AI-Powered with Enriched Metadata)
+    // =========================================================================
+
     /**
      * Background task: Catalog and link a newly published post
      */
     public function process_new_post_auto_link($post_id) {
-        // Prevent double processing with a transient lock
         $lock_key = 'lendcity_processing_' . $post_id;
         if (get_transient($lock_key)) {
-            $this->debug_log('Post ' . $post_id . ' already being processed - skipping duplicate');
+            $this->debug_log('Post ' . $post_id . ' already being processed - skipping');
             return;
         }
-        set_transient($lock_key, true, 300); // 5 minute lock
-        
-        // Clear cache to ensure we get fresh post data
+        set_transient($lock_key, true, 300);
+
         clean_post_cache($post_id);
         $post = get_post($post_id);
         if (!$post || $post->post_status !== 'publish') {
-            $this->debug_log('Auto-link skipped - post ' . $post_id . ' not found or not published');
             delete_transient($lock_key);
             return;
         }
-        
-        // Check if already has links (already processed)
+
         $existing_links = get_post_meta($post_id, $this->link_meta_key, true);
-        $this->debug_log('Post ' . $post_id . ' - existing_links: ' . (is_array($existing_links) ? count($existing_links) . ' links' : 'none'));
         if (!empty($existing_links) && is_array($existing_links) && count($existing_links) > 0) {
-            $this->debug_log('Post ' . $post_id . ' already has links - skipping');
             delete_transient($lock_key);
             return;
         }
-        
-        $this->debug_log('Processing auto-link for post ' . $post_id);
-        
-        // Add to catalog (using optimized database table)
+
+        // Build catalog entry for this post
         $entry = $this->build_single_post_catalog($post_id);
         if ($entry) {
-            $this->catalog_db->save_entry($post_id, $entry);
+            $this->insert_catalog_entry($post_id, $entry);
             $this->debug_log('Added post ' . $post_id . ' to catalog');
         }
-        
-        // Create outgoing links FROM this new post
+
+        // Create outgoing links
         $result = $this->create_links_from_source($post_id);
-        $this->log('Auto-link result for post ' . $post_id . ' - ' . ($result['success'] ? 'Success: ' . ($result['links_created'] ?? 0) . ' links' : $result['message']));
-        
-        // Release lock
+        $this->log('Auto-link result for post ' . $post_id . ' - ' .
+            ($result['success'] ? 'Success: ' . ($result['links_created'] ?? 0) . ' links' : $result['message']));
+
         delete_transient($lock_key);
     }
-    
+
     /**
-     * Create outgoing links FROM a source post
-     * Priority: 1 page link (if relevant) + up to 7 post links
-     * No duplicate anchor text allowed
-     */
-    public function create_links_from_source($source_id) {
-        $source = get_post($source_id);
-        if (!$source || $source->post_status !== 'publish') {
-            return array('success' => false, 'message' => 'Source post not found or not published');
-        }
-        
-        $catalog = $this->get_catalog();
-        if (empty($catalog)) {
-            return array('success' => false, 'message' => 'Catalog not built');
-        }
-        
-        // Get existing links from this source
-        $existing_links = get_post_meta($source_id, $this->link_meta_key, true) ?: array();
-        $current_link_count = count($existing_links);
-        
-        $this->debug_log("Post {$source_id} - existing links: {$current_link_count}");
-        
-        if ($current_link_count >= 8) {
-            return array('success' => false, 'message' => 'Source post already has 8 links');
-        }
-        
-        // Check how many page links and post links already exist
-        $existing_page_links = 0;
-        $used_anchors = array();
-        $linked_urls = array();
-        
-        foreach ($existing_links as $link) {
-            $used_anchors[] = strtolower($link['anchor']);
-            $linked_urls[] = $link['url'];
-            if (!empty($link['is_page'])) {
-                $existing_page_links++;
-            }
-        }
-        
-        // Determine slots available - 3 page links max, 7 post links max
-        $max_page_links = 3;
-        $max_post_links = 7;
-        
-        $page_slots = max(0, $max_page_links - $existing_page_links);
-        $post_slots = max(0, $max_post_links - ($current_link_count - $existing_page_links));
-        
-        if ($page_slots == 0 && $post_slots <= 0) {
-            return array('success' => false, 'message' => 'No link slots available');
-        }
-        
-        // Separate pages and posts from catalog
-        $available_pages = array();
-        $available_posts = array();
-        
-        foreach ($catalog as $id => $entry) {
-            if ($id == $source_id) continue;
-            if (in_array($entry['url'], $linked_urls)) continue;
-            
-            if (isset($entry['is_page']) && $entry['is_page']) {
-                $available_pages[$id] = $entry;
-            } else {
-                $available_posts[$id] = $entry;
-            }
-        }
-        
-        // Get source post content for context - FULL article for proper link distribution
-        $source_content = wp_strip_all_tags($source->post_content);
-        if (strlen($source_content) > 10000) {
-            $source_content = substr($source_content, 0, 10000) . '...';
-        }
-        
-        $source_entry = isset($catalog[$source_id]) ? $catalog[$source_id] : null;
-        $source_topics = $source_entry ? implode(', ', $source_entry['main_topics']) : '';
-        
-        // Build prompt
-        $prompt = "You are an SEO expert creating internal links for a blog post.\n\n";
-        $prompt .= "=== SOURCE POST (we are adding links TO this post's content) ===\n";
-        $prompt .= "Title: " . $source->post_title . "\n";
-        $prompt .= "Topics: " . $source_topics . "\n";
-        $prompt .= "Content Preview:\n" . $source_content . "\n\n";
-        
-        if (!empty($used_anchors)) {
-            $prompt .= "ALREADY USED ANCHORS IN THIS POST (DO NOT USE THESE):\n";
-            $prompt .= implode(', ', $used_anchors) . "\n\n";
-        }
-        
-        $links_requested = array();
-        
-        // Page linking section - now with priority and keywords
-        if ($page_slots > 0 && !empty($available_pages)) {
-            $prompt .= "=== AVAILABLE PAGES ===\n";
-            $count = 0;
-            
-            // Sort pages by priority (highest first)
-            uasort($available_pages, function($a, $b) {
-                $prio_a = $this->get_page_priority($a['post_id'] ?? 0);
-                $prio_b = $this->get_page_priority($b['post_id'] ?? 0);
-                return $prio_b - $prio_a;
-            });
-            
-            foreach ($available_pages as $id => $entry) {
-                if ($count >= 10) break; // Reduced from 15
-                $priority = $this->get_page_priority($id);
-                $keywords = $this->get_page_keywords($id);
-                
-                $prompt .= "ID:" . $id . " | " . $entry['title'] . " | P:" . $priority;
-                if ($keywords) {
-                    $prompt .= " | ANCHORS: " . $keywords;
-                }
-                $prompt .= "\n";
-                $count++;
-            }
-            $prompt .= "\n";
-            $links_requested[] = "Up to " . $page_slots . " page links";
-        }
-        
-        // Post linking section
-        if ($post_slots > 0 && !empty($available_posts)) {
-            $prompt .= "=== AVAILABLE POSTS ===\n";
-            $count = 0;
-            foreach ($available_posts as $id => $entry) {
-                if ($count >= 15) break; // Reduced from 30
-                $prompt .= "ID:" . $id . " | " . $entry['title'] . "\n";
-                $count++;
-            }
-            $prompt .= "\n";
-            $links_requested[] = "Up to " . $post_slots . " post links";
-        }
-        
-        $prompt .= "=== TASK ===\n";
-        $prompt .= "Find: " . implode(' + ', $links_requested) . "\n\n";
-        $prompt .= "RULES:\n";
-        $prompt .= "1. Anchor text: 2-5 words that exist in source content and describe the target\n";
-        $prompt .= "2. EACH ANCHOR MUST BE UNIQUE - never use the same anchor text twice in one article\n";
-        $prompt .= "3. Higher priority pages (P:4-5) preferred. Use ANCHORS keywords if listed.\n";
-        $prompt .= "4. Spread links throughout article (beginning, middle, end). Max 1 link per paragraph.\n";
-        $prompt .= "5. Quality over quantity - skip if no good match.\n";
-        $prompt .= "6. If you can't find a meaningful anchor phrase, DO NOT force a bad one - skip that target\n\n";
-        $prompt .= "Respond with ONLY a JSON array:\n";
-        $prompt .= '[{"target_id": 123, "anchor_text": "meaningful descriptive phrase", "is_page": true/false}, ...]\n';
-        $prompt .= 'Return empty array [] if no good opportunities.\n';
-        
-        $response = $this->call_claude_api($prompt, 1500);
-        
-        if (!$response['success']) {
-            return array('success' => false, 'message' => 'API error: ' . $response['error']);
-        }
-        
-        $suggestions = json_decode($response['text'], true);
-        if (!$suggestions && preg_match('/\[.*\]/s', $response['text'], $matches)) {
-            $suggestions = json_decode($matches[0], true);
-        }
-        
-        if (!is_array($suggestions) || empty($suggestions)) {
-            return array('success' => true, 'message' => 'No relevant linking opportunities found', 'links_created' => 0);
-        }
-        
-        // Insert links
-        $links_created = array();
-        $errors = array();
-        $page_links_added = $existing_page_links;
-        $post_links_added = $current_link_count - $existing_page_links;
-        $anchors_used_this_session = array(); // Track anchors used in this batch
-        
-        foreach ($suggestions as $suggestion) {
-            $target_id = intval($suggestion['target_id']);
-            $anchor = sanitize_text_field($suggestion['anchor_text']);
-            $is_page = !empty($suggestion['is_page']);
-            
-            if (!$target_id || !$anchor) continue;
-            
-            // Check for duplicate anchor text (case-insensitive)
-            $anchor_lower = strtolower(trim($anchor));
-            if (in_array($anchor_lower, $used_anchors) || in_array($anchor_lower, $anchors_used_this_session)) {
-                $errors[] = "Skipped duplicate anchor: '{$anchor}'";
-                continue;
-            }
-            
-            // Enforce 3 page max, 7 post max
-            if ($is_page && $page_links_added >= 3) continue;
-            if (!$is_page && $post_links_added >= 7) continue;
-            
-            // Check we're not over total limit (10 = 3 pages + 7 posts)
-            if (count($links_created) + $current_link_count >= 10) break;
-            
-            $target_entry = isset($catalog[$target_id]) ? $catalog[$target_id] : null;
-            if (!$target_entry) continue;
-            
-            $result = $this->insert_link_in_post($source_id, $anchor, $target_entry['url'], $target_id, $is_page);
-            
-            if ($result['success']) {
-                $links_created[] = array(
-                    'target_id' => $target_id,
-                    'target_title' => $target_entry['title'],
-                    'anchor' => $anchor,
-                    'is_page' => $is_page
-                );
-                $anchors_used_this_session[] = $anchor_lower; // Track this anchor
-                if ($is_page) {
-                    $page_links_added++;
-                } else {
-                    $post_links_added++;
-                }
-            } else {
-                $errors[] = $result['message'];
-            }
-        }
-        
-        return array(
-            'success' => true,
-            'links_created' => count($links_created),
-            'links' => $links_created,
-            'errors' => $errors
-        );
-    }
-    
-    /**
-     * Build catalog for a single post or page
+     * Build catalog for a single post or page with ENRICHED metadata
      */
     public function build_single_post_catalog($post_id) {
         $post = get_post($post_id);
         if (!$post || $post->post_status !== 'publish') {
-            error_log('LendCity Smart Linker: Post ' . $post_id . ' not found or not published');
             return false;
         }
-        
-        // Get content - try rendered content first for page builders
+
+        // Get content
         $content = wp_strip_all_tags($post->post_content);
-        
-        // If content is very short, try to get rendered content
+
         if (strlen($content) < 100) {
-            // Try getting the rendered/filtered content
             $rendered = apply_filters('the_content', $post->post_content);
             $content = wp_strip_all_tags($rendered);
         }
-        
-        // For pages with minimal content, use title and URL context
+
         if (strlen($content) < 50) {
             $content = "Page title: " . $post->post_title . ". URL slug: " . $post->post_name;
-            error_log('LendCity Smart Linker: Post ' . $post_id . ' has minimal content, using title/URL');
         }
-        
-        // Full article - up to 10000 chars for comprehensive analysis
-        if (strlen($content) > 10000) {
-            $content = substr($content, 0, 10000) . '...';
+
+        $word_count = str_word_count($content);
+
+        // Truncate for API
+        if (strlen($content) > 12000) {
+            $content = substr($content, 0, 12000) . '...';
         }
-        
+
         $is_page = ($post->post_type === 'page');
-        
-        $prompt = "Analyze this " . ($is_page ? "SERVICE PAGE" : "blog post") . " for internal linking purposes.\n\n";
-        $prompt .= "TITLE: " . $post->post_title . "\n";
-        $prompt .= "URL: " . get_permalink($post_id) . "\n\n";
-        $prompt .= "CONTENT:\n" . $content . "\n\n";
-        
-        if ($is_page) {
-            $prompt .= "NOTE: This is a HIGH-VALUE SERVICE PAGE for a mortgage business. Even if content is minimal, analyze based on title and URL.\n\n";
-        }
-        
-        $prompt .= "Respond with ONLY a JSON object:\n";
-        $prompt .= "{\n";
-        $prompt .= '  "summary": "4-5 sentence summary covering the main points, key advice, and unique insights from the content",' . "\n";
-        $prompt .= '  "main_topics": ["topic1", "topic2", "topic3", "topic4", "topic5", "topic6"],' . "\n";
-        $prompt .= '  "semantic_keywords": ["keyword1", "keyword2", "...8-10 related terms, synonyms, and variations"],' . "\n";
-        $prompt .= '  "entities": ["specific names, places, products, companies, or programs mentioned"],' . "\n";
-        $prompt .= '  "content_themes": ["broader themes like investment, financing, Canadian real estate, etc"],' . "\n";
-        $prompt .= '  "good_anchor_phrases": ["natural phrases other posts might use to link here"]' . "\n";
-        $prompt .= "}\n";
-        
-        $response = $this->call_claude_api($prompt, 800);
-        
+
+        // Enhanced prompt for richer catalog data
+        $prompt = $this->build_catalog_prompt($post, $content, $is_page);
+
+        $response = $this->call_claude_api($prompt, 1200);
+
         if (!$response['success']) {
-            error_log('LendCity Smart Linker: API failed for post ' . $post_id . ' - ' . ($response['error'] ?? 'unknown error'));
+            $this->log('API failed for post ' . $post_id . ' - ' . ($response['error'] ?? 'unknown'));
             return false;
         }
-        
+
         $data = json_decode($response['text'], true);
         if (!$data && preg_match('/\{.*\}/s', $response['text'], $matches)) {
             $data = json_decode($matches[0], true);
         }
-        
+
         if (!$data) {
-            error_log('LendCity Smart Linker: Failed to parse catalog for post ' . $post_id . ' - Response: ' . substr($response['text'], 0, 200));
+            $this->log('Failed to parse catalog for post ' . $post_id);
             return false;
         }
-        
-        error_log('LendCity Smart Linker: Successfully cataloged ' . $post->post_type . ' ' . $post_id . ' - ' . $post->post_title);
-        
+
+        $this->log('Successfully cataloged ' . $post->post_type . ' ' . $post_id . ' - ' . $post->post_title);
+
         return array(
+            // Core fields
             'post_id' => $post_id,
             'type' => $post->post_type,
             'is_page' => $is_page,
             'title' => $post->post_title,
             'url' => get_permalink($post_id),
-            'summary' => isset($data['summary']) ? $data['summary'] : '',
-            'main_topics' => isset($data['main_topics']) ? $data['main_topics'] : array(),
-            'semantic_keywords' => isset($data['semantic_keywords']) ? $data['semantic_keywords'] : array(),
-            'entities' => isset($data['entities']) ? $data['entities'] : array(),
-            'content_themes' => isset($data['content_themes']) ? $data['content_themes'] : array(),
-            'good_anchor_phrases' => isset($data['good_anchor_phrases']) ? $data['good_anchor_phrases'] : array(),
+            'summary' => $data['summary'] ?? '',
+            'main_topics' => $data['main_topics'] ?? array(),
+            'semantic_keywords' => $data['semantic_keywords'] ?? array(),
+            'entities' => $data['entities'] ?? array(),
+            'content_themes' => $data['content_themes'] ?? array(),
+            'good_anchor_phrases' => $data['good_anchor_phrases'] ?? array(),
+
+            // v3.0 Intelligence
+            'reader_intent' => $data['reader_intent'] ?? 'educational',
+            'difficulty_level' => $data['difficulty_level'] ?? 'intermediate',
+            'funnel_stage' => $data['funnel_stage'] ?? 'awareness',
+            'topic_cluster' => $data['topic_cluster'] ?? null,
+            'related_clusters' => $data['related_clusters'] ?? array(),
+            'is_pillar_content' => (bool)($data['is_pillar_content'] ?? false),
+            'word_count' => $word_count,
+            'content_quality_score' => intval($data['content_quality_score'] ?? 50),
+
+            // v4.0 Seasonal/Evergreen
+            'content_lifespan' => $data['content_lifespan'] ?? 'evergreen',
+            'publish_season' => $data['publish_season'] ?? null,
+
+            // v4.0 Geographic
+            'target_regions' => $data['target_regions'] ?? array(),
+            'target_cities' => $data['target_cities'] ?? array(),
+
+            // v4.0 Persona
+            'target_persona' => $data['target_persona'] ?? 'general',
+
+            // v4.0 Conversion signals
+            'has_cta' => (bool)($data['has_cta'] ?? false),
+            'has_calculator' => (bool)($data['has_calculator'] ?? false),
+            'has_lead_form' => (bool)($data['has_lead_form'] ?? false),
+            'monetization_value' => intval($data['monetization_value'] ?? 5),
+
+            // v4.0 Content format
+            'content_format' => $data['content_format'] ?? 'other',
+
             'updated_at' => current_time('mysql')
         );
     }
-    
+
     /**
-     * Build catalog for multiple posts in a SINGLE API call
-     * Sends up to 10 full articles (14k chars each) for analysis
+     * Build the enhanced catalog prompt for Claude
+     */
+    private function build_catalog_prompt($post, $content, $is_page) {
+        $prompt = "Analyze this " . ($is_page ? "SERVICE PAGE" : "blog post") . " for a Canadian mortgage/real estate investing website (LendCity). Extract COMPREHENSIVE metadata for intelligent internal linking.\n\n";
+        $prompt .= "TITLE: " . $post->post_title . "\n";
+        $prompt .= "URL: " . get_permalink($post->ID) . "\n";
+        $prompt .= "PUBLISHED: " . $post->post_date . "\n\n";
+        $prompt .= "CONTENT:\n" . $content . "\n\n";
+
+        if ($is_page) {
+            $prompt .= "NOTE: This is a HIGH-VALUE SERVICE PAGE. Analyze based on title and URL if content is minimal.\n\n";
+        }
+
+        $prompt .= "Respond with ONLY a JSON object containing ALL fields:\n";
+        $prompt .= "{\n";
+
+        // Core content analysis
+        $prompt .= '  "summary": "5-6 sentence comprehensive summary covering main points, key advice, unique insights, and target audience",' . "\n";
+        $prompt .= '  "main_topics": ["8-10 specific topics covered"],' . "\n";
+        $prompt .= '  "semantic_keywords": ["12-15 related terms, synonyms, long-tail search phrases"],' . "\n";
+        $prompt .= '  "entities": ["names, cities, provinces, products, programs, companies, regulations mentioned"],' . "\n";
+        $prompt .= '  "content_themes": ["broader themes: investment, financing, Canadian real estate, etc"],' . "\n";
+        $prompt .= '  "good_anchor_phrases": ["10-12 natural 2-5 word phrases for linking TO this content"],' . "\n";
+
+        // v3.0 Intelligence
+        $prompt .= '  "reader_intent": "educational|transactional|navigational",' . "\n";
+        $prompt .= '  "difficulty_level": "beginner|intermediate|advanced",' . "\n";
+        $prompt .= '  "funnel_stage": "awareness|consideration|decision",' . "\n";
+        $prompt .= '  "topic_cluster": "main-topic-slug",' . "\n";
+        $prompt .= '  "related_clusters": ["other relevant topic clusters"],' . "\n";
+        $prompt .= '  "is_pillar_content": true/false,' . "\n";
+        $prompt .= '  "content_quality_score": 1-100,' . "\n";
+
+        // v4.0 NEW: Seasonal/Evergreen
+        $prompt .= '  "content_lifespan": "evergreen|seasonal|time-sensitive|dated",' . "\n";
+        $prompt .= '  "publish_season": "spring-market|tax-season|year-end|rate-change|null",' . "\n";
+
+        // v4.0 NEW: Geographic
+        $prompt .= '  "target_regions": ["Ontario", "BC", "Alberta", "National", etc],' . "\n";
+        $prompt .= '  "target_cities": ["Toronto", "Vancouver", "Calgary", etc or empty if national],' . "\n";
+
+        // v4.0 NEW: Audience Persona
+        $prompt .= '  "target_persona": "first-time-buyer|investor|realtor|refinancer|self-employed|general",' . "\n";
+
+        // v4.0 NEW: Conversion signals
+        $prompt .= '  "has_cta": true/false (has clear call-to-action?),' . "\n";
+        $prompt .= '  "has_calculator": true/false (has mortgage/investment calculator?),' . "\n";
+        $prompt .= '  "has_lead_form": true/false (has contact form or lead capture?),' . "\n";
+        $prompt .= '  "monetization_value": 1-10 (business value: 10=service page, 1=general info),' . "\n";
+
+        // v4.0 NEW: Content format
+        $prompt .= '  "content_format": "guide|how-to|list|case-study|news|faq|comparison|calculator|landing-page|other"' . "\n";
+
+        $prompt .= "}\n\n";
+
+        $prompt .= "=== GUIDELINES ===\n";
+        $prompt .= "TOPIC CLUSTERS (use consistent slugs):\n";
+        $prompt .= "- brrrr-strategy, rental-investing, mortgage-types, first-time-buyers\n";
+        $prompt .= "- refinancing, investment-properties, market-analysis, tax-strategies\n";
+        $prompt .= "- property-management, credit-repair, self-employed-mortgages, pre-approval\n";
+        $prompt .= "- down-payment, closing-costs, real-estate-agents, home-buying-process\n\n";
+
+        $prompt .= "PERSONA HINTS:\n";
+        $prompt .= "- first-time-buyer: FTHB, first home, saving for down payment, pre-approval\n";
+        $prompt .= "- investor: BRRRR, rental, ROI, cash flow, portfolio, multi-family\n";
+        $prompt .= "- realtor: agent tips, client advice, market insights for agents\n";
+        $prompt .= "- refinancer: refinance, equity, HELOC, debt consolidation\n";
+        $prompt .= "- self-employed: business owners, stated income, tax returns, BFS\n\n";
+
+        $prompt .= "LIFESPAN:\n";
+        $prompt .= "- evergreen: timeless advice (how to qualify, what is BRRRR)\n";
+        $prompt .= "- seasonal: spring market, tax season, year-end planning\n";
+        $prompt .= "- time-sensitive: rate announcements, policy changes (good for 1-2 years)\n";
+        $prompt .= "- dated: mentions specific years/rates that will become stale\n";
+
+        return $prompt;
+    }
+
+    /**
+     * Build catalog for multiple posts in a SINGLE API call (batch mode)
      */
     public function build_batch_catalog($post_ids) {
         $posts_data = array();
-        
-        // Gather all post data first
+
         foreach ($post_ids as $post_id) {
             $post = get_post($post_id);
-            if (!$post || $post->post_status !== 'publish') {
-                continue;
-            }
-            
+            if (!$post || $post->post_status !== 'publish') continue;
+
             $content = wp_strip_all_tags($post->post_content);
-            
+
             if (strlen($content) < 100) {
                 $rendered = apply_filters('the_content', $post->post_content);
                 $content = wp_strip_all_tags($rendered);
             }
-            
+
             if (strlen($content) < 50) {
                 $content = "Page title: " . $post->post_title . ". URL slug: " . $post->post_name;
             }
-            
-            // Full content - up to 10000 chars per post (balanced for rate limits)
-            if (strlen($content) > 10000) {
-                $content = substr($content, 0, 10000) . '...';
+
+            if (strlen($content) > 8000) {
+                $content = substr($content, 0, 8000) . '...';
             }
-            
+
             $posts_data[] = array(
                 'id' => $post_id,
                 'title' => $post->post_title,
                 'url' => get_permalink($post_id),
                 'type' => $post->post_type,
                 'is_page' => ($post->post_type === 'page'),
-                'content' => $content
+                'content' => $content,
+                'word_count' => str_word_count($content)
             );
         }
-        
-        if (empty($posts_data)) {
-            return array();
-        }
-        
-        // Build single prompt for all posts
-        $prompt = "Analyze these " . count($posts_data) . " posts/pages for internal linking purposes. This is for a mortgage business website.\n\n";
-        
+
+        if (empty($posts_data)) return array();
+
+        // Build batch prompt
+        $prompt = "Analyze these " . count($posts_data) . " posts/pages for a Canadian mortgage/real estate website. Extract comprehensive metadata for internal linking.\n\n";
+
         foreach ($posts_data as $index => $pdata) {
             $prompt .= "=== ARTICLE " . ($index + 1) . " (ID: " . $pdata['id'] . ") ===\n";
             $prompt .= "Type: " . ($pdata['is_page'] ? "SERVICE PAGE" : "Blog Post") . "\n";
             $prompt .= "Title: " . $pdata['title'] . "\n";
             $prompt .= "Content:\n" . $pdata['content'] . "\n\n";
         }
-        
-        $prompt .= "For EACH article, analyze the FULL content and respond with a JSON array:\n";
-        $prompt .= "[\n";
-        $prompt .= "  {\n";
+
+        $prompt .= "For EACH article, respond with a JSON array. Each object must have ALL these fields:\n";
+        $prompt .= "[\n  {\n";
         $prompt .= '    "id": POST_ID_NUMBER,' . "\n";
-        $prompt .= '    "summary": "4-5 sentence summary covering the main points, key advice, and unique insights from the article",' . "\n";
-        $prompt .= '    "main_topics": ["6 main topics from throughout the article"],' . "\n";
-        $prompt .= '    "semantic_keywords": ["8-10 related terms, synonyms, variations found anywhere in content"],' . "\n";
-        $prompt .= '    "entities": ["specific names, places, programs, products mentioned"],' . "\n";
-        $prompt .= '    "content_themes": ["broader themes like investment, financing, Canadian real estate"],' . "\n";
-        $prompt .= '    "good_anchor_phrases": ["natural phrases from any part of article that other posts could use to link here"]' . "\n";
-        $prompt .= "  }\n";
-        $prompt .= "]\n";
-        $prompt .= "Return one object per article in the same order. Analyze the ENTIRE content, not just the beginning.";
-        
-        // Large token limit for batch response
-        $response = $this->call_claude_api($prompt, 4000);
-        
+        $prompt .= '    "summary": "5-6 sentence summary",' . "\n";
+        $prompt .= '    "main_topics": ["8-10 topics"],' . "\n";
+        $prompt .= '    "semantic_keywords": ["12-15 keywords"],' . "\n";
+        $prompt .= '    "entities": ["names, places, programs"],' . "\n";
+        $prompt .= '    "content_themes": ["broader themes"],' . "\n";
+        $prompt .= '    "good_anchor_phrases": ["10-12 link phrases"],' . "\n";
+        $prompt .= '    "reader_intent": "educational|transactional|navigational",' . "\n";
+        $prompt .= '    "difficulty_level": "beginner|intermediate|advanced",' . "\n";
+        $prompt .= '    "funnel_stage": "awareness|consideration|decision",' . "\n";
+        $prompt .= '    "topic_cluster": "main-topic-slug",' . "\n";
+        $prompt .= '    "related_clusters": ["related clusters"],' . "\n";
+        $prompt .= '    "is_pillar_content": true/false,' . "\n";
+        $prompt .= '    "content_quality_score": 1-100' . "\n";
+        $prompt .= "  }\n]\n";
+
+        $response = $this->call_claude_api($prompt, 5000);
+
         if (!$response['success']) {
-            error_log('LendCity Smart Linker: Batch API failed - ' . ($response['error'] ?? 'unknown error'));
             // Fallback to individual processing
             $entries = array();
             foreach ($post_ids as $post_id) {
                 $entry = $this->build_single_post_catalog($post_id);
-                if ($entry) $entries[$post_id] = $entry;
+                if ($entry) {
+                    $this->insert_catalog_entry($post_id, $entry);
+                    $entries[$post_id] = $entry;
+                }
             }
             return $entries;
         }
-        
-        // Parse JSON array response
+
         $results = json_decode($response['text'], true);
         if (!$results && preg_match('/\[.*\]/s', $response['text'], $matches)) {
             $results = json_decode($matches[0], true);
         }
-        
+
         if (!is_array($results)) {
-            error_log('LendCity Smart Linker: Failed to parse batch response, falling back to individual');
+            // Fallback
             $entries = array();
             foreach ($post_ids as $post_id) {
                 $entry = $this->build_single_post_catalog($post_id);
-                if ($entry) $entries[$post_id] = $entry;
+                if ($entry) {
+                    $this->insert_catalog_entry($post_id, $entry);
+                    $entries[$post_id] = $entry;
+                }
             }
             return $entries;
         }
-        
-        // Build catalog entries
+
+        // Build and save catalog entries
         $entries = array();
         foreach ($results as $data) {
             $post_id = isset($data['id']) ? intval($data['id']) : 0;
             if (!$post_id) continue;
-            
-            // Find original post data
+
             $pdata = null;
             foreach ($posts_data as $pd) {
                 if ($pd['id'] == $post_id) {
@@ -712,10 +1100,9 @@ class LendCity_Smart_Linker {
                     break;
                 }
             }
-            
             if (!$pdata) continue;
-            
-            $entries[$post_id] = array(
+
+            $entry = array(
                 'post_id' => $post_id,
                 'type' => $pdata['type'],
                 'is_page' => $pdata['is_page'],
@@ -727,171 +1114,555 @@ class LendCity_Smart_Linker {
                 'entities' => isset($data['entities']) ? $data['entities'] : array(),
                 'content_themes' => isset($data['content_themes']) ? $data['content_themes'] : array(),
                 'good_anchor_phrases' => isset($data['good_anchor_phrases']) ? $data['good_anchor_phrases'] : array(),
+                'reader_intent' => isset($data['reader_intent']) ? $data['reader_intent'] : 'educational',
+                'difficulty_level' => isset($data['difficulty_level']) ? $data['difficulty_level'] : 'intermediate',
+                'funnel_stage' => isset($data['funnel_stage']) ? $data['funnel_stage'] : 'awareness',
+                'topic_cluster' => isset($data['topic_cluster']) ? $data['topic_cluster'] : null,
+                'related_clusters' => isset($data['related_clusters']) ? $data['related_clusters'] : array(),
+                'is_pillar_content' => isset($data['is_pillar_content']) ? (bool)$data['is_pillar_content'] : false,
+                'word_count' => $pdata['word_count'],
+                'content_quality_score' => isset($data['content_quality_score']) ? intval($data['content_quality_score']) : 50,
                 'updated_at' => current_time('mysql')
             );
+
+            $this->insert_catalog_entry($post_id, $entry);
+            $entries[$post_id] = $entry;
         }
-        
-        error_log('LendCity Smart Linker: Batch cataloged ' . count($entries) . ' of ' . count($post_ids) . ' posts in single API call');
-        
+
+        $this->log('Batch cataloged ' . count($entries) . ' of ' . count($post_ids) . ' posts');
         return $entries;
     }
-    
+
+    // =========================================================================
+    // INTELLIGENT LINKING (Uses Enriched Catalog Data)
+    // =========================================================================
+
     /**
-     * Get the current catalog
-     *
-     * PERFORMANCE NOTE: Now uses LendCity_Catalog_DB which stores entries in a
-     * dedicated database table with proper indexing. The in-memory cache within
-     * the DB class ensures we don't hit the database multiple times per request.
-     *
-     * For partial access (single entry), use $this->catalog_db->get_entry($post_id)
-     * instead of loading the full catalog.
-     *
-     * @return array Associative array of post_id => catalog entry
+     * Create outgoing links FROM a source post using intelligent matching
      */
-    public function get_catalog() {
-        return $this->catalog_db->get_all_entries();
+    public function create_links_from_source($source_id) {
+        $source = get_post($source_id);
+        if (!$source || $source->post_status !== 'publish') {
+            return array('success' => false, 'message' => 'Source post not found');
+        }
+
+        $source_entry = $this->get_catalog_entry($source_id);
+        if (!$source_entry) {
+            return array('success' => false, 'message' => 'Source not in catalog');
+        }
+
+        // Dynamic link limits based on word count
+        $word_count = isset($source_entry['word_count']) ? intval($source_entry['word_count']) : 0;
+        if ($word_count == 0) {
+            // Fallback: estimate from content
+            $word_count = str_word_count(wp_strip_all_tags($source->post_content));
+        }
+
+        // Set limits based on article length
+        if ($word_count < 800) {
+            $max_total = 4;
+            $max_pages = 2;
+            $max_posts = 2;
+        } elseif ($word_count < 1500) {
+            $max_total = 7;
+            $max_pages = 3;
+            $max_posts = 4;
+        } else {
+            $max_total = 10;
+            $max_pages = 3;
+            $max_posts = 7;
+        }
+
+        // Get existing links
+        $existing_links = get_post_meta($source_id, $this->link_meta_key, true) ?: array();
+        $current_link_count = count($existing_links);
+
+        if ($current_link_count >= $max_total) {
+            return array('success' => false, 'message' => 'Source already has ' . $max_total . ' links (max for ' . $word_count . ' words)');
+        }
+
+        // Get used anchors and linked URLs
+        $existing_page_links = 0;
+        $used_anchors = array();
+        $linked_urls = array();
+
+        foreach ($existing_links as $link) {
+            $used_anchors[] = strtolower($link['anchor']);
+            $linked_urls[] = $link['url'];
+            if (!empty($link['is_page'])) $existing_page_links++;
+        }
+
+        $page_slots = max(0, $max_pages - $existing_page_links);
+        $post_slots = max(0, $max_posts - ($current_link_count - $existing_page_links));
+
+        if ($page_slots == 0 && $post_slots <= 0) {
+            return array('success' => false, 'message' => 'No link slots available');
+        }
+
+        // INTELLIGENT MATCHING: Get related content from same/related clusters
+        $catalog = $this->get_catalog();
+
+        // Filter and score potential targets
+        $available_pages = array();
+        $available_posts = array();
+
+        foreach ($catalog as $id => $entry) {
+            if ($id == $source_id) continue;
+            if (in_array($entry['url'], $linked_urls)) continue;
+
+            // Calculate relevance score
+            $score = $this->calculate_relevance_score($source_entry, $entry);
+            $entry['relevance_score'] = $score;
+
+            if ($entry['is_page']) {
+                $available_pages[$id] = $entry;
+            } else {
+                $available_posts[$id] = $entry;
+            }
+        }
+
+        // Sort by relevance score
+        uasort($available_pages, function($a, $b) {
+            $prio_a = $this->get_page_priority($a['post_id']);
+            $prio_b = $this->get_page_priority($b['post_id']);
+            if ($prio_a !== $prio_b) return $prio_b - $prio_a;
+            return ($b['relevance_score'] ?? 0) - ($a['relevance_score'] ?? 0);
+        });
+
+        uasort($available_posts, function($a, $b) {
+            return ($b['relevance_score'] ?? 0) - ($a['relevance_score'] ?? 0);
+        });
+
+        // Get source content
+        $source_content = wp_strip_all_tags($source->post_content);
+        if (strlen($source_content) > 10000) {
+            $source_content = substr($source_content, 0, 10000) . '...';
+        }
+
+        // Build prompt with enriched context
+        $prompt = $this->build_linking_prompt($source, $source_entry, $source_content,
+            $available_pages, $available_posts, $used_anchors, $page_slots, $post_slots);
+
+        $response = $this->call_claude_api($prompt, 1500);
+
+        if (!$response['success']) {
+            return array('success' => false, 'message' => 'API error: ' . $response['error']);
+        }
+
+        $suggestions = json_decode($response['text'], true);
+        if (!$suggestions && preg_match('/\[.*\]/s', $response['text'], $matches)) {
+            $suggestions = json_decode($matches[0], true);
+        }
+
+        if (!is_array($suggestions) || empty($suggestions)) {
+            return array('success' => true, 'message' => 'No relevant opportunities', 'links_created' => 0);
+        }
+
+        // Insert links
+        $links_created = array();
+        $errors = array();
+        $page_links_added = $existing_page_links;
+        $post_links_added = $current_link_count - $existing_page_links;
+        $anchors_used = array();
+
+        foreach ($suggestions as $suggestion) {
+            $target_id = intval($suggestion['target_id']);
+            $anchor = sanitize_text_field($suggestion['anchor_text']);
+            $is_page = !empty($suggestion['is_page']);
+
+            if (!$target_id || !$anchor) continue;
+
+            $anchor_lower = strtolower(trim($anchor));
+            if (in_array($anchor_lower, $used_anchors) || in_array($anchor_lower, $anchors_used)) {
+                continue;
+            }
+
+            if ($is_page && $page_links_added >= $max_pages) continue;
+            if (!$is_page && $post_links_added >= $max_posts) continue;
+            if (count($links_created) + $current_link_count >= $max_total) break;
+
+            $target_entry = $this->get_catalog_entry($target_id);
+            if (!$target_entry) continue;
+
+            $result = $this->insert_link_in_post($source_id, $anchor, $target_entry['url'], $target_id, $is_page);
+
+            if ($result['success']) {
+                $links_created[] = array(
+                    'target_id' => $target_id,
+                    'target_title' => $target_entry['title'],
+                    'anchor' => $anchor,
+                    'is_page' => $is_page
+                );
+                $anchors_used[] = $anchor_lower;
+                if ($is_page) $page_links_added++;
+                else $post_links_added++;
+            } else {
+                $errors[] = $result['message'];
+            }
+        }
+
+        return array(
+            'success' => true,
+            'links_created' => count($links_created),
+            'links' => $links_created,
+            'errors' => $errors
+        );
     }
 
     /**
-     * Clear the catalog cache (call after updating catalog)
-     *
-     * NOTE: The new database class handles caching internally. This method now
-     * delegates to the DB class's cache clearing mechanism.
+     * Calculate relevance score between source and target using ALL v4.0 intelligence
+     * Higher score = better link match
      */
-    public function clear_catalog_cache() {
-        $this->catalog_db->clear_cache();
+    private function calculate_relevance_score($source, $target) {
+        $score = 0;
+
+        // =================================================================
+        // TOPIC & CLUSTER MATCHING (0-50 points)
+        // =================================================================
+
+        // Same topic cluster = high relevance
+        if ($source['topic_cluster'] && $source['topic_cluster'] === $target['topic_cluster']) {
+            $score += 30;
+        }
+
+        // Related clusters
+        if (!empty($source['related_clusters']) && in_array($target['topic_cluster'], $source['related_clusters'])) {
+            $score += 20;
+        }
+
+        // Topic overlap
+        $source_topics = $source['main_topics'] ?? array();
+        $target_topics = $target['main_topics'] ?? array();
+        $overlap = count(array_intersect($source_topics, $target_topics));
+        $score += min($overlap * 5, 25);
+
+        // Keyword overlap
+        $source_keywords = $source['semantic_keywords'] ?? array();
+        $target_keywords = $target['semantic_keywords'] ?? array();
+        $keyword_overlap = count(array_intersect($source_keywords, $target_keywords));
+        $score += min($keyword_overlap * 3, 15);
+
+        // =================================================================
+        // FUNNEL PROGRESSION (0-25 points)
+        // =================================================================
+
+        $funnel_order = array('awareness' => 1, 'consideration' => 2, 'decision' => 3);
+        $source_funnel = $funnel_order[$source['funnel_stage']] ?? 2;
+        $target_funnel = $funnel_order[$target['funnel_stage']] ?? 2;
+
+        // Same stage or progressive flow (awareness→consideration→decision)
+        if ($target_funnel === $source_funnel) {
+            $score += 15; // Same stage - reinforcing content
+        } elseif ($target_funnel === $source_funnel + 1) {
+            $score += 25; // Next stage - advancing the reader!
+        } elseif (abs($source_funnel - $target_funnel) === 1) {
+            $score += 10; // Adjacent stage
+        }
+
+        // =================================================================
+        // DIFFICULTY PROGRESSION (0-15 points)
+        // =================================================================
+
+        $diff_order = array('beginner' => 1, 'intermediate' => 2, 'advanced' => 3);
+        $source_diff = $diff_order[$source['difficulty_level']] ?? 2;
+        $target_diff = $diff_order[$target['difficulty_level']] ?? 2;
+
+        if ($target_diff === $source_diff) {
+            $score += 10; // Same level
+        } elseif ($target_diff === $source_diff + 1) {
+            $score += 15; // Next level up - good progression
+        } elseif ($target_diff === $source_diff - 1) {
+            $score += 5; // Simpler content (for clarification)
+        }
+
+        // =================================================================
+        // PERSONA MATCHING (0-30 points) - NEW v4.0
+        // =================================================================
+
+        $source_persona = $source['target_persona'] ?? 'general';
+        $target_persona = $target['target_persona'] ?? 'general';
+
+        if ($source_persona === $target_persona && $source_persona !== 'general') {
+            $score += 30; // Same specific persona - very relevant!
+        } elseif ($source_persona === 'general' || $target_persona === 'general') {
+            $score += 10; // General content matches with anything
+        }
+        // Different specific personas = no bonus (avoid mixing investor/first-timer)
+
+        // =================================================================
+        // GEOGRAPHIC MATCHING (0-20 points) - NEW v4.0
+        // =================================================================
+
+        $source_regions = $source['target_regions'] ?? array();
+        $target_regions = $target['target_regions'] ?? array();
+
+        if (!empty($source_regions) && !empty($target_regions)) {
+            if (in_array('National', $source_regions) || in_array('National', $target_regions)) {
+                $score += 10; // National content is broadly relevant
+            }
+            $region_overlap = count(array_intersect($source_regions, $target_regions));
+            if ($region_overlap > 0) {
+                $score += min($region_overlap * 10, 20); // Same regions
+            }
+        } elseif (empty($source_regions) || empty($target_regions)) {
+            $score += 5; // One is unspecified, assume compatible
+        }
+
+        // =================================================================
+        // CONTENT LIFESPAN MATCHING (0-15 points) - NEW v4.0
+        // =================================================================
+
+        $source_lifespan = $source['content_lifespan'] ?? 'evergreen';
+        $target_lifespan = $target['content_lifespan'] ?? 'evergreen';
+
+        // Prefer linking evergreen to evergreen
+        if ($source_lifespan === 'evergreen' && $target_lifespan === 'evergreen') {
+            $score += 15;
+        } elseif ($source_lifespan === 'evergreen' && $target_lifespan === 'dated') {
+            $score -= 10; // Penalty: don't link evergreen to dated content
+        } elseif ($target_lifespan === 'evergreen') {
+            $score += 10; // Always good to link TO evergreen content
+        }
+
+        // =================================================================
+        // QUALITY & VALUE SIGNALS (0-30 points)
+        // =================================================================
+
+        // Pillar content gets bonus
+        if (!empty($target['is_pillar_content'])) {
+            $score += 20;
+        }
+
+        // Quality score (0-10 points)
+        $score += ($target['content_quality_score'] ?? 50) / 10;
+
+        // Freshness bonus (0-10 points) - NEW v4.0
+        $score += ($target['freshness_score'] ?? 50) / 10;
+
+        // Monetization value (0-10 points) - NEW v4.0
+        // Prioritize linking to money pages
+        $score += ($target['monetization_value'] ?? 5);
+
+        // =================================================================
+        // CONVERSION SIGNALS (0-15 points) - NEW v4.0
+        // =================================================================
+
+        // Bonus for linking to pages with CTAs/forms (conversion-focused)
+        if (!empty($target['has_cta'])) $score += 5;
+        if (!empty($target['has_calculator'])) $score += 5;
+        if (!empty($target['has_lead_form'])) $score += 5;
+
+        // =================================================================
+        // LINK GAP PRIORITY (0-15 points) - NEW v4.0
+        // =================================================================
+
+        // Prioritize content that needs links (orphaned content)
+        $gap = $target['link_gap_priority'] ?? 50;
+        $score += ($gap / 100) * 15;
+
+        // =================================================================
+        // CONTENT FORMAT MATCHING (0-10 points) - NEW v4.0
+        // =================================================================
+
+        $format_flow = array(
+            'how-to' => array('guide', 'calculator', 'comparison'),
+            'guide' => array('how-to', 'case-study', 'faq'),
+            'list' => array('guide', 'comparison', 'how-to'),
+            'case-study' => array('guide', 'how-to', 'landing-page'),
+            'faq' => array('guide', 'how-to', 'landing-page'),
+            'comparison' => array('calculator', 'landing-page', 'guide'),
+        );
+
+        $source_format = $source['content_format'] ?? 'other';
+        $target_format = $target['content_format'] ?? 'other';
+
+        if (isset($format_flow[$source_format]) && in_array($target_format, $format_flow[$source_format])) {
+            $score += 10; // Natural content format progression
+        }
+
+        return max(0, $score); // Never negative
     }
 
     /**
-     * Get catalog stats
-     *
-     * PERFORMANCE NOTE: Now uses optimized COUNT queries instead of loading
-     * the entire catalog into memory.
-     *
-     * @return array Stats with 'total', 'posts', and 'pages' counts
+     * Build the intelligent linking prompt
      */
-    public function get_catalog_stats() {
-        return $this->catalog_db->get_stats();
+    private function build_linking_prompt($source, $source_entry, $source_content,
+        $available_pages, $available_posts, $used_anchors, $page_slots, $post_slots) {
+
+        $prompt = "You are an SEO expert creating internal links for a blog post.\n\n";
+        $prompt .= "=== SOURCE POST ===\n";
+        $prompt .= "Title: " . $source->post_title . "\n";
+        $prompt .= "Topic Cluster: " . ($source_entry['topic_cluster'] ?? 'general') . "\n";
+        $prompt .= "Funnel Stage: " . ($source_entry['funnel_stage'] ?? 'awareness') . "\n";
+        $prompt .= "Difficulty: " . ($source_entry['difficulty_level'] ?? 'intermediate') . "\n";
+        $prompt .= "Topics: " . implode(', ', $source_entry['main_topics'] ?? array()) . "\n";
+        $prompt .= "Content:\n" . $source_content . "\n\n";
+
+        if (!empty($used_anchors)) {
+            $prompt .= "ALREADY USED ANCHORS (DO NOT USE):\n" . implode(', ', $used_anchors) . "\n\n";
+        }
+
+        $links_requested = array();
+
+        if ($page_slots > 0 && !empty($available_pages)) {
+            $prompt .= "=== AVAILABLE PAGES (max " . $page_slots . " links) ===\n";
+            $count = 0;
+            foreach ($available_pages as $id => $entry) {
+                if ($count >= 8) break;
+                $priority = $this->get_page_priority($id);
+                $keywords = $this->get_page_keywords($id);
+                $prompt .= "ID:" . $id . " | " . $entry['title'] . " | P:" . $priority;
+                $prompt .= " | Cluster:" . ($entry['topic_cluster'] ?? 'none');
+                if ($keywords) $prompt .= " | ANCHORS:" . $keywords;
+                $prompt .= "\n";
+                $count++;
+            }
+            $prompt .= "\n";
+            $links_requested[] = "Up to $page_slots page links";
+        }
+
+        if ($post_slots > 0 && !empty($available_posts)) {
+            $prompt .= "=== AVAILABLE POSTS (max " . $post_slots . " links) - SORTED BY RELEVANCE ===\n";
+            $count = 0;
+            foreach ($available_posts as $id => $entry) {
+                if ($count >= 12) break;
+                $prompt .= "ID:" . $id . " | " . $entry['title'];
+                $prompt .= " | Cluster:" . ($entry['topic_cluster'] ?? 'none');
+                $prompt .= " | Funnel:" . ($entry['funnel_stage'] ?? 'awareness');
+                $prompt .= "\n";
+                $count++;
+            }
+            $prompt .= "\n";
+            $links_requested[] = "Up to $post_slots post links";
+        }
+
+        $prompt .= "=== TASK ===\n";
+        $prompt .= "Find: " . implode(' + ', $links_requested) . "\n\n";
+        $prompt .= "SMART LINKING RULES:\n";
+        $prompt .= "1. Prefer targets in SAME or RELATED topic clusters\n";
+        $prompt .= "2. Link to content that advances the reader's journey (awareness→consideration→decision)\n";
+        $prompt .= "3. Anchor text: 2-5 words that EXIST in source content and describe target\n";
+        $prompt .= "4. Each anchor must be UNIQUE - never duplicate\n";
+        $prompt .= "5. Higher priority pages (P:4-5) should get links if relevant\n";
+        $prompt .= "6. Spread links throughout article. Max 1 link per paragraph.\n";
+        $prompt .= "7. Quality > quantity - skip if no good semantic match\n\n";
+        $prompt .= "Respond with ONLY a JSON array:\n";
+        $prompt .= '[{"target_id": 123, "anchor_text": "meaningful phrase", "is_page": true/false}, ...]\n';
+        $prompt .= 'Return [] if no good opportunities.\n';
+
+        return $prompt;
     }
-    
+
     /**
      * REVERSED LOGIC: Find posts that should link TO a target page/post
-     * and insert links in those source posts
-     * No limit on incoming links - targets can receive unlimited links
-     * But source posts max out at 8 outgoing links
      */
     public function create_links_to_target($target_id) {
         $target = get_post($target_id);
         if (!$target) {
             return array('success' => false, 'message' => 'Target not found');
         }
-        
+
+        $target_entry = $this->get_catalog_entry($target_id);
+        if (!$target_entry) {
+            return array('success' => false, 'message' => 'Target not in catalog. Rebuild catalog.');
+        }
+
         $catalog = $this->get_catalog();
         if (empty($catalog)) {
-            return array('success' => false, 'message' => 'Catalog not built');
+            return array('success' => false, 'message' => 'Catalog empty');
         }
-        
-        $target_entry = isset($catalog[$target_id]) ? $catalog[$target_id] : null;
-        if (!$target_entry) {
-            return array('success' => false, 'message' => 'Target not in catalog. Please rebuild catalog.');
-        }
-        
-        // Get all POSTS (not pages) that could link to this target
+
+        // Find eligible source posts
         $potential_sources = array();
-        $used_anchors_by_post = array(); // Track existing anchors per post
-        
+        $used_anchors_by_post = array();
+
         foreach ($catalog as $id => $entry) {
-            // Skip the target itself
             if ($id == $target_id) continue;
-            // Skip pages - only posts can be sources
-            if (isset($entry['is_page']) && $entry['is_page']) continue;
-            // Skip posts that already link to target
+            if ($entry['is_page']) continue;
             if ($this->post_already_links_to($id, $target_entry['url'])) continue;
-            // Skip posts that already have 8 outgoing links
+
             $existing_links = get_post_meta($id, $this->link_meta_key, true) ?: array();
             if (count($existing_links) >= 8) continue;
-            
-            // Collect existing anchors for this post (to avoid duplicates)
+
+            // Calculate relevance
+            $entry['relevance_score'] = $this->calculate_relevance_score($entry, $target_entry);
+
             $used_anchors_by_post[$id] = array();
             foreach ($existing_links as $link) {
                 $used_anchors_by_post[$id][] = strtolower($link['anchor']);
             }
-            
+
             $potential_sources[$id] = $entry;
         }
-        
+
         if (empty($potential_sources)) {
-            return array('success' => false, 'message' => 'No eligible source posts found (all may have 8 links already)');
+            return array('success' => false, 'message' => 'No eligible source posts');
         }
-        
-        // Build prompt to find best sources and anchor text
+
+        // Sort by relevance
+        uasort($potential_sources, function($a, $b) {
+            return ($b['relevance_score'] ?? 0) - ($a['relevance_score'] ?? 0);
+        });
+
+        // Build prompt
         $prompt = "You are an SEO expert finding internal linking opportunities.\n\n";
-        $prompt .= "=== TARGET PAGE (we want links TO this page) ===\n";
+        $prompt .= "=== TARGET PAGE ===\n";
         $prompt .= "Title: " . $target_entry['title'] . "\n";
         $prompt .= "URL: " . $target_entry['url'] . "\n";
+        $prompt .= "Cluster: " . ($target_entry['topic_cluster'] ?? 'general') . "\n";
         $prompt .= "Topics: " . implode(', ', $target_entry['main_topics']) . "\n";
         $prompt .= "Summary: " . $target_entry['summary'] . "\n";
-        $prompt .= "Good anchor phrases: " . implode(', ', $target_entry['good_anchor_phrases']) . "\n\n";
-        
-        $prompt .= "=== POTENTIAL SOURCE POSTS (posts that could link TO the target) ===\n";
+        $prompt .= "Good anchors: " . implode(', ', $target_entry['good_anchor_phrases']) . "\n\n";
+
+        $prompt .= "=== SOURCE POSTS (sorted by relevance) ===\n";
         $count = 0;
         foreach ($potential_sources as $id => $entry) {
-            if ($count >= 30) break; // Limit for prompt size
-            $prompt .= "ID: " . $id . " | Title: " . $entry['title'] . "\n";
-            $prompt .= "Topics: " . implode(', ', $entry['main_topics']) . "\n";
-            // Include existing anchors to avoid
+            if ($count >= 25) break;
+            $prompt .= "ID:" . $id . " | " . $entry['title'] . "\n";
+            $prompt .= "Cluster:" . ($entry['topic_cluster'] ?? 'none') . " | Topics:" . implode(', ', array_slice($entry['main_topics'], 0, 4)) . "\n";
             if (!empty($used_anchors_by_post[$id])) {
-                $prompt .= "ALREADY USED ANCHORS (DO NOT USE THESE): " . implode(', ', $used_anchors_by_post[$id]) . "\n";
+                $prompt .= "USED ANCHORS: " . implode(', ', $used_anchors_by_post[$id]) . "\n";
             }
             $prompt .= "\n";
             $count++;
         }
-        
-        $prompt .= "=== TASK ===\n";
-        $prompt .= "Select source posts that have genuine topical relevance to link to the target.\n";
-        $prompt .= "For each, suggest anchor text that would naturally fit in that post.\n\n";
-        $prompt .= "ANCHOR TEXT RULES (CRITICAL):\n";
-        $prompt .= "1. Anchor text MUST be a COMPLETE, MEANINGFUL phrase (not fragments like 'investment with' or 'the property')\n";
-        $prompt .= "2. Anchor text should DESCRIBE what the TARGET page is about\n";
-        $prompt .= "3. Good examples: 'real estate investing strategies', 'mortgage pre-approval process', 'Ontario rental properties'\n";
-        $prompt .= "4. BAD examples: 'with the', 'investment with', 'for your', 'the market' (meaningless fragments)\n";
-        $prompt .= "5. 2-5 words that make sense as a standalone description of the target\n";
-        $prompt .= "6. CRITICAL: Do NOT use anchor text already used in a post (check ALREADY USED ANCHORS)\n";
-        $prompt .= "7. Each anchor text must be UNIQUE\n\n";
-        $prompt .= "QUALITY RULES:\n";
-        $prompt .= "1. Only select posts with genuine topical relevance - don't force irrelevant links\n";
-        $prompt .= "2. Quality over quantity - skip posts if no GOOD anchor phrase exists\n";
-        $prompt .= "3. If you can't find a meaningful anchor, DO NOT suggest that link\n\n";
+
+        $prompt .= "=== RULES ===\n";
+        $prompt .= "1. Anchor MUST be COMPLETE, MEANINGFUL phrase describing target\n";
+        $prompt .= "2. Good: 'real estate investing strategies', 'mortgage pre-approval'\n";
+        $prompt .= "3. Bad: 'with the', 'investment with' (fragments - NEVER USE)\n";
+        $prompt .= "4. Don't use anchors already used in a post\n";
+        $prompt .= "5. Quality > quantity - skip if no good anchor\n\n";
         $prompt .= "Respond with ONLY a JSON array:\n";
-        $prompt .= '[{"source_id": 123, "anchor_text": "meaningful descriptive phrase"}, ...]\n';
-        
+        $prompt .= '[{"source_id": 123, "anchor_text": "meaningful phrase"}, ...]\n';
+
         $response = $this->call_claude_api($prompt, 1000);
-        
+
         if (!$response['success']) {
             return array('success' => false, 'message' => 'API error: ' . $response['error']);
         }
-        
+
         $suggestions = json_decode($response['text'], true);
         if (!$suggestions && preg_match('/\[.*\]/s', $response['text'], $matches)) {
             $suggestions = json_decode($matches[0], true);
         }
-        
+
         if (!is_array($suggestions) || empty($suggestions)) {
-            return array('success' => false, 'message' => 'No linking opportunities found');
+            return array('success' => false, 'message' => 'No opportunities found');
         }
-        
-        // Now insert links in each suggested source post
+
+        // Insert links
         $links_created = array();
         $errors = array();
-        
+
         foreach ($suggestions as $suggestion) {
             $source_id = intval($suggestion['source_id']);
             $anchor = sanitize_text_field($suggestion['anchor_text']);
-            
+
             if (!$source_id || !$anchor) continue;
-            
+
             $result = $this->insert_link_in_post($source_id, $anchor, $target_entry['url'], $target_id, $target_entry['is_page']);
-            
+
             if ($result['success']) {
                 $links_created[] = array(
                     'source_id' => $source_id,
@@ -903,7 +1674,7 @@ class LendCity_Smart_Linker {
                 $errors[] = "Post $source_id: " . $result['message'];
             }
         }
-        
+
         return array(
             'success' => true,
             'links_created' => count($links_created),
@@ -912,104 +1683,98 @@ class LendCity_Smart_Linker {
             'target_title' => $target_entry['title']
         );
     }
-    
+
     /**
-     * Get link suggestions WITHOUT inserting (for review mode)
+     * Get link suggestions WITHOUT inserting (review mode)
      */
     public function get_link_suggestions($target_id) {
         $target = get_post($target_id);
         if (!$target) {
             return array('success' => false, 'message' => 'Target not found');
         }
-        
-        $catalog = $this->get_catalog();
-        if (empty($catalog)) {
-            return array('success' => false, 'message' => 'Catalog not built');
-        }
-        
-        $target_entry = isset($catalog[$target_id]) ? $catalog[$target_id] : null;
+
+        $target_entry = $this->get_catalog_entry($target_id);
         if (!$target_entry) {
             return array('success' => false, 'message' => 'Target not in catalog');
         }
-        
-        // Get eligible source posts
+
+        $catalog = $this->get_catalog();
         $potential_sources = array();
         $used_anchors_by_post = array();
-        
+
         foreach ($catalog as $id => $entry) {
             if ($id == $target_id) continue;
-            if (isset($entry['is_page']) && $entry['is_page']) continue;
+            if ($entry['is_page']) continue;
             if ($this->post_already_links_to($id, $target_entry['url'])) continue;
+
             $existing_links = get_post_meta($id, $this->link_meta_key, true) ?: array();
             if (count($existing_links) >= 8) continue;
-            
-            // Collect existing anchors
+
+            $entry['relevance_score'] = $this->calculate_relevance_score($entry, $target_entry);
+
             $used_anchors_by_post[$id] = array();
             foreach ($existing_links as $link) {
                 $used_anchors_by_post[$id][] = strtolower($link['anchor']);
             }
-            
+
             $potential_sources[$id] = $entry;
         }
-        
+
         if (empty($potential_sources)) {
             return array('suggestions' => array(), 'message' => 'No eligible sources');
         }
-        
-        // Ask Claude for suggestions
+
+        uasort($potential_sources, function($a, $b) {
+            return ($b['relevance_score'] ?? 0) - ($a['relevance_score'] ?? 0);
+        });
+
         $prompt = "You are an SEO expert finding internal linking opportunities.\n\n";
         $prompt .= "=== TARGET PAGE ===\n";
         $prompt .= "Title: " . $target_entry['title'] . "\n";
-        $prompt .= "URL: " . $target_entry['url'] . "\n";
+        $prompt .= "Cluster: " . ($target_entry['topic_cluster'] ?? 'general') . "\n";
         $prompt .= "Topics: " . implode(', ', $target_entry['main_topics']) . "\n";
-        $prompt .= "Good anchor phrases: " . implode(', ', $target_entry['good_anchor_phrases']) . "\n\n";
-        
-        $prompt .= "=== POTENTIAL SOURCE POSTS ===\n";
+        $prompt .= "Good anchors: " . implode(', ', $target_entry['good_anchor_phrases']) . "\n\n";
+
+        $prompt .= "=== SOURCE POSTS ===\n";
         $count = 0;
         foreach ($potential_sources as $id => $entry) {
-            if ($count >= 30) break;
-            $prompt .= "ID: " . $id . " | Title: " . $entry['title'] . "\n";
-            $prompt .= "Topics: " . implode(', ', $entry['main_topics']) . "\n";
+            if ($count >= 25) break;
+            $prompt .= "ID:" . $id . " | " . $entry['title'] . " | Cluster:" . ($entry['topic_cluster'] ?? 'none') . "\n";
             if (!empty($used_anchors_by_post[$id])) {
-                $prompt .= "ALREADY USED ANCHORS (DO NOT USE): " . implode(', ', $used_anchors_by_post[$id]) . "\n";
+                $prompt .= "USED: " . implode(', ', $used_anchors_by_post[$id]) . "\n";
             }
-            $prompt .= "\n";
             $count++;
         }
-        
-        $prompt .= "=== ANCHOR TEXT RULES (CRITICAL) ===\n";
-        $prompt .= "1. Anchor MUST be a COMPLETE, MEANINGFUL phrase - NOT fragments like 'investment with' or 'the property'\n";
-        $prompt .= "2. Anchor should DESCRIBE what the TARGET page is about\n";
-        $prompt .= "3. Good: 'real estate investing strategies', 'mortgage pre-approval', 'rental property financing'\n";
-        $prompt .= "4. Bad: 'with the', 'investment with', 'for your' (meaningless fragments - NEVER USE THESE)\n";
-        $prompt .= "5. Do NOT use anchor text already used in a post\n";
-        $prompt .= "6. Quality over quantity - skip if no GOOD anchor exists\n\n";
-        $prompt .= "Respond with ONLY a JSON array:\n";
-        $prompt .= '[{"source_id": 123, "anchor_text": "meaningful descriptive phrase"}, ...]\n';
-        
+
+        $prompt .= "\n=== RULES ===\n";
+        $prompt .= "1. Anchor = COMPLETE meaningful phrase\n";
+        $prompt .= "2. Don't duplicate anchors\n";
+        $prompt .= "3. Skip if no good match\n\n";
+        $prompt .= "Respond with ONLY JSON array:\n";
+        $prompt .= '[{"source_id": 123, "anchor_text": "phrase"}, ...]\n';
+
         $response = $this->call_claude_api($prompt, 1000);
-        
+
         if (!$response['success']) {
             return array('suggestions' => array(), 'error' => $response['error']);
         }
-        
+
         $suggestions = json_decode($response['text'], true);
         if (!$suggestions && preg_match('/\[.*\]/s', $response['text'], $matches)) {
             $suggestions = json_decode($matches[0], true);
         }
-        
+
         if (!is_array($suggestions)) {
             return array('suggestions' => array());
         }
-        
-        // Add source titles
+
         foreach ($suggestions as &$s) {
             $s['source_title'] = get_the_title($s['source_id']);
         }
-        
+
         return array('suggestions' => $suggestions, 'target_title' => $target_entry['title']);
     }
-    
+
     /**
      * Insert user-approved links
      */
@@ -1018,113 +1783,98 @@ class LendCity_Smart_Linker {
         if (!$target) {
             return array('success' => false, 'message' => 'Target not found');
         }
-        
-        $catalog = $this->get_catalog();
-        $target_entry = isset($catalog[$target_id]) ? $catalog[$target_id] : null;
+
+        $target_entry = $this->get_catalog_entry($target_id);
         if (!$target_entry) {
             return array('success' => false, 'message' => 'Target not in catalog');
         }
-        
+
         $inserted = 0;
         $errors = array();
-        
+
         foreach ($links as $link) {
             $source_id = intval($link['source_id']);
             $anchor = sanitize_text_field($link['anchor_text']);
-            
+
             if (!$source_id || !$anchor) continue;
-            
+
             $result = $this->insert_link_in_post($source_id, $anchor, $target_entry['url'], $target_id, $target_entry['is_page']);
-            
+
             if ($result['success']) {
                 $inserted++;
             } else {
                 $errors[] = "Post $source_id: " . $result['message'];
             }
         }
-        
-        return array(
-            'success' => true,
-            'inserted' => $inserted,
-            'errors' => $errors
-        );
+
+        return array('success' => true, 'inserted' => $inserted, 'errors' => $errors);
     }
-    
+
+    // =========================================================================
+    // LINK INSERTION
+    // =========================================================================
+
     /**
      * Insert a single link into a post's content
-     * Max 8 outgoing links per post
-     * No duplicate anchor text allowed
      */
     private function insert_link_in_post($post_id, $anchor_text, $target_url, $target_id, $is_page = false) {
-        // Clear cache to get fresh post content
         clean_post_cache($post_id);
         $post = get_post($post_id);
         if (!$post) {
             return array('success' => false, 'message' => 'Post not found');
         }
-        
-        // Check max outgoing links (8 per post)
+
         $existing_links = get_post_meta($post_id, $this->link_meta_key, true) ?: array();
         if (count($existing_links) >= 8) {
-            return array('success' => false, 'message' => 'Post already has 8 outgoing links (max reached)');
+            return array('success' => false, 'message' => 'Max 8 links reached');
         }
-        
-        // Check for duplicate anchor text
+
         $anchor_lower = strtolower($anchor_text);
         foreach ($existing_links as $link) {
             if (strtolower($link['anchor']) === $anchor_lower) {
-                return array('success' => false, 'message' => 'Anchor text "' . $anchor_text . '" already used in this post');
+                return array('success' => false, 'message' => 'Anchor already used');
             }
         }
-        
+
         $content = $post->post_content;
-        
-        // Store original if not already
+
+        // Store original
         $original = get_post_meta($post_id, $this->original_content_meta, true);
         if (empty($original)) {
             update_post_meta($post_id, $this->original_content_meta, $content);
         }
-        
-        // Find anchor text in content (case-insensitive)
+
+        // Find anchor in content
         $pattern = '/(?<![<\/a-zA-Z])(' . preg_quote($anchor_text, '/') . ')(?![^<]*<\/a>)(?![a-zA-Z])/i';
-        
+
         if (!preg_match($pattern, $content, $matches, PREG_OFFSET_CAPTURE)) {
-            // Anchor text not found - ask Claude to find similar phrase
             $alt_result = $this->find_alternative_anchor($post_id, $content, $target_url, $target_id, $is_page);
-            if ($alt_result['success']) {
-                return $alt_result;
-            }
-            return array('success' => false, 'message' => 'Anchor text not found in post');
+            if ($alt_result['success']) return $alt_result;
+            return array('success' => false, 'message' => 'Anchor text not found');
         }
-        
-        // Check if this paragraph already has a Claude link
+
+        // Check paragraph doesn't already have a Claude link
         $match_position = $matches[0][1];
-        $paragraph_has_link = $this->paragraph_has_claude_link($content, $match_position);
-        
-        if ($paragraph_has_link) {
-            return array('success' => false, 'message' => 'Paragraph already contains a link - skipping to maintain 1 link per paragraph');
+        if ($this->paragraph_has_claude_link($content, $match_position)) {
+            return array('success' => false, 'message' => 'Paragraph already has a link');
         }
-        
+
         // Generate unique link ID
         $link_id = 'cl_' . $post_id . '_' . $target_id . '_' . time();
-        
-        // Create the link HTML
+
+        // Create link HTML
         $link_html = '<a href="' . esc_url($target_url) . '" data-claude-link="1" data-link-id="' . $link_id . '">' . '$1' . '</a>';
-        
-        // Replace first occurrence only
+
+        // Replace first occurrence
         $new_content = preg_replace($pattern, $link_html, $content, 1);
-        
+
         if ($new_content === $content) {
             return array('success' => false, 'message' => 'Failed to insert link');
         }
-        
-        // Update post (wp_kses filter allows iframes now)
-        wp_update_post(array(
-            'ID' => $post_id,
-            'post_content' => $new_content
-        ));
-        
-        // Track the link
+
+        wp_update_post(array('ID' => $post_id, 'post_content' => $new_content));
+
+        // Track link
         $links = get_post_meta($post_id, $this->link_meta_key, true) ?: array();
         $links[] = array(
             'link_id' => $link_id,
@@ -1135,64 +1885,53 @@ class LendCity_Smart_Linker {
             'added_at' => current_time('mysql')
         );
         update_post_meta($post_id, $this->link_meta_key, $links);
-        
+
         $this->debug_log("Inserted link to {$target_url} in post {$post_id}");
-        
+
         return array('success' => true, 'link_id' => $link_id);
     }
-    
+
     /**
      * Find alternative anchor text using Claude
      */
     private function find_alternative_anchor($post_id, $content, $target_url, $target_id, $is_page) {
         $target = get_post($target_id);
-        if (!$target) {
-            return array('success' => false, 'message' => 'Target not found');
-        }
-        
-        // Truncate content for prompt
+        if (!$target) return array('success' => false, 'message' => 'Target not found');
+
         $content_preview = substr(wp_strip_all_tags($content), 0, 2000);
-        
-        $prompt = "Find a natural phrase in this post content to use as anchor text for a link.\n\n";
-        $prompt .= "TARGET PAGE: " . $target->post_title . " (" . $target_url . ")\n\n";
-        $prompt .= "SOURCE POST CONTENT:\n" . $content_preview . "\n\n";
+
+        $prompt = "Find a natural phrase in this content to use as anchor text.\n\n";
+        $prompt .= "TARGET: " . $target->post_title . " (" . $target_url . ")\n\n";
+        $prompt .= "CONTENT:\n" . $content_preview . "\n\n";
         $prompt .= "Find a 2-5 word phrase that:\n";
-        $prompt .= "1. Actually exists in the content above\n";
-        $prompt .= "2. Is relevant to the target page topic\n";
-        $prompt .= "3. Is NOT already inside an <a> tag\n";
+        $prompt .= "1. Actually exists in the content\n";
+        $prompt .= "2. Is relevant to the target\n";
+        $prompt .= "3. Is NOT inside an <a> tag\n";
         $prompt .= "4. Would make natural anchor text\n\n";
-        $prompt .= "Respond with ONLY the exact phrase found, nothing else. If none found, respond: NONE\n";
-        
+        $prompt .= "Respond with ONLY the exact phrase. If none found: NONE\n";
+
         $response = $this->call_claude_api($prompt, 100);
-        
-        if (!$response['success']) {
-            return array('success' => false, 'message' => 'API error');
-        }
-        
+
+        if (!$response['success']) return array('success' => false, 'message' => 'API error');
+
         $anchor = trim($response['text']);
-        
+
         if ($anchor === 'NONE' || strlen($anchor) < 3 || strlen($anchor) > 50) {
-            return array('success' => false, 'message' => 'No suitable anchor found');
+            return array('success' => false, 'message' => 'No suitable anchor');
         }
-        
-        // Try to insert with this anchor
+
         return $this->insert_link_in_post($post_id, $anchor, $target_url, $target_id, $is_page);
     }
-    
+
     /**
-     * Check if the paragraph containing a position already has a Claude link
+     * Check if paragraph already has a Claude link
      */
     private function paragraph_has_claude_link($content, $position) {
-        // Find the paragraph boundaries around this position
-        // Look for </p>, </div>, </li>, or double newlines as paragraph breaks
-        
-        // Find start of paragraph (look backwards for opening tag or start)
         $para_start = 0;
         $search_back = strrpos(substr($content, 0, $position), '<p');
         if ($search_back !== false) {
             $para_start = $search_back;
         } else {
-            // Try other block elements
             foreach (array('<div', '<li', "\n\n") as $delim) {
                 $found = strrpos(substr($content, 0, $position), $delim);
                 if ($found !== false && $found > $para_start) {
@@ -1200,8 +1939,7 @@ class LendCity_Smart_Linker {
                 }
             }
         }
-        
-        // Find end of paragraph (look forwards for closing tag)
+
         $para_end = strlen($content);
         $search_forward = strpos($content, '</p>', $position);
         if ($search_forward !== false) {
@@ -1214,44 +1952,35 @@ class LendCity_Smart_Linker {
                 }
             }
         }
-        
-        // Extract the paragraph
+
         $paragraph = substr($content, $para_start, $para_end - $para_start);
-        
-        // Check if it already contains a Claude link
         return strpos($paragraph, 'data-claude-link="1"') !== false;
     }
-    
+
     /**
-     * Check if post already links to a URL
+     * Check if post already links to URL
      */
     private function post_already_links_to($post_id, $url) {
         $post = get_post($post_id);
         if (!$post) return true;
-        
         return strpos($post->post_content, $url) !== false;
     }
-    
+
     // =========================================================================
-    // QUEUE SYSTEM v2.0 - Scales to 1000+ posts
+    // QUEUE SYSTEM (Background Processing)
     // =========================================================================
-    
+
     /**
-     * Initialize the queue with all posts for linking
-     * Stores as lightweight array of IDs (not full objects)
+     * Initialize bulk queue
      */
     public function init_bulk_queue($skip_with_links = true) {
         $catalog = $this->get_catalog();
         $queue_ids = array();
         $skipped = 0;
-        
+
         foreach ($catalog as $id => $entry) {
-            // Only queue POSTS (not pages)
-            if (isset($entry['is_page']) && $entry['is_page']) {
-                continue;
-            }
-            
-            // Skip posts that already have links?
+            if ($entry['is_page']) continue;
+
             if ($skip_with_links) {
                 $existing_links = $this->get_post_links($id);
                 if (!empty($existing_links)) {
@@ -1259,14 +1988,12 @@ class LendCity_Smart_Linker {
                     continue;
                 }
             }
-            
+
             $queue_ids[] = $id;
         }
-        
-        // Store lightweight queue (just IDs)
+
         update_option($this->queue_option, $queue_ids, false);
-        
-        // Initialize status
+
         $status = array(
             'state' => 'running',
             'total' => count($queue_ids),
@@ -1277,44 +2004,35 @@ class LendCity_Smart_Linker {
             'current_post' => '',
             'started_at' => current_time('mysql'),
             'last_activity' => current_time('mysql'),
-            'batch_size' => 3, // Process 3 posts per batch cycle
+            'batch_size' => 3
         );
         update_option($this->queue_status_option, $status, false);
-        
-        // Schedule cron to process queue if there are items
+
         if (count($queue_ids) > 0 && !wp_next_scheduled('lendcity_process_link_queue')) {
             wp_schedule_event(time(), 'every_minute', 'lendcity_process_link_queue');
-            $this->debug_log('Scheduled link queue cron for ' . count($queue_ids) . ' items');
+            $this->debug_log('Scheduled queue cron for ' . count($queue_ids) . ' items');
         }
-        
-        return array(
-            'queued' => count($queue_ids),
-            'skipped' => $skipped
-        );
+
+        return array('queued' => count($queue_ids), 'skipped' => $skipped);
     }
-    
+
     /**
-     * Process a batch of items from the queue
-     * Designed to run in background via loopback or cron
+     * Process queue batch
      */
     public function process_queue_batch() {
-        // Prevent concurrent processing with a transient lock
         $lock_key = 'lendcity_queue_processing';
         if (get_transient($lock_key)) {
-            $this->debug_log('Queue already being processed by another instance - skipping');
             return array('complete' => false, 'message' => 'Already processing');
         }
-        set_transient($lock_key, true, 120); // 2 minute lock
-        
-        // Increase time limit for batch processing
+        set_transient($lock_key, true, 120);
+
         if (function_exists('set_time_limit')) {
             @set_time_limit(300);
         }
-        
+
         $queue = get_option($this->queue_option, array());
         $status = get_option($this->queue_status_option, array());
-        
-        // Check if paused or empty
+
         if (empty($queue) || (isset($status['state']) && $status['state'] === 'paused')) {
             if (empty($queue) && isset($status['state']) && $status['state'] === 'running') {
                 $status['state'] = 'complete';
@@ -1324,161 +2042,102 @@ class LendCity_Smart_Linker {
             delete_transient($lock_key);
             return array('complete' => true);
         }
-        
-        $batch_size = isset($status['batch_size']) ? $status['batch_size'] : 5;
-        $processed_this_batch = 0;
-        $links_this_batch = 0;
-        
-        while ($processed_this_batch < $batch_size && !empty($queue)) {
-            // Get next ID
+
+        $batch_size = isset($status['batch_size']) ? $status['batch_size'] : 3;
+        $processed = 0;
+        $links = 0;
+
+        while ($processed < $batch_size && !empty($queue)) {
             $post_id = array_shift($queue);
-            
-            // Save updated queue IMMEDIATELY to prevent duplicate processing
             update_option($this->queue_option, $queue, false);
-            
-            // Update status
+
             $post_title = get_the_title($post_id);
             $status['current_post'] = $post_title;
             $status['last_activity'] = current_time('mysql');
             update_option($this->queue_status_option, $status, false);
-            
-            // Process this post
+
             $result = $this->create_links_from_source($post_id);
-            
-            // Update stats
+
             $status['processed']++;
-            $processed_this_batch++;
-            
+            $processed++;
+
             if ($result['success']) {
-                $links_created = isset($result['links_created']) ? $result['links_created'] : 0;
-                $status['links_created'] += $links_created;
-                $links_this_batch += $links_created;
-                
-                $this->log('Queue: Processed post ' . $post_id . ' - ' . $links_created . ' links');
+                $count = isset($result['links_created']) ? $result['links_created'] : 0;
+                $status['links_created'] += $count;
+                $links += $count;
+                $this->log('Queue: Processed ' . $post_id . ' - ' . $count . ' links');
             } else {
                 $status['errors']++;
-                $this->debug_log('Queue: Error on post ' . $post_id . ' - ' . ($result['message'] ?? 'unknown error'));
             }
-            
-            // Save updated status
+
             update_option($this->queue_status_option, $status, false);
         }
-        
-        // Release lock
+
         delete_transient($lock_key);
-        
-        // Check if complete
+
         if (empty($queue)) {
             $status['state'] = 'complete';
             $status['completed_at'] = current_time('mysql');
             $status['current_post'] = '';
             update_option($this->queue_status_option, $status, false);
-            
-            // Unschedule the cron since queue is empty
             wp_clear_scheduled_hook('lendcity_process_link_queue');
-            $this->log('Queue complete - unscheduled cron');
-            
-            return array(
-                'complete' => true,
-                'processed' => $processed_this_batch,
-                'links' => $links_this_batch
-            );
+            $this->log('Queue complete');
+            return array('complete' => true, 'processed' => $processed, 'links' => $links);
         }
-        
-        return array(
-            'complete' => false,
-            'remaining' => count($queue),
-            'processed' => $processed_this_batch,
-            'links' => $links_this_batch
-        );
+
+        return array('complete' => false, 'remaining' => count($queue), 'processed' => $processed, 'links' => $links);
     }
-    
+
     /**
      * AJAX handler for background processing
-     * Uses loopback technique - doesn't require cron
      */
     public function ajax_background_process() {
-        // Verify request
         $token = get_option('lendcity_queue_token', '');
         if (empty($_POST['token']) || $_POST['token'] !== $token) {
             wp_die('Invalid token');
         }
-        
-        // Process a batch
         $result = $this->process_queue_batch();
-        
         wp_send_json($result);
     }
-    
+
     /**
-     * Trigger background processing via loopback
-     * Non-blocking - returns immediately
+     * Trigger background processing
      */
     public function trigger_background_process() {
-        // Generate/get security token
         $token = get_option('lendcity_queue_token', '');
         if (empty($token)) {
             $token = wp_generate_password(32, false);
             update_option('lendcity_queue_token', $token, false);
         }
-        
-        // Fire loopback request (non-blocking)
-        $url = admin_url('admin-ajax.php');
-        $args = array(
-            'timeout' => 0.01, // Don't wait for response
+
+        wp_remote_post(admin_url('admin-ajax.php'), array(
+            'timeout' => 0.01,
             'blocking' => false,
             'sslverify' => false,
-            'body' => array(
-                'action' => 'lendcity_background_process',
-                'token' => $token
-            )
-        );
-        
-        wp_remote_post($url, $args);
+            'body' => array('action' => 'lendcity_background_process', 'token' => $token)
+        ));
     }
-    
+
     /**
-     * Get queue status (fast - reads from option)
+     * Get queue status
      */
     public function get_queue_status() {
         $queue = get_option($this->queue_option, array());
         $status = get_option($this->queue_status_option, array());
-        
-        // Legacy support
+
         if (empty($status)) {
-            $pending = 0;
-            $complete = 0;
-            $error = 0;
-            
-            if (is_array($queue)) {
-                foreach ($queue as $item) {
-                    if (is_array($item)) {
-                        // Old format
-                        switch ($item['status'] ?? 'pending') {
-                            case 'pending': $pending++; break;
-                            case 'complete': $complete++; break;
-                            case 'error': $error++; break;
-                        }
-                    } else {
-                        // New format (just ID)
-                        $pending++;
-                    }
-                }
-            }
-            
+            $pending = is_array($queue) ? count($queue) : 0;
             return array(
-                'total' => count($queue),
+                'total' => $pending,
                 'pending' => $pending,
                 'processing' => 0,
-                'complete' => $complete,
-                'error' => $error,
-                'items' => $queue
+                'complete' => 0,
+                'error' => 0
             );
         }
-        
-        // New format
+
         $remaining = is_array($queue) ? count($queue) : 0;
-        
+
         return array(
             'state' => $status['state'] ?? 'idle',
             'total' => $status['total'] ?? 0,
@@ -1491,16 +2150,15 @@ class LendCity_Smart_Linker {
             'started_at' => $status['started_at'] ?? '',
             'last_activity' => $status['last_activity'] ?? '',
             'completed_at' => $status['completed_at'] ?? '',
-            // Legacy compatibility
             'pending' => $remaining,
             'processing' => ($status['state'] ?? '') === 'running' ? 1 : 0,
             'complete' => $status['processed'] ?? 0,
-            'error' => $status['errors'] ?? 0,
+            'error' => $status['errors'] ?? 0
         );
     }
-    
+
     /**
-     * Pause the queue
+     * Pause queue
      */
     public function pause_queue() {
         $status = get_option($this->queue_status_option, array());
@@ -1508,22 +2166,20 @@ class LendCity_Smart_Linker {
         $status['paused_at'] = current_time('mysql');
         update_option($this->queue_status_option, $status, false);
     }
-    
+
     /**
-     * Resume the queue
+     * Resume queue
      */
     public function resume_queue() {
         $status = get_option($this->queue_status_option, array());
         $status['state'] = 'running';
         unset($status['paused_at']);
         update_option($this->queue_status_option, $status, false);
-        
-        // Trigger processing
         $this->trigger_background_process();
     }
-    
+
     /**
-     * Clear the queue completely
+     * Clear queue
      */
     public function clear_queue() {
         delete_option($this->queue_option);
@@ -1532,45 +2188,37 @@ class LendCity_Smart_Linker {
         wp_clear_scheduled_hook('lendcity_process_link_queue');
         wp_clear_scheduled_hook('lendcity_process_queue_batch');
     }
-    
-    /**
-     * Add single item to queue (for auto-linking on publish)
-     */
-    public function add_to_queue($post_id, $action = 'create_links_from_source') {
-        // For single items, just process directly (faster than queue)
-        if ($action === 'create_links_from_source') {
-            // Schedule via cron to avoid blocking the publish action
-            wp_schedule_single_event(time() + 10, 'lendcity_process_single_post', array($post_id));
-        }
-    }
-    
+
+    // =========================================================================
+    // LINK MANAGEMENT
+    // =========================================================================
+
     /**
      * Get all smart links for a post
      */
     public function get_post_links($post_id) {
         return get_post_meta($post_id, $this->link_meta_key, true) ?: array();
     }
-    
+
     /**
-     * Remove a single link from a post
+     * Remove a single link
      */
     public function remove_link($post_id, $link_id) {
         $post = get_post($post_id);
         if (!$post) return false;
-        
+
         $content = $post->post_content;
         $new_content = $content;
-        
-        // Method 1: Try to remove by data-link-id
+
+        // Try to remove by data-link-id
         $pattern = '/<a\s[^>]*data-link-id="' . preg_quote($link_id, '/') . '"[^>]*>(.*?)<\/a>/is';
         $new_content = preg_replace($pattern, '$1', $content);
-        
-        // Method 2: If that didn't work, try to find the link in meta and remove by URL
+
+        // Fallback methods
         if ($new_content === $content) {
             $links = $this->get_post_links($post_id);
             foreach ($links as $link) {
                 if (isset($link['link_id']) && $link['link_id'] === $link_id) {
-                    // Try removing by URL
                     $url = $link['url'] ?? '';
                     if ($url) {
                         $pattern = '/<a\s[^>]*data-claude-link="1"[^>]*href="' . preg_quote($url, '/') . '"[^>]*>(.*?)<\/a>/is';
@@ -1580,90 +2228,70 @@ class LendCity_Smart_Linker {
                 }
             }
         }
-        
-        // Method 3: If still no match, try a broader pattern with data-claude-link
-        if ($new_content === $content) {
-            // Get the anchor text from meta
-            $links = $this->get_post_links($post_id);
-            foreach ($links as $link) {
-                if (isset($link['link_id']) && $link['link_id'] === $link_id && isset($link['anchor'])) {
-                    $anchor = preg_quote($link['anchor'], '/');
-                    $pattern = '/<a\s[^>]*data-claude-link="1"[^>]*>' . $anchor . '<\/a>/is';
-                    $new_content = preg_replace($pattern, $link['anchor'], $content, 1);
-                    break;
-                }
-            }
-        }
-        
+
         if ($new_content !== $content) {
             wp_update_post(array('ID' => $post_id, 'post_content' => $new_content));
-            
-            // Remove from meta
+
             $links = $this->get_post_links($post_id);
-            $links = array_filter($links, function($l) use ($link_id) { 
-                return !isset($l['link_id']) || $l['link_id'] !== $link_id; 
+            $links = array_filter($links, function($l) use ($link_id) {
+                return !isset($l['link_id']) || $l['link_id'] !== $link_id;
             });
             update_post_meta($post_id, $this->link_meta_key, array_values($links));
-            
             return true;
         }
-        
-        // Last resort: Just remove from meta even if content didn't change
+
+        // Last resort
         $links = $this->get_post_links($post_id);
         $original_count = count($links);
-        $links = array_filter($links, function($l) use ($link_id) { 
-            return !isset($l['link_id']) || $l['link_id'] !== $link_id; 
+        $links = array_filter($links, function($l) use ($link_id) {
+            return !isset($l['link_id']) || $l['link_id'] !== $link_id;
         });
-        
+
         if (count($links) < $original_count) {
             update_post_meta($post_id, $this->link_meta_key, array_values($links));
             return true;
         }
-        
+
         return false;
     }
-    
+
     /**
      * Remove ALL Claude links from a post
      */
     public function remove_all_links($post_id) {
         $post = get_post($post_id);
         if (!$post) return false;
-        
+
         $pattern = '/<a\s[^>]*data-claude-link="1"[^>]*>(.*?)<\/a>/is';
         $new_content = preg_replace($pattern, '$1', $post->post_content);
-        
+
         wp_update_post(array('ID' => $post_id, 'post_content' => $new_content));
         delete_post_meta($post_id, $this->link_meta_key);
-        
         return true;
     }
-    
+
     /**
      * Delete ALL Claude links from entire site
      */
     public function delete_all_site_links() {
         global $wpdb;
-        
-        // Get all posts with Claude links
+
         $posts = $wpdb->get_results("
-            SELECT ID, post_content FROM {$wpdb->posts} 
+            SELECT ID, post_content FROM {$wpdb->posts}
             WHERE post_content LIKE '%data-claude-link=\"1\"%'
             AND post_status IN ('publish', 'draft', 'future')
         ");
-        
+
         $deleted = 0;
         $posts_affected = 0;
-        
+
         foreach ($posts as $post) {
-            // Count links in this post
             preg_match_all('/data-claude-link="1"/', $post->post_content, $matches);
             $link_count = count($matches[0]);
-            
-            // Remove all Claude links
+
             $pattern = '/<a\s[^>]*data-claude-link="1"[^>]*>(.*?)<\/a>/is';
             $new_content = preg_replace($pattern, '$1', $post->post_content);
-            
+
             if ($new_content !== $post->post_content) {
                 wp_update_post(array('ID' => $post->ID, 'post_content' => $new_content));
                 delete_post_meta($post->ID, $this->link_meta_key);
@@ -1671,47 +2299,36 @@ class LendCity_Smart_Linker {
                 $posts_affected++;
             }
         }
-        
-        return array(
-            'deleted' => $deleted,
-            'posts_affected' => $posts_affected
-        );
+
+        return array('deleted' => $deleted, 'posts_affected' => $posts_affected);
     }
-    
+
     /**
-     * Change the target URL of a single link
+     * Change target URL of a single link
      */
     public function change_single_link_target($source_id, $link_id, $old_url, $new_url) {
         $post = get_post($source_id);
-        if (!$post) {
-            return array('success' => false, 'message' => 'Post not found');
-        }
-        
-        // Try to update in content using link_id
+        if (!$post) return array('success' => false, 'message' => 'Post not found');
+
         $pattern = '/(<a\s[^>]*data-link-id="' . preg_quote($link_id, '/') . '"[^>]*href=")[^"]*(")/is';
         $new_content = preg_replace($pattern, '${1}' . esc_url($new_url) . '${2}', $post->post_content);
-        
-        // If that didn't work, try matching by old_url
+
         if ($new_content === $post->post_content && !empty($old_url)) {
             $new_content = preg_replace(
                 '/(<a\s[^>]*data-claude-link="1"[^>]*href=")' . preg_quote($old_url, '/') . '(")/is',
                 '${1}' . esc_url($new_url) . '${2}',
-                $post->post_content,
-                1 // Only replace first occurrence
+                $post->post_content, 1
             );
         }
-        
-        // Save even if content didn't change (maybe just updating meta)
+
         if ($new_content !== $post->post_content) {
             wp_update_post(array('ID' => $source_id, 'post_content' => $new_content));
         }
-        
-        // Update in meta
+
         $links = $this->get_post_links($source_id);
         foreach ($links as &$link) {
             if ($link['link_id'] === $link_id || $link['url'] === $old_url) {
                 $link['url'] = $new_url;
-                // Update is_page flag based on new target
                 $new_post = url_to_postid($new_url);
                 if ($new_post) {
                     $link['is_page'] = (get_post_type($new_post) === 'page');
@@ -1721,28 +2338,28 @@ class LendCity_Smart_Linker {
             }
         }
         update_post_meta($source_id, $this->link_meta_key, $links);
-        
+
         return array('success' => true);
     }
-    
+
     /**
      * Update URL across all posts
      */
     public function update_url_across_site($old_url, $new_url) {
         global $wpdb;
-        
+
         $posts = $wpdb->get_results("
-            SELECT ID, post_content FROM {$wpdb->posts} 
+            SELECT ID, post_content FROM {$wpdb->posts}
             WHERE post_content LIKE '%data-claude-link=\"1\"%'
             AND post_status IN ('publish', 'draft', 'future')
         ");
-        
+
         $updated = 0;
         foreach ($posts as $post) {
             $new_content = str_replace('href="' . $old_url . '"', 'href="' . $new_url . '"', $post->post_content);
             if ($new_content !== $post->post_content) {
                 wp_update_post(array('ID' => $post->ID, 'post_content' => $new_content));
-                
+
                 $links = $this->get_post_links($post->ID);
                 foreach ($links as &$link) {
                     if ($link['url'] === $old_url) $link['url'] = $new_url;
@@ -1753,14 +2370,13 @@ class LendCity_Smart_Linker {
         }
         return $updated;
     }
-    
+
     /**
-     * Get all Claude links across site (with optional limit)
+     * Get all Claude links across site
      */
     public function get_all_site_links($limit = 0) {
         global $wpdb;
-        
-        // Order by post date descending (most recent posts first)
+
         $results = $wpdb->get_results("
             SELECT pm.post_id, pm.meta_value, p.post_date
             FROM {$wpdb->postmeta} pm
@@ -1768,25 +2384,23 @@ class LendCity_Smart_Linker {
             WHERE pm.meta_key = '{$this->link_meta_key}'
             ORDER BY p.post_date DESC
         ");
-        
+
         $all_links = array();
         $post_titles_cache = array();
-        
+
         foreach ($results as $row) {
             $links = maybe_unserialize($row->meta_value);
             if (is_array($links)) {
-                // Cache post titles to avoid repeated queries
                 if (!isset($post_titles_cache[$row->post_id])) {
                     $post_titles_cache[$row->post_id] = get_the_title($row->post_id);
                 }
-                
+
                 foreach ($links as $link) {
                     $link['source_post_id'] = $row->post_id;
                     $link['source_post_title'] = $post_titles_cache[$row->post_id];
                     $link['post_date'] = $row->post_date;
                     $all_links[] = $link;
-                    
-                    // Check limit
+
                     if ($limit > 0 && count($all_links) >= $limit) {
                         return $all_links;
                     }
@@ -1795,36 +2409,208 @@ class LendCity_Smart_Linker {
         }
         return $all_links;
     }
-    
+
     /**
-     * Get total link count (fast)
+     * Get total link count
      */
     public function get_total_link_count() {
         global $wpdb;
-        
+
         $results = $wpdb->get_results("
-            SELECT meta_value FROM {$wpdb->postmeta} 
+            SELECT meta_value FROM {$wpdb->postmeta}
             WHERE meta_key = '{$this->link_meta_key}'
         ");
-        
+
         $count = 0;
         foreach ($results as $row) {
             $links = maybe_unserialize($row->meta_value);
-            if (is_array($links)) {
-                $count += count($links);
-            }
+            if (is_array($links)) $count += count($links);
         }
         return $count;
     }
-    
+
+    // =========================================================================
+    // SEO ENHANCEMENT FUNCTIONS
+    // =========================================================================
+
     /**
-     * Call Claude API
+     * Get/Set priority for a page
      */
+    public function get_page_priority($post_id) {
+        return intval(get_post_meta($post_id, $this->priority_meta_key, true)) ?: 3;
+    }
+
+    public function set_page_priority($post_id, $priority) {
+        $priority = max(1, min(5, intval($priority)));
+        update_post_meta($post_id, $this->priority_meta_key, $priority);
+        return $priority;
+    }
+
+    /**
+     * Get/Set target keywords
+     */
+    public function get_page_keywords($post_id) {
+        return get_post_meta($post_id, $this->keywords_meta_key, true) ?: '';
+    }
+
+    public function set_page_keywords($post_id, $keywords) {
+        $keywords = sanitize_text_field($keywords);
+        update_post_meta($post_id, $this->keywords_meta_key, $keywords);
+        return $keywords;
+    }
+
+    /**
+     * Get all priority pages
+     */
+    public function get_priority_pages() {
+        $pages = get_posts(array(
+            'post_type' => 'page',
+            'post_status' => 'publish',
+            'posts_per_page' => -1,
+            'orderby' => 'title',
+            'order' => 'ASC'
+        ));
+
+        $result = array();
+        foreach ($pages as $page) {
+            $result[] = array(
+                'id' => $page->ID,
+                'title' => $page->post_title,
+                'url' => get_permalink($page->ID),
+                'priority' => $this->get_page_priority($page->ID),
+                'keywords' => $this->get_page_keywords($page->ID),
+                'inbound_links' => $this->count_inbound_links($page->ID)
+            );
+        }
+
+        usort($result, function($a, $b) {
+            return $b['priority'] - $a['priority'];
+        });
+
+        return $result;
+    }
+
+    /**
+     * Count inbound links
+     */
+    public function count_inbound_links($target_post_id) {
+        $target_url = get_permalink($target_post_id);
+        $target_path = str_replace(home_url(), '', $target_url);
+
+        $count = 0;
+        $all_links = $this->get_all_site_links(1000);
+
+        foreach ($all_links as $link) {
+            $link_path = str_replace(home_url(), '', $link['url']);
+            if ($link_path === $target_path || $link['url'] === $target_url) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
+
+    /**
+     * Link Gap Analysis
+     */
+    public function get_link_gaps($min_links = 0, $max_links = 2) {
+        $catalog = $this->get_catalog();
+        $all_links = $this->get_all_site_links(2000);
+
+        $inbound_counts = array();
+        foreach ($all_links as $link) {
+            $url = $link['url'];
+            if (!isset($inbound_counts[$url])) $inbound_counts[$url] = 0;
+            $inbound_counts[$url]++;
+        }
+
+        $gaps = array();
+        foreach ($catalog as $post_id => $item) {
+            $url = $item['url'];
+            $count = isset($inbound_counts[$url]) ? $inbound_counts[$url] : 0;
+
+            if ($count >= $min_links && $count <= $max_links) {
+                $gaps[] = array(
+                    'id' => $item['post_id'],
+                    'title' => $item['title'],
+                    'url' => $url,
+                    'type' => $item['is_page'] ? 'page' : 'post',
+                    'inbound_links' => $count,
+                    'priority' => $item['is_page'] ? $this->get_page_priority($item['post_id']) : 0,
+                    'keywords' => $item['is_page'] ? $this->get_page_keywords($item['post_id']) : '',
+                    'topic_cluster' => $item['topic_cluster'] ?? ''
+                );
+            }
+        }
+
+        usort($gaps, function($a, $b) {
+            if ($a['inbound_links'] !== $b['inbound_links']) {
+                return $a['inbound_links'] - $b['inbound_links'];
+            }
+            return $b['priority'] - $a['priority'];
+        });
+
+        return $gaps;
+    }
+
+    /**
+     * Get link distribution stats
+     */
+    public function get_link_stats() {
+        $catalog = $this->get_catalog();
+        $all_links = $this->get_all_site_links(2000);
+
+        $inbound_counts = array();
+        foreach ($all_links as $link) {
+            $url = $link['url'];
+            if (!isset($inbound_counts[$url])) $inbound_counts[$url] = 0;
+            $inbound_counts[$url]++;
+        }
+
+        $zero_links = 0;
+        $one_to_three = 0;
+        $four_to_ten = 0;
+        $over_ten = 0;
+        $pages_zero = 0;
+        $posts_zero = 0;
+
+        foreach ($catalog as $item) {
+            $count = isset($inbound_counts[$item['url']]) ? $inbound_counts[$item['url']] : 0;
+
+            if ($count === 0) {
+                $zero_links++;
+                if ($item['is_page']) $pages_zero++;
+                else $posts_zero++;
+            } elseif ($count <= 3) {
+                $one_to_three++;
+            } elseif ($count <= 10) {
+                $four_to_ten++;
+            } else {
+                $over_ten++;
+            }
+        }
+
+        return array(
+            'total_items' => count($catalog),
+            'total_links' => count($all_links),
+            'zero_links' => $zero_links,
+            'pages_zero' => $pages_zero,
+            'posts_zero' => $posts_zero,
+            'one_to_three' => $one_to_three,
+            'four_to_ten' => $four_to_ten,
+            'over_ten' => $over_ten
+        );
+    }
+
+    // =========================================================================
+    // CLAUDE API
+    // =========================================================================
+
     private function call_claude_api($prompt, $max_tokens = 1000) {
         if (empty($this->api_key)) {
             return array('success' => false, 'error' => 'API key not set');
         }
-        
+
         $response = wp_remote_post('https://api.anthropic.com/v1/messages', array(
             'timeout' => 120,
             'headers' => array(
@@ -1838,221 +2624,550 @@ class LendCity_Smart_Linker {
                 'messages' => array(array('role' => 'user', 'content' => $prompt))
             ))
         ));
-        
+
         if (is_wp_error($response)) {
-            error_log('LendCity API: WP Error - ' . $response->get_error_message());
+            $this->log('API WP Error: ' . $response->get_error_message());
             return array('success' => false, 'error' => $response->get_error_message());
         }
-        
-        $response_code = wp_remote_retrieve_response_code($response);
+
+        $code = wp_remote_retrieve_response_code($response);
         $body = json_decode(wp_remote_retrieve_body($response), true);
-        
-        if ($response_code !== 200) {
-            $error_msg = isset($body['error']['message']) ? $body['error']['message'] : 'HTTP ' . $response_code;
-            error_log('LendCity API: Error response - ' . $error_msg);
-            return array('success' => false, 'error' => $error_msg);
+
+        if ($code !== 200) {
+            $error = isset($body['error']['message']) ? $body['error']['message'] : 'HTTP ' . $code;
+            $this->log('API Error: ' . $error);
+            return array('success' => false, 'error' => $error);
         }
-        
+
         if (!isset($body['content'][0]['text'])) {
-            error_log('LendCity API: Invalid response structure - ' . wp_remote_retrieve_body($response));
-            return array('success' => false, 'error' => 'Invalid API response');
+            $this->log('API Invalid response');
+            return array('success' => false, 'error' => 'Invalid response');
         }
-        
+
         return array('success' => true, 'text' => $body['content'][0]['text']);
     }
-    
-    // ==================== SEO ENHANCEMENT FUNCTIONS ====================
-    
+
+    // =========================================================================
+    // PARALLEL API PROCESSING (v4.0 - 3-5x FASTER catalog building)
+    // =========================================================================
+
     /**
-     * Get/Set priority for a page (1-5, higher = more links)
+     * Build catalog entries in PARALLEL using curl_multi
+     * Processes multiple posts simultaneously for much faster catalog building
+     *
+     * @param array $post_ids Array of post IDs to catalog
+     * @param int $concurrent Number of concurrent API requests (default 3)
+     * @return array Cataloged entries
      */
-    public function get_page_priority($post_id) {
-        return intval(get_post_meta($post_id, $this->priority_meta_key, true)) ?: 3; // Default 3 (normal)
+    public function build_parallel_catalog($post_ids, $concurrent = 3) {
+        if (empty($this->api_key)) {
+            $this->log('Parallel catalog: No API key');
+            return array();
+        }
+
+        $entries = array();
+        $chunks = array_chunk($post_ids, $concurrent);
+        $total_chunks = count($chunks);
+        $chunk_num = 0;
+
+        foreach ($chunks as $chunk) {
+            $chunk_num++;
+            $this->log("Parallel catalog: Processing chunk $chunk_num of $total_chunks (" . count($chunk) . " posts)");
+
+            $results = $this->call_claude_api_parallel($chunk);
+
+            foreach ($results as $post_id => $result) {
+                if ($result && isset($result['post_id'])) {
+                    $this->insert_catalog_entry($post_id, $result);
+                    $entries[$post_id] = $result;
+                }
+            }
+
+            // Small delay between chunks to avoid rate limits
+            if ($chunk_num < $total_chunks) {
+                usleep(500000); // 0.5 second
+            }
+        }
+
+        $this->log('Parallel catalog complete: ' . count($entries) . ' entries created');
+        return $entries;
     }
-    
-    public function set_page_priority($post_id, $priority) {
-        $priority = max(1, min(5, intval($priority)));
-        update_post_meta($post_id, $this->priority_meta_key, $priority);
-        return $priority;
-    }
-    
+
     /**
-     * Get/Set target keywords for a page (used for anchor text)
+     * Make parallel API calls using curl_multi
      */
-    public function get_page_keywords($post_id) {
-        return get_post_meta($post_id, $this->keywords_meta_key, true) ?: '';
-    }
-    
-    public function set_page_keywords($post_id, $keywords) {
-        $keywords = sanitize_text_field($keywords);
-        update_post_meta($post_id, $this->keywords_meta_key, $keywords);
-        return $keywords;
-    }
-    
-    /**
-     * Get all priority pages with their settings
-     */
-    public function get_priority_pages() {
-        global $wpdb;
-        
-        $pages = get_posts(array(
-            'post_type' => 'page',
-            'post_status' => 'publish',
-            'posts_per_page' => -1,
-            'orderby' => 'title',
-            'order' => 'ASC'
-        ));
-        
-        $result = array();
-        foreach ($pages as $page) {
-            $priority = $this->get_page_priority($page->ID);
-            $keywords = $this->get_page_keywords($page->ID);
-            $inbound_links = $this->count_inbound_links($page->ID);
-            
-            $result[] = array(
-                'id' => $page->ID,
-                'title' => $page->post_title,
-                'url' => get_permalink($page->ID),
-                'priority' => $priority,
-                'keywords' => $keywords,
-                'inbound_links' => $inbound_links
+    private function call_claude_api_parallel($post_ids) {
+        $multi_handle = curl_multi_init();
+        $curl_handles = array();
+        $posts_data = array();
+
+        // Prepare requests for each post
+        foreach ($post_ids as $post_id) {
+            $post = get_post($post_id);
+            if (!$post || $post->post_status !== 'publish') continue;
+
+            $content = wp_strip_all_tags($post->post_content);
+            if (strlen($content) < 100) {
+                $rendered = apply_filters('the_content', $post->post_content);
+                $content = wp_strip_all_tags($rendered);
+            }
+            if (strlen($content) < 50) {
+                $content = "Page title: " . $post->post_title . ". URL slug: " . $post->post_name;
+            }
+            if (strlen($content) > 12000) {
+                $content = substr($content, 0, 12000) . '...';
+            }
+
+            $is_page = ($post->post_type === 'page');
+            $prompt = $this->build_catalog_prompt($post, $content, $is_page);
+
+            $posts_data[$post_id] = array(
+                'post' => $post,
+                'is_page' => $is_page,
+                'word_count' => str_word_count($content)
             );
+
+            // Create curl handle
+            $ch = curl_init();
+            curl_setopt_array($ch, array(
+                CURLOPT_URL => 'https://api.anthropic.com/v1/messages',
+                CURLOPT_POST => true,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 120,
+                CURLOPT_HTTPHEADER => array(
+                    'Content-Type: application/json',
+                    'x-api-key: ' . $this->api_key,
+                    'anthropic-version: 2023-06-01'
+                ),
+                CURLOPT_POSTFIELDS => json_encode(array(
+                    'model' => 'claude-sonnet-4-20250514',
+                    'max_tokens' => 1500,
+                    'messages' => array(array('role' => 'user', 'content' => $prompt))
+                ))
+            ));
+
+            curl_multi_add_handle($multi_handle, $ch);
+            $curl_handles[$post_id] = $ch;
         }
-        
-        // Sort by priority descending
-        usort($result, function($a, $b) {
-            return $b['priority'] - $a['priority'];
-        });
-        
-        return $result;
+
+        // Execute all requests in parallel
+        $running = null;
+        do {
+            curl_multi_exec($multi_handle, $running);
+            curl_multi_select($multi_handle);
+        } while ($running > 0);
+
+        // Collect results
+        $results = array();
+        foreach ($curl_handles as $post_id => $ch) {
+            $response = curl_multi_getcontent($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+            curl_multi_remove_handle($multi_handle, $ch);
+            curl_close($ch);
+
+            if ($http_code !== 200) {
+                $this->log("Parallel API error for post $post_id: HTTP $http_code");
+                continue;
+            }
+
+            $body = json_decode($response, true);
+            if (!isset($body['content'][0]['text'])) {
+                $this->log("Parallel API invalid response for post $post_id");
+                continue;
+            }
+
+            $text = $body['content'][0]['text'];
+            $data = json_decode($text, true);
+            if (!$data && preg_match('/\{.*\}/s', $text, $matches)) {
+                $data = json_decode($matches[0], true);
+            }
+
+            if (!$data) {
+                $this->log("Failed to parse catalog JSON for post $post_id");
+                continue;
+            }
+
+            $pdata = $posts_data[$post_id];
+            $post = $pdata['post'];
+
+            $results[$post_id] = array(
+                // Core fields
+                'post_id' => $post_id,
+                'type' => $post->post_type,
+                'is_page' => $pdata['is_page'],
+                'title' => $post->post_title,
+                'url' => get_permalink($post_id),
+                'summary' => $data['summary'] ?? '',
+                'main_topics' => $data['main_topics'] ?? array(),
+                'semantic_keywords' => $data['semantic_keywords'] ?? array(),
+                'entities' => $data['entities'] ?? array(),
+                'content_themes' => $data['content_themes'] ?? array(),
+                'good_anchor_phrases' => $data['good_anchor_phrases'] ?? array(),
+
+                // v3.0 Intelligence
+                'reader_intent' => $data['reader_intent'] ?? 'educational',
+                'difficulty_level' => $data['difficulty_level'] ?? 'intermediate',
+                'funnel_stage' => $data['funnel_stage'] ?? 'awareness',
+                'topic_cluster' => $data['topic_cluster'] ?? null,
+                'related_clusters' => $data['related_clusters'] ?? array(),
+                'is_pillar_content' => (bool)($data['is_pillar_content'] ?? false),
+                'word_count' => $pdata['word_count'],
+                'content_quality_score' => intval($data['content_quality_score'] ?? 50),
+
+                // v4.0 NEW fields
+                'content_lifespan' => $data['content_lifespan'] ?? 'evergreen',
+                'publish_season' => $data['publish_season'] ?? null,
+                'target_regions' => $data['target_regions'] ?? array(),
+                'target_cities' => $data['target_cities'] ?? array(),
+                'target_persona' => $data['target_persona'] ?? 'general',
+                'has_cta' => (bool)($data['has_cta'] ?? false),
+                'has_calculator' => (bool)($data['has_calculator'] ?? false),
+                'has_lead_form' => (bool)($data['has_lead_form'] ?? false),
+                'monetization_value' => intval($data['monetization_value'] ?? 5),
+                'content_format' => $data['content_format'] ?? 'other',
+
+                'updated_at' => current_time('mysql')
+            );
+
+            $this->log("Parallel: Cataloged post $post_id - " . $post->post_title);
+        }
+
+        curl_multi_close($multi_handle);
+
+        return $results;
     }
-    
+
     /**
-     * Count inbound internal links to a post/page
+     * Update link counts for all catalog entries (run periodically)
      */
-    public function count_inbound_links($target_post_id) {
-        $target_url = get_permalink($target_post_id);
-        $target_path = str_replace(home_url(), '', $target_url);
-        
-        $count = 0;
-        $all_links = $this->get_all_site_links(1000);
-        
-        foreach ($all_links as $link) {
-            $link_path = str_replace(home_url(), '', $link['url']);
-            if ($link_path === $target_path || $link['url'] === $target_url) {
-                $count++;
-            }
-        }
-        
-        return $count;
-    }
-    
-    /**
-     * Link Gap Analysis - Find posts/pages with few or no inbound links
-     */
-    public function get_link_gaps($min_links = 0, $max_links = 2) {
-        $catalog = $this->get_catalog();
-        $all_links = $this->get_all_site_links(2000);
-        
-        // Count inbound links for each URL
-        $inbound_counts = array();
-        foreach ($all_links as $link) {
-            $url = $link['url'];
-            if (!isset($inbound_counts[$url])) {
-                $inbound_counts[$url] = 0;
-            }
-            $inbound_counts[$url]++;
-        }
-        
-        // Find items with link gaps
-        $gaps = array();
-        foreach ($catalog as $post_id => $item) {
-            $url = $item['url'];
-            $count = isset($inbound_counts[$url]) ? $inbound_counts[$url] : 0;
-            
-            if ($count >= $min_links && $count <= $max_links) {
-                $item_id = isset($item['post_id']) ? $item['post_id'] : $post_id;
-                $gaps[] = array(
-                    'id' => $item_id,
-                    'title' => $item['title'],
-                    'url' => $url,
-                    'type' => !empty($item['is_page']) ? 'page' : 'post',
-                    'inbound_links' => $count,
-                    'priority' => !empty($item['is_page']) ? $this->get_page_priority($item_id) : 0,
-                    'keywords' => !empty($item['is_page']) ? $this->get_page_keywords($item_id) : ''
-                );
-            }
-        }
-        
-        // Sort by inbound_links ascending (worst first), then by priority descending
-        usort($gaps, function($a, $b) {
-            if ($a['inbound_links'] !== $b['inbound_links']) {
-                return $a['inbound_links'] - $b['inbound_links'];
-            }
-            return $b['priority'] - $a['priority'];
-        });
-        
-        return $gaps;
-    }
-    
-    /**
-     * Get link distribution stats
-     */
-    public function get_link_stats() {
-        $catalog = $this->get_catalog();
-        $all_links = $this->get_all_site_links(2000);
-        
+    public function update_link_counts() {
+        global $wpdb;
+
+        $all_links = $this->get_all_site_links(5000);
+
         // Count inbound links per URL
         $inbound_counts = array();
+        $outbound_counts = array();
+
         foreach ($all_links as $link) {
             $url = $link['url'];
-            if (!isset($inbound_counts[$url])) {
-                $inbound_counts[$url] = 0;
-            }
+            $source_id = $link['source_post_id'];
+
+            if (!isset($inbound_counts[$url])) $inbound_counts[$url] = 0;
             $inbound_counts[$url]++;
+
+            if (!isset($outbound_counts[$source_id])) $outbound_counts[$source_id] = 0;
+            $outbound_counts[$source_id]++;
         }
-        
-        // Calculate stats
-        $zero_links = 0;
-        $one_to_three = 0;
-        $four_to_ten = 0;
-        $over_ten = 0;
-        $pages_zero = 0;
-        $posts_zero = 0;
-        
-        foreach ($catalog as $item) {
-            $count = isset($inbound_counts[$item['url']]) ? $inbound_counts[$item['url']] : 0;
-            
-            if ($count === 0) {
-                $zero_links++;
-                if ($item['is_page']) $pages_zero++;
-                else $posts_zero++;
-            } elseif ($count <= 3) {
-                $one_to_three++;
-            } elseif ($count <= 10) {
-                $four_to_ten++;
-            } else {
-                $over_ten++;
+
+        // Update catalog entries
+        $catalog = $this->get_catalog();
+        foreach ($catalog as $post_id => $entry) {
+            $inbound = isset($inbound_counts[$entry['url']]) ? $inbound_counts[$entry['url']] : 0;
+            $outbound = isset($outbound_counts[$post_id]) ? $outbound_counts[$post_id] : 0;
+
+            // Calculate link gap priority (higher = needs more links)
+            $gap_priority = 50;
+            if ($inbound == 0) $gap_priority = 100;
+            elseif ($inbound <= 2) $gap_priority = 80;
+            elseif ($inbound <= 5) $gap_priority = 60;
+            elseif ($inbound > 10) $gap_priority = 20;
+
+            // Boost priority for high-value pages
+            if ($entry['is_page'] || $entry['monetization_value'] >= 8) {
+                $gap_priority = min(100, $gap_priority + 20);
+            }
+
+            $wpdb->update(
+                $this->table_name,
+                array(
+                    'inbound_link_count' => $inbound,
+                    'outbound_link_count' => $outbound,
+                    'link_gap_priority' => $gap_priority
+                ),
+                array('post_id' => $post_id)
+            );
+        }
+
+        $this->log('Updated link counts for ' . count($catalog) . ' catalog entries');
+    }
+
+    // =========================================================================
+    // SMART METADATA GENERATION v2 - Runs AFTER Linking Phase
+    // =========================================================================
+
+    /**
+     * Generate smart SEO metadata using catalog data + inbound link analysis
+     * This should be run AFTER linking is complete to get full anchor text data
+     *
+     * @param int $post_id The post ID to generate metadata for
+     * @return array|WP_Error Metadata result or error
+     */
+    public function generate_smart_metadata($post_id) {
+        $post = get_post($post_id);
+        if (!$post) {
+            return new WP_Error('not_found', 'Post not found');
+        }
+
+        // 1. Get catalog entry for this post (enriched data)
+        $catalog_entry = $this->get_catalog_entry($post_id);
+
+        // 2. Get all inbound link anchor texts (what other posts use to link TO this)
+        $inbound_anchors = $this->get_inbound_anchors($post_id);
+
+        // 3. Get outbound anchors (what this post links to - contextual)
+        $outbound_links = get_post_meta($post_id, $this->link_meta_key, true) ?: array();
+        $outbound_anchors = array();
+        foreach ($outbound_links as $link) {
+            if (!empty($link['anchor'])) {
+                $outbound_anchors[] = $link['anchor'];
             }
         }
-        
+
+        // 4. Get target keywords for pages
+        $target_keywords = '';
+        if ($post->post_type === 'page') {
+            $target_keywords = get_post_meta($post_id, $this->keywords_meta_key, true);
+        }
+
+        // 5. Get existing site tags for consistency
+        $existing_tags = get_tags(array('hide_empty' => false, 'number' => 100));
+        $existing_tag_names = array_column($existing_tags ?: array(), 'name');
+
+        // 6. Content preview
+        $content = wp_strip_all_tags($post->post_content);
+        $content = substr($content, 0, 1500);
+
+        // Build comprehensive prompt
+        $prompt = $this->build_smart_metadata_prompt(
+            $post,
+            $catalog_entry,
+            $inbound_anchors,
+            $outbound_anchors,
+            $target_keywords,
+            $existing_tag_names,
+            $content
+        );
+
+        // Call Claude API
+        $api = new LendCity_Claude_API();
+        $response = $api->simple_completion($prompt, 800);
+
+        if (!$response) {
+            return new WP_Error('api_error', 'API request failed');
+        }
+
+        // Parse response
+        $result = json_decode($response, true);
+        if (!$result && preg_match('/\{.*\}/s', $response, $matches)) {
+            $result = json_decode($matches[0], true);
+        }
+
+        if (!$result || !isset($result['title'])) {
+            return new WP_Error('parse_error', 'Invalid API response: ' . substr($response, 0, 200));
+        }
+
         return array(
-            'total_items' => count($catalog),
-            'total_links' => count($all_links),
-            'zero_links' => $zero_links,
-            'pages_zero' => $pages_zero,
-            'posts_zero' => $posts_zero,
-            'one_to_three' => $one_to_three,
-            'four_to_ten' => $four_to_ten,
-            'over_ten' => $over_ten
+            'title' => $result['title'] ?? '',
+            'description' => $result['description'] ?? '',
+            'tags' => $result['tags'] ?? array(),
+            'focus_keyphrase' => $result['focus_keyphrase'] ?? '',
+            'reasoning' => $result['reasoning'] ?? '',
+            'catalog_used' => !empty($catalog_entry),
+            'inbound_anchors_count' => count($inbound_anchors),
+            'outbound_anchors_count' => count($outbound_anchors)
         );
     }
-    
+
     /**
-     * Get max links allowed based on priority
-     * Priority 1 = 1 link, Priority 5 = 5 links per source post
+     * Get all anchor texts from links pointing TO this post
+     *
+     * @param int $post_id Target post ID
+     * @return array List of anchor texts
      */
-    public function get_max_links_for_priority($priority) {
-        return max(1, min(5, intval($priority)));
+    public function get_inbound_anchors($post_id) {
+        $post_url = get_permalink($post_id);
+        $all_links = $this->get_all_site_links(5000);
+
+        $inbound_anchors = array();
+        foreach ($all_links as $link) {
+            if ($link['url'] === $post_url && !empty($link['anchor'])) {
+                $inbound_anchors[] = $link['anchor'];
+            }
+        }
+
+        return $inbound_anchors;
+    }
+
+    /**
+     * Build the smart metadata prompt using all available data
+     */
+    private function build_smart_metadata_prompt($post, $catalog_entry, $inbound_anchors, $outbound_anchors, $target_keywords, $existing_tags, $content) {
+        $type_label = $post->post_type === 'page' ? 'PAGE' : 'ARTICLE';
+
+        $prompt = "Generate highly optimized SEO metadata for this mortgage/real estate {$type_label}.\n\n";
+        $prompt .= "=== CONTENT INFO ===\n";
+        $prompt .= "Title: {$post->post_title}\n";
+        $prompt .= "Type: {$type_label}\n";
+        $prompt .= "Content Preview: {$content}\n\n";
+
+        // Add enriched catalog data if available
+        if (!empty($catalog_entry)) {
+            $prompt .= "=== SEMANTIC ANALYSIS (from our content catalog) ===\n";
+
+            if (!empty($catalog_entry['summary'])) {
+                $prompt .= "Summary: {$catalog_entry['summary']}\n";
+            }
+            if (!empty($catalog_entry['topic_cluster'])) {
+                $prompt .= "Topic Cluster: {$catalog_entry['topic_cluster']}\n";
+            }
+            if (!empty($catalog_entry['funnel_stage'])) {
+                $prompt .= "Funnel Stage: {$catalog_entry['funnel_stage']} (awareness/consideration/decision)\n";
+            }
+            if (!empty($catalog_entry['reader_intent'])) {
+                $prompt .= "Reader Intent: {$catalog_entry['reader_intent']}\n";
+            }
+            if (!empty($catalog_entry['target_persona'])) {
+                $prompt .= "Target Persona: {$catalog_entry['target_persona']}\n";
+            }
+            if (!empty($catalog_entry['difficulty_level'])) {
+                $prompt .= "Difficulty Level: {$catalog_entry['difficulty_level']}\n";
+            }
+            if (!empty($catalog_entry['content_format'])) {
+                $prompt .= "Content Format: {$catalog_entry['content_format']}\n";
+            }
+            if (!empty($catalog_entry['content_lifespan'])) {
+                $prompt .= "Content Lifespan: {$catalog_entry['content_lifespan']}\n";
+            }
+
+            // Parse JSON fields
+            if (!empty($catalog_entry['main_topics'])) {
+                $topics = json_decode($catalog_entry['main_topics'], true);
+                if (is_array($topics)) {
+                    $prompt .= "Main Topics: " . implode(', ', $topics) . "\n";
+                }
+            }
+            if (!empty($catalog_entry['semantic_keywords'])) {
+                $keywords = json_decode($catalog_entry['semantic_keywords'], true);
+                if (is_array($keywords)) {
+                    $prompt .= "Semantic Keywords: " . implode(', ', array_slice($keywords, 0, 15)) . "\n";
+                }
+            }
+            if (!empty($catalog_entry['target_regions'])) {
+                $regions = json_decode($catalog_entry['target_regions'], true);
+                if (is_array($regions)) {
+                    $prompt .= "Target Regions: " . implode(', ', $regions) . "\n";
+                }
+            }
+            $prompt .= "\n";
+        }
+
+        // Add inbound link anchors (CRITICAL - this shows what others think this page is about)
+        if (!empty($inbound_anchors)) {
+            $unique_anchors = array_unique($inbound_anchors);
+            $anchor_counts = array_count_values($inbound_anchors);
+            arsort($anchor_counts);
+
+            $prompt .= "=== INBOUND LINK SIGNALS (how other content links TO this) ===\n";
+            $prompt .= "These anchor texts reveal what other content thinks this page is about:\n";
+
+            $top_anchors = array_slice($anchor_counts, 0, 10, true);
+            foreach ($top_anchors as $anchor => $count) {
+                $prompt .= "- \"{$anchor}\" (used {$count}x)\n";
+            }
+            $prompt .= "\n";
+        }
+
+        // Add outbound link context
+        if (!empty($outbound_anchors)) {
+            $prompt .= "=== OUTBOUND LINKS (what this content links to) ===\n";
+            $prompt .= implode(', ', array_unique($outbound_anchors)) . "\n\n";
+        }
+
+        // Add target keywords for pages
+        if (!empty($target_keywords)) {
+            $prompt .= "=== PRIORITY KEYWORDS (manually specified) ===\n";
+            $prompt .= $target_keywords . "\n\n";
+        }
+
+        // Add existing tags
+        if (!empty($existing_tags)) {
+            $prompt .= "=== EXISTING SITE TAGS (prefer these when relevant) ===\n";
+            $prompt .= implode(', ', array_slice($existing_tags, 0, 50)) . "\n\n";
+        }
+
+        // Instructions
+        $prompt .= "=== INSTRUCTIONS ===\n";
+        $prompt .= "Generate SEO metadata that:\n";
+        $prompt .= "1. SEO Title (50-60 chars): Must include the most-used inbound anchor phrases when available\n";
+        $prompt .= "2. Meta Description (150-160 chars): Compelling description incorporating semantic keywords\n";
+        $prompt .= "3. Tags (8 max): Mix of existing site tags + new tags from semantic keywords\n";
+        $prompt .= "4. Focus Keyphrase: The primary keyword this page should rank for\n\n";
+
+        $prompt .= "CRITICAL RULES:\n";
+        $prompt .= "- If inbound anchors exist, they reveal WHAT USERS ARE LOOKING FOR - prioritize these!\n";
+        $prompt .= "- Match the funnel stage: awareness=educational, consideration=comparative, decision=action-oriented\n";
+        $prompt .= "- Match the persona voice: first_time_buyer=simple, investor=ROI-focused, professional=technical\n";
+        $prompt .= "- Keep everything EVERGREEN - no dates or time-sensitive references\n";
+        $prompt .= "- For Canadian real estate: include 'Canada' or 'Canadian' naturally\n\n";
+
+        $prompt .= "Return ONLY valid JSON:\n";
+        $prompt .= '{"title":"...","description":"...","tags":["tag1","tag2"],"focus_keyphrase":"...","reasoning":"brief explanation of choices"}' . "\n";
+
+        return $prompt;
+    }
+
+    /**
+     * Bulk generate smart metadata for all posts with links
+     * Returns list of post IDs that need processing
+     *
+     * @param bool $only_linked Only include posts that have inbound or outbound links
+     * @return array List of post IDs to process
+     */
+    public function get_posts_for_smart_metadata($only_linked = true) {
+        $posts_to_process = array();
+
+        if ($only_linked) {
+            // Get all posts with outbound links
+            $posts_with_outbound = get_posts(array(
+                'post_type' => array('post', 'page'),
+                'post_status' => 'publish',
+                'posts_per_page' => -1,
+                'meta_query' => array(
+                    array(
+                        'key' => $this->link_meta_key,
+                        'compare' => 'EXISTS'
+                    )
+                ),
+                'fields' => 'ids'
+            ));
+
+            // Get all posts/pages with inbound links
+            $all_links = $this->get_all_site_links(5000);
+            $posts_with_inbound = array();
+            foreach ($all_links as $link) {
+                $linked_post_id = url_to_postid($link['url']);
+                if ($linked_post_id) {
+                    $posts_with_inbound[$linked_post_id] = true;
+                }
+            }
+
+            // Combine unique IDs
+            $posts_to_process = array_unique(array_merge(
+                $posts_with_outbound,
+                array_keys($posts_with_inbound)
+            ));
+        } else {
+            // All published posts and pages
+            $posts_to_process = get_posts(array(
+                'post_type' => array('post', 'page'),
+                'post_status' => 'publish',
+                'posts_per_page' => -1,
+                'fields' => 'ids'
+            ));
+        }
+
+        return $posts_to_process;
     }
 }

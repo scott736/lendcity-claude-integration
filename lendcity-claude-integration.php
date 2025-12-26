@@ -1,9 +1,9 @@
 <?php
 /**
- * Plugin Name: LendCity Claude Integration
+ * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 10.1.0
+ * Version: 11.2.4
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '10.1.0');
+define('LENDCITY_CLAUDE_VERSION', '11.1.0');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -41,14 +41,28 @@ register_activation_hook(__FILE__, 'lendcity_claude_activate');
 function lendcity_claude_activate() {
     // Clear any old cron jobs that might be lingering
     lendcity_claude_clear_all_crons();
-    
+
+    // Create/upgrade the catalog database table
+    require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-smart-linker.php';
+    $smart_linker = new LendCity_Smart_Linker();
+    $smart_linker->maybe_create_table();
+
+    // Clean up old wp_options catalog (v10 and earlier) - don't migrate, new catalog is smarter
+    $old_catalog = get_option('lendcity_post_catalog', array());
+    if (!empty($old_catalog)) {
+        // Backup before deleting
+        update_option('lendcity_post_catalog_backup_v10', $old_catalog);
+        delete_option('lendcity_post_catalog');
+        delete_option('lendcity_post_catalog_built_at');
+        error_log('LendCity: Cleaned up old wp_options catalog. Please rebuild catalog for v11 enriched data.');
+    }
+
     // Schedule fresh crons (NOT link queue - that's scheduled dynamically when needed)
     if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
         wp_schedule_event(time(), 'hourly', 'lendcity_auto_schedule_articles');
     }
-    if (!wp_next_scheduled('lendcity_check_podcasts')) {
-        wp_schedule_event(time(), 'every_15_minutes', 'lendcity_check_podcasts');
-    }
+    // Podcast cron is scheduled dynamically on Mondays via setup_podcast_cron()
+    // Don't schedule here - let the Monday-only logic handle it
 }
 
 // Deactivation hook - runs when plugin is deactivated
@@ -135,7 +149,6 @@ function lendcity_log($message) {
 
 // Include required files
 require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-claude-api.php';
-require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-catalog-db.php';
 require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-smart-linker.php';
 
 class LendCity_Claude_Integration {
@@ -156,11 +169,16 @@ class LendCity_Claude_Integration {
     private function init_hooks() {
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_init', array($this, 'register_settings'));
-        
+        add_action('admin_notices', array($this, 'show_upgrade_notice'));
+        add_action('wp_ajax_lendcity_dismiss_v11_notice', array($this, 'ajax_dismiss_v11_notice'));
+        add_action('wp_ajax_lendcity_get_catalog_stats', array($this, 'ajax_get_catalog_stats'));
+
         // Smart Linker AJAX
         add_action('wp_ajax_lendcity_get_all_content_ids', array($this, 'ajax_get_all_content_ids'));
         add_action('wp_ajax_lendcity_build_single_catalog', array($this, 'ajax_build_single_catalog'));
         add_action('wp_ajax_lendcity_build_catalog_batch', array($this, 'ajax_build_catalog_batch'));
+        add_action('wp_ajax_lendcity_build_parallel_catalog', array($this, 'ajax_build_parallel_catalog'));
+        add_action('wp_ajax_lendcity_update_link_counts', array($this, 'ajax_update_link_counts'));
         add_action('wp_ajax_lendcity_clear_catalog', array($this, 'ajax_clear_catalog'));
         add_action('wp_ajax_lendcity_create_links_to_target', array($this, 'ajax_create_links_to_target'));
         add_action('wp_ajax_lendcity_get_link_suggestions', array($this, 'ajax_get_link_suggestions'));
@@ -190,7 +208,12 @@ class LendCity_Claude_Integration {
         
         // Metadata AJAX (used by Smart Linker)
         add_action('wp_ajax_lendcity_generate_metadata_from_links', array($this, 'ajax_generate_metadata_from_links'));
-        
+
+        // Smart Metadata v2 AJAX (runs AFTER linking)
+        add_action('wp_ajax_lendcity_generate_smart_metadata', array($this, 'ajax_generate_smart_metadata'));
+        add_action('wp_ajax_lendcity_get_smart_metadata_posts', array($this, 'ajax_get_smart_metadata_posts'));
+        add_action('wp_ajax_lendcity_bulk_smart_metadata', array($this, 'ajax_bulk_smart_metadata'));
+
         // Article Scheduler AJAX
         add_action('wp_ajax_lendcity_process_article', array($this, 'ajax_process_article'));
         add_action('wp_ajax_lendcity_schedule_all_articles', array($this, 'ajax_schedule_all_articles'));
@@ -237,14 +260,12 @@ class LendCity_Claude_Integration {
             // Version changed - clear old crons and reschedule
             lendcity_claude_clear_all_crons();
             
-            // Reschedule (NOT link queue - that's scheduled dynamically when needed)
+            // Reschedule (NOT link queue or podcast - those are scheduled dynamically)
             if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
                 wp_schedule_event(time(), 'hourly', 'lendcity_auto_schedule_articles');
             }
-            if (!wp_next_scheduled('lendcity_check_podcasts')) {
-                wp_schedule_event(time(), 'every_15_minutes', 'lendcity_check_podcasts');
-            }
-            
+            // Podcast cron handled by setup_podcast_cron() on Mondays only
+
             update_option('lendcity_claude_last_version', LENDCITY_CLAUDE_VERSION);
             lendcity_debug_log('Cleaned up stale crons and rescheduled for version ' . LENDCITY_CLAUDE_VERSION);
         }
@@ -273,10 +294,48 @@ class LendCity_Claude_Integration {
         register_setting('lendcity_claude_settings', 'lendcity_podcast2_end_hour');
     }
     
+    /**
+     * Show admin notice for v11 upgrade - rebuild catalog for enriched metadata
+     */
+    public function show_upgrade_notice() {
+        // Only show on plugin pages
+        $screen = get_current_screen();
+        if (!$screen || strpos($screen->id, 'lendcity') === false) {
+            return;
+        }
+
+        // Check if user dismissed the notice
+        if (get_option('lendcity_v11_notice_dismissed', false)) {
+            return;
+        }
+
+        // Check if catalog is empty (new install or needs rebuild)
+        $smart_linker = new LendCity_Smart_Linker();
+        $catalog_count = $smart_linker->get_catalog_count();
+
+        if ($catalog_count === 0) {
+            ?>
+            <div class="notice notice-info is-dismissible" id="lendcity-v11-notice">
+                <p><strong>LendCity Tools v11.0 - Scalable Database Catalog</strong></p>
+                <p>This version features a new high-performance database-backed catalog with enriched metadata for smarter linking:</p>
+                <ul style="list-style: disc; margin-left: 20px;">
+                    <li><strong>Topic Clusters</strong> - Group related content together</li>
+                    <li><strong>Funnel Stages</strong> - Awareness, Consideration, Decision</li>
+                    <li><strong>Difficulty Levels</strong> - Beginner, Intermediate, Advanced</li>
+                    <li><strong>Reader Intent</strong> - Educational, Transactional, Navigational</li>
+                    <li><strong>Quality Scores</strong> - Prioritize high-quality content</li>
+                </ul>
+                <p><a href="<?php echo admin_url('admin.php?page=lendcity-claude-smart-linker'); ?>" class="button button-primary">Go to Smart Linker to Build Catalog</a>
+                <button type="button" class="button" onclick="jQuery.post(ajaxurl, {action: 'lendcity_dismiss_v11_notice', nonce: '<?php echo wp_create_nonce('lendcity_claude_nonce'); ?>'}, function(){ jQuery('#lendcity-v11-notice').fadeOut(); });">Dismiss</button></p>
+            </div>
+            <?php
+        }
+    }
+
     public function add_admin_menu() {
         add_menu_page(
-            'Claude AI',
-            'Claude AI',
+            'LendCity Tools',
+            'LendCity Tools',
             'manage_options',
             'lendcity-claude',
             array($this, 'dashboard_page'),
@@ -369,7 +428,35 @@ class LendCity_Claude_Integration {
         
         wp_send_json_success(array('ids' => $posts));
     }
-    
+
+    /**
+     * Dismiss the v11 upgrade notice
+     */
+    public function ajax_dismiss_v11_notice() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        update_option('lendcity_v11_notice_dismissed', true);
+        wp_send_json_success();
+    }
+
+    /**
+     * Get catalog stats for the new database-backed catalog
+     */
+    public function ajax_get_catalog_stats() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $stats = $smart_linker->get_catalog_stats();
+        $clusters = $smart_linker->get_all_clusters();
+
+        wp_send_json_success(array(
+            'stats' => $stats,
+            'clusters' => $clusters
+        ));
+    }
+
     public function ajax_build_single_catalog() {
         check_ajax_referer('lendcity_claude_nonce', 'nonce');
         if (!current_user_can('manage_options')) {
@@ -381,14 +468,15 @@ class LendCity_Claude_Integration {
         $entry = $smart_linker->build_single_post_catalog($post_id);
 
         if ($entry && is_array($entry) && isset($entry['post_id'])) {
-            // Save to catalog using optimized database table
-            $catalog_db = new LendCity_Catalog_DB();
-            $catalog_db->save_entry($post_id, $entry);
-            update_option('lendcity_post_catalog_built_at', current_time('mysql'));
+            // Save to database table (v11 scalable catalog)
+            $smart_linker->insert_catalog_entry($post_id, $entry);
 
             wp_send_json_success(array(
                 'post_id' => $post_id,
-                'title' => $entry['title']
+                'title' => $entry['title'],
+                'topic_cluster' => $entry['topic_cluster'] ?? '',
+                'funnel_stage' => $entry['funnel_stage'] ?? '',
+                'difficulty_level' => $entry['difficulty_level'] ?? ''
             ));
         } else {
             wp_send_json_error('Failed to build catalog entry');
@@ -397,9 +485,6 @@ class LendCity_Claude_Integration {
     
     /**
      * Build catalog entries in batches - SINGLE API call per batch
-     *
-     * PERFORMANCE NOTE: Now saves entries individually to the optimized database
-     * table instead of rewriting the entire serialized catalog option.
      */
     public function ajax_build_catalog_batch() {
         check_ajax_referer('lendcity_claude_nonce', 'nonce');
@@ -415,17 +500,8 @@ class LendCity_Claude_Integration {
 
         $smart_linker = new LendCity_Smart_Linker();
 
-        // Use batch function - single API call for all posts
+        // Use batch function - saves directly to database table (v11 scalable catalog)
         $entries = $smart_linker->build_batch_catalog($post_ids);
-
-        if (!empty($entries)) {
-            // Save to catalog using optimized database table
-            $catalog_db = new LendCity_Catalog_DB();
-            foreach ($entries as $post_id => $entry) {
-                $catalog_db->save_entry($post_id, $entry);
-            }
-            update_option('lendcity_post_catalog_built_at', current_time('mysql'));
-        }
 
         wp_send_json_success(array(
             'processed' => count($post_ids),
@@ -433,11 +509,56 @@ class LendCity_Claude_Integration {
             'results' => array_keys($entries)
         ));
     }
-    
+
+    /**
+     * Build catalog in PARALLEL - 3-5x faster using concurrent API calls
+     */
+    public function ajax_build_parallel_catalog() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        // Increase time limit for parallel processing
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(600);
+        }
+
+        $post_ids = isset($_POST['post_ids']) ? array_map('intval', $_POST['post_ids']) : array();
+        $concurrent = isset($_POST['concurrent']) ? min(5, max(1, intval($_POST['concurrent']))) : 3;
+
+        if (empty($post_ids)) {
+            wp_send_json_error('No post IDs provided');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $entries = $smart_linker->build_parallel_catalog($post_ids, $concurrent);
+
+        wp_send_json_success(array(
+            'processed' => count($post_ids),
+            'success' => count($entries),
+            'concurrent' => $concurrent,
+            'results' => array_keys($entries)
+        ));
+    }
+
+    /**
+     * Update link counts for all catalog entries
+     */
+    public function ajax_update_link_counts() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $smart_linker->update_link_counts();
+
+        wp_send_json_success(array('message' => 'Link counts updated'));
+    }
+
     /**
      * Clear the entire catalog
-     *
-     * NOTE: Now clears both the new database table and any legacy options data.
      */
     public function ajax_clear_catalog() {
         check_ajax_referer('lendcity_claude_nonce', 'nonce');
@@ -445,11 +566,11 @@ class LendCity_Claude_Integration {
             wp_send_json_error('Permission denied');
         }
 
-        // Clear the optimized database table
-        $catalog_db = new LendCity_Catalog_DB();
-        $catalog_db->clear_all();
+        // Clear the new database table
+        $smart_linker = new LendCity_Smart_Linker();
+        $smart_linker->clear_catalog();
 
-        // Also clear any legacy data
+        // Also clean up any legacy wp_options catalog
         delete_option('lendcity_post_catalog');
         delete_option('lendcity_post_catalog_built_at');
 
@@ -2382,9 +2503,188 @@ class LendCity_Claude_Integration {
             )
         ));
     }
-    
+
+    // ==================== SMART METADATA v2 AJAX ====================
+    // These handlers run AFTER linking phase for optimal SEO metadata
+
+    /**
+     * Generate smart metadata for a single post using catalog + link data
+     */
+    public function ajax_generate_smart_metadata() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $post_id = intval($_POST['post_id']);
+        $post = get_post($post_id);
+
+        if (!$post) {
+            wp_send_json_error('Post not found');
+        }
+
+        // Get BEFORE values
+        $before_title = get_post_meta($post_id, '_seopress_titles_title', true) ?: '';
+        $before_desc = get_post_meta($post_id, '_seopress_titles_desc', true) ?: '';
+        $before_tags = wp_get_post_tags($post_id, array('fields' => 'names'));
+        $before_tags_str = !empty($before_tags) ? implode(', ', $before_tags) : '';
+        $before_keyphrase = get_post_meta($post_id, '_seopress_analysis_target_kw', true) ?: '';
+
+        // Generate smart metadata using the new method
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->generate_smart_metadata($post_id);
+
+        if (is_wp_error($result)) {
+            wp_send_json_error($result->get_error_message());
+        }
+
+        // Save the metadata
+        if (!empty($result['title'])) {
+            update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($result['title']));
+        }
+        if (!empty($result['description'])) {
+            update_post_meta($post_id, '_seopress_titles_desc', sanitize_text_field($result['description']));
+        }
+        if (!empty($result['tags']) && is_array($result['tags'])) {
+            wp_set_post_tags($post_id, $result['tags'], false);
+        }
+        if (!empty($result['focus_keyphrase'])) {
+            update_post_meta($post_id, '_seopress_analysis_target_kw', sanitize_text_field($result['focus_keyphrase']));
+        }
+
+        wp_send_json_success(array(
+            'post_id' => $post_id,
+            'post_title' => $post->post_title,
+            'post_type' => $post->post_type,
+            'data_sources' => array(
+                'catalog_used' => $result['catalog_used'],
+                'inbound_anchors' => $result['inbound_anchors_count'],
+                'outbound_anchors' => $result['outbound_anchors_count']
+            ),
+            'reasoning' => $result['reasoning'] ?? '',
+            'before' => array(
+                'title' => $before_title,
+                'description' => $before_desc,
+                'tags' => $before_tags_str,
+                'focus_keyphrase' => $before_keyphrase
+            ),
+            'after' => array(
+                'title' => $result['title'] ?? '',
+                'description' => $result['description'] ?? '',
+                'tags' => is_array($result['tags']) ? implode(', ', $result['tags']) : '',
+                'focus_keyphrase' => $result['focus_keyphrase'] ?? ''
+            )
+        ));
+    }
+
+    /**
+     * Get list of posts that need smart metadata generation
+     */
+    public function ajax_get_smart_metadata_posts() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $only_linked = isset($_POST['only_linked']) ? (bool) $_POST['only_linked'] : true;
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $post_ids = $smart_linker->get_posts_for_smart_metadata($only_linked);
+
+        // Get post details
+        $posts = array();
+        foreach ($post_ids as $post_id) {
+            $post = get_post($post_id);
+            if ($post) {
+                $posts[] = array(
+                    'id' => $post_id,
+                    'title' => $post->post_title,
+                    'type' => $post->post_type
+                );
+            }
+        }
+
+        wp_send_json_success(array(
+            'posts' => $posts,
+            'total' => count($posts)
+        ));
+    }
+
+    /**
+     * Process a batch of posts for smart metadata (for bulk processing)
+     */
+    public function ajax_bulk_smart_metadata() {
+        @set_time_limit(120);
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $post_ids = isset($_POST['post_ids']) ? array_map('intval', (array) $_POST['post_ids']) : array();
+
+        if (empty($post_ids)) {
+            wp_send_json_error('No post IDs provided');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $results = array();
+        $success_count = 0;
+        $error_count = 0;
+
+        foreach ($post_ids as $post_id) {
+            $post = get_post($post_id);
+            if (!$post) {
+                $results[] = array('id' => $post_id, 'status' => 'error', 'message' => 'Post not found');
+                $error_count++;
+                continue;
+            }
+
+            $result = $smart_linker->generate_smart_metadata($post_id);
+
+            if (is_wp_error($result)) {
+                $results[] = array('id' => $post_id, 'title' => $post->post_title, 'status' => 'error', 'message' => $result->get_error_message());
+                $error_count++;
+                continue;
+            }
+
+            // Save the metadata
+            if (!empty($result['title'])) {
+                update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($result['title']));
+            }
+            if (!empty($result['description'])) {
+                update_post_meta($post_id, '_seopress_titles_desc', sanitize_text_field($result['description']));
+            }
+            if (!empty($result['tags']) && is_array($result['tags'])) {
+                wp_set_post_tags($post_id, $result['tags'], false);
+            }
+            if (!empty($result['focus_keyphrase'])) {
+                update_post_meta($post_id, '_seopress_analysis_target_kw', sanitize_text_field($result['focus_keyphrase']));
+            }
+
+            $results[] = array(
+                'id' => $post_id,
+                'title' => $post->post_title,
+                'status' => 'success',
+                'data' => array(
+                    'seo_title' => $result['title'],
+                    'focus_keyphrase' => $result['focus_keyphrase']
+                )
+            );
+            $success_count++;
+
+            // Brief pause between API calls
+            usleep(500000); // 0.5 second
+        }
+
+        wp_send_json_success(array(
+            'results' => $results,
+            'success' => $success_count,
+            'errors' => $error_count
+        ));
+    }
+
     // ==================== ARTICLE SCHEDULER AJAX ====================
-    
+
     public function ajax_process_article() {
         // Extend PHP execution time for long API calls
         @set_time_limit(300);
