@@ -40,8 +40,13 @@ class LendCity_Smart_Linker {
     private $keywords_meta_key = '_lendcity_target_keywords';
 
     // Database version for migrations
-    const DB_VERSION = '4.1';
+    const DB_VERSION = '5.0';
     const DB_VERSION_OPTION = 'lendcity_catalog_db_version';
+
+    // v5.0 Semantic Enhancement Options
+    private $anchor_usage_option = 'lendcity_anchor_usage_stats';
+    private $keyword_frequency_option = 'lendcity_keyword_frequency';
+    private $synonym_map_option = 'lendcity_synonym_map';
 
     // Parallel processing settings
     private $parallel_batch_size = 5; // Posts per parallel request
@@ -188,7 +193,11 @@ class LendCity_Smart_Linker {
             'content_format' => "VARCHAR(30) DEFAULT 'other'",
             'must_link_to' => "LONGTEXT",
             'never_link_to' => "LONGTEXT",
-            'preferred_anchors' => "LONGTEXT"
+            'preferred_anchors' => "LONGTEXT",
+            // v5.0 Semantic Enhancement columns
+            'embedding_hash' => "VARCHAR(64) DEFAULT NULL",
+            'primary_entities' => "LONGTEXT",
+            'reciprocal_links' => "LONGTEXT"
         );
 
         $added = 0;
@@ -653,6 +662,7 @@ class LendCity_Smart_Linker {
         global $wpdb;
         $wpdb->query("TRUNCATE TABLE {$this->table_name}");
         $this->clear_catalog_cache();
+        $this->clear_semantic_indexes(); // v5.0
         $this->log('Cleared entire catalog');
     }
 
@@ -663,6 +673,37 @@ class LendCity_Smart_Linker {
         $this->catalog_cache = null;
         delete_transient('lendcity_catalog_stats');
         delete_transient('lendcity_link_stats');
+    }
+
+    /**
+     * v5.0: Clear all semantic enhancement indexes
+     */
+    public function clear_semantic_indexes() {
+        delete_option($this->keyword_frequency_option);
+        delete_option($this->synonym_map_option);
+        delete_option($this->anchor_usage_option);
+        $this->debug_log('Cleared v5.0 semantic indexes');
+    }
+
+    /**
+     * v5.0: Build all semantic enhancement indexes
+     * Call this after catalog rebuild for optimal linking
+     */
+    public function build_semantic_indexes() {
+        $this->debug_log('Building v5.0 semantic indexes...');
+
+        // Build TF-IDF keyword frequency index
+        $this->build_keyword_frequency_index();
+
+        // Build synonym map
+        $this->build_synonym_map();
+
+        $this->debug_log('Completed building v5.0 semantic indexes');
+
+        return array(
+            'success' => true,
+            'message' => 'Built TF-IDF and synonym indexes'
+        );
     }
 
     // =========================================================================
@@ -1505,7 +1546,7 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Calculate relevance score between source and target using ALL v4.0 intelligence
+     * Calculate relevance score between source and target using v5.0 semantic intelligence
      * Higher score = better link match
      */
     private function calculate_relevance_score($source, $target) {
@@ -1531,11 +1572,28 @@ class LendCity_Smart_Linker {
         $overlap = count(array_intersect($source_topics, $target_topics));
         $score += min($overlap * 5, 25);
 
-        // Keyword overlap
+        // =================================================================
+        // v5.0 TF-IDF WEIGHTED KEYWORD MATCHING (0-30 points)
+        // =================================================================
+
         $source_keywords = $source['semantic_keywords'] ?? array();
         $target_keywords = $target['semantic_keywords'] ?? array();
-        $keyword_overlap = count(array_intersect($source_keywords, $target_keywords));
-        $score += min($keyword_overlap * 3, 15);
+
+        // TF-IDF weighted scoring (rare keywords worth more)
+        $score += $this->get_tfidf_keyword_score($source_keywords, $target_keywords);
+
+        // Synonym-aware matching (additional points)
+        $score += $this->get_synonym_keyword_score($source_keywords, $target_keywords);
+
+        // =================================================================
+        // v5.0 ENTITY-TO-CLUSTER MATCHING (0-45 points)
+        // =================================================================
+
+        $source_entities = $source['entities'] ?? array();
+        $target_entities = $target['entities'] ?? array();
+        $target_cluster = $target['topic_cluster'] ?? '';
+
+        $score += $this->get_entity_cluster_score($source_entities, $target_cluster, $target_entities);
 
         // =================================================================
         // FUNNEL PROGRESSION (0-25 points)
@@ -1571,7 +1629,7 @@ class LendCity_Smart_Linker {
         }
 
         // =================================================================
-        // PERSONA MATCHING (0-30 points) - NEW v4.0
+        // PERSONA MATCHING (0-30 points) + v5.0 CONFLICT DETECTION
         // =================================================================
 
         $source_persona = $source['target_persona'] ?? 'general';
@@ -1582,7 +1640,9 @@ class LendCity_Smart_Linker {
         } elseif ($source_persona === 'general' || $target_persona === 'general') {
             $score += 10; // General content matches with anything
         }
-        // Different specific personas = no bonus (avoid mixing investor/first-timer)
+
+        // v5.0: Check for persona conflicts (negative matching)
+        $score += $this->get_persona_conflict_penalty($source_persona, $target_persona);
 
         // =================================================================
         // GEOGRAPHIC MATCHING (0-20 points) - NEW v4.0
@@ -1656,6 +1716,13 @@ class LendCity_Smart_Linker {
         $score += ($gap / 100) * 15;
 
         // =================================================================
+        // v5.0 DEEP PAGE PRIORITY (0-25 points)
+        // =================================================================
+
+        // Prioritize linking to orphaned/low-inbound-link pages
+        $score += $this->get_deep_page_bonus($target);
+
+        // =================================================================
         // CONTENT FORMAT MATCHING (0-10 points) - NEW v4.0
         // =================================================================
 
@@ -1678,37 +1745,332 @@ class LendCity_Smart_Linker {
         return max(0, $score); // Never negative
     }
 
+    // =========================================================================
+    // v5.0 SEMANTIC ENHANCEMENT METHODS
+    // =========================================================================
+
     /**
-     * Build the intelligent linking prompt
+     * Get TF-IDF weighted keyword score
+     * Rare keywords across the catalog are more valuable for matching
+     */
+    private function get_tfidf_keyword_score($source_keywords, $target_keywords) {
+        $frequency = get_option($this->keyword_frequency_option, array());
+        $total_docs = max(1, count($this->get_catalog()));
+        $weighted_score = 0;
+
+        $overlap = array_intersect($source_keywords, $target_keywords);
+        foreach ($overlap as $keyword) {
+            $keyword_lower = strtolower($keyword);
+            $doc_frequency = isset($frequency[$keyword_lower]) ? $frequency[$keyword_lower] : 1;
+            // IDF = log(total_docs / doc_frequency)
+            $idf = log($total_docs / max(1, $doc_frequency));
+            $weighted_score += $idf * 2; // Scale factor
+        }
+
+        return min($weighted_score, 30); // Cap at 30 points
+    }
+
+    /**
+     * Build keyword frequency index for TF-IDF weighting
+     * Call this after catalog rebuild
+     */
+    public function build_keyword_frequency_index() {
+        $catalog = $this->get_catalog();
+        $frequency = array();
+
+        foreach ($catalog as $entry) {
+            $keywords = $entry['semantic_keywords'] ?? array();
+            foreach ($keywords as $kw) {
+                $kw_lower = strtolower($kw);
+                if (!isset($frequency[$kw_lower])) {
+                    $frequency[$kw_lower] = 0;
+                }
+                $frequency[$kw_lower]++;
+            }
+        }
+
+        update_option($this->keyword_frequency_option, $frequency, false);
+        $this->debug_log("Built keyword frequency index: " . count($frequency) . " unique keywords");
+        return $frequency;
+    }
+
+    /**
+     * Get entity-to-cluster relevance score
+     * Strong bonus when source mentions entities that match target's cluster
+     */
+    private function get_entity_cluster_score($source_entities, $target_cluster, $target_entities) {
+        $score = 0;
+        $source_entities = array_map('strtolower', $source_entities ?? array());
+        $target_entities = array_map('strtolower', $target_entities ?? array());
+        $target_cluster = strtolower($target_cluster ?? '');
+
+        // Entity-to-cluster mapping for mortgage/real estate domain
+        $entity_clusters = array(
+            'brrrr' => 'brrrr-strategy',
+            'heloc' => 'refinancing',
+            'refinance' => 'refinancing',
+            'first-time' => 'first-time-buyers',
+            'fthb' => 'first-time-buyers',
+            'rental' => 'rental-investing',
+            'investment property' => 'investment-properties',
+            'cash flow' => 'rental-investing',
+            'pre-approval' => 'pre-approval',
+            'down payment' => 'down-payment',
+            'closing costs' => 'closing-costs',
+            'mortgage broker' => 'mortgage-types',
+            'credit score' => 'credit-repair',
+            'self-employed' => 'self-employed-mortgages',
+        );
+
+        // Check if source entities map to target cluster
+        foreach ($source_entities as $entity) {
+            foreach ($entity_clusters as $keyword => $cluster) {
+                if (stripos($entity, $keyword) !== false && $cluster === $target_cluster) {
+                    $score += 25; // Strong entity-cluster match
+                    break 2;
+                }
+            }
+        }
+
+        // Direct entity overlap
+        $entity_overlap = count(array_intersect($source_entities, $target_entities));
+        $score += min($entity_overlap * 8, 20);
+
+        return $score;
+    }
+
+    /**
+     * Check for reciprocal links (A→B and B→A)
+     * Returns penalty score if reciprocal link exists
+     */
+    private function check_reciprocal_link($source_id, $target_id) {
+        // Check if target already links back to source
+        $target_links = get_post_meta($target_id, $this->link_meta_key, true) ?: array();
+        $source_url = get_permalink($source_id);
+
+        foreach ($target_links as $link) {
+            if ($link['url'] === $source_url) {
+                return -20; // Penalty for reciprocal link
+            }
+        }
+        return 0;
+    }
+
+    /**
+     * Get anchor diversity penalty
+     * Penalize anchors that are overused across the site
+     */
+    private function get_anchor_diversity_penalty($anchor_text, $target_id) {
+        $usage = get_option($this->anchor_usage_option, array());
+        $key = strtolower($anchor_text) . '_' . $target_id;
+
+        $count = isset($usage[$key]) ? $usage[$key] : 0;
+        if ($count > 10) return -15;
+        if ($count > 5) return -10;
+        if ($count > 3) return -5;
+        return 0;
+    }
+
+    /**
+     * Track anchor usage for diversity scoring
+     */
+    public function track_anchor_usage($anchor_text, $target_id) {
+        $usage = get_option($this->anchor_usage_option, array());
+        $key = strtolower($anchor_text) . '_' . $target_id;
+
+        if (!isset($usage[$key])) {
+            $usage[$key] = 0;
+        }
+        $usage[$key]++;
+
+        update_option($this->anchor_usage_option, $usage, false);
+    }
+
+    /**
+     * Check if anchor length is optimal (2-4 words)
+     * Returns bonus for good length, penalty for bad
+     */
+    private function get_anchor_length_score($anchor_text) {
+        $word_count = str_word_count($anchor_text);
+        if ($word_count >= 2 && $word_count <= 4) {
+            return 10; // Optimal length
+        } elseif ($word_count === 1) {
+            return -10; // Too short
+        } elseif ($word_count > 6) {
+            return -5; // Too long
+        }
+        return 0;
+    }
+
+    /**
+     * Check for persona conflicts (negative matching)
+     * Returns penalty if personas should not be linked
+     */
+    private function get_persona_conflict_penalty($source_persona, $target_persona) {
+        // Personas that should NOT link to each other
+        $conflicts = array(
+            'investor' => array('first-time-buyer'),
+            'first-time-buyer' => array('investor'),
+            'realtor' => array('first-time-buyer'), // Realtors talk to realtors
+        );
+
+        if (isset($conflicts[$source_persona]) && in_array($target_persona, $conflicts[$source_persona])) {
+            return -30; // Strong penalty
+        }
+        return 0;
+    }
+
+    /**
+     * Get deep page priority bonus
+     * Prioritize linking to orphaned/low-visibility pages
+     */
+    private function get_deep_page_bonus($target) {
+        $inbound = $target['inbound_link_count'] ?? 0;
+
+        if ($inbound === 0) {
+            return 25; // Orphaned page - high priority
+        } elseif ($inbound <= 2) {
+            return 15; // Very few links
+        } elseif ($inbound <= 5) {
+            return 5;
+        }
+        return 0;
+    }
+
+    /**
+     * Get synonyms for a keyword
+     */
+    private function get_keyword_synonyms($keyword) {
+        // Mortgage/real estate domain synonyms
+        $synonyms = array(
+            'mortgage' => array('home loan', 'loan', 'financing'),
+            'real estate' => array('property', 'properties', 'real-estate'),
+            'investing' => array('investment', 'investments', 'invest'),
+            'refinance' => array('refinancing', 'refi'),
+            'rental' => array('rent', 'rentals', 'renting'),
+            'rate' => array('rates', 'interest rate', 'interest rates'),
+            'buyer' => array('buyers', 'purchaser', 'purchasers'),
+            'home' => array('house', 'property', 'residence'),
+            'down payment' => array('downpayment', 'down-payment'),
+            'pre-approval' => array('preapproval', 'pre approval'),
+            'cash flow' => array('cashflow', 'cash-flow'),
+            'ROI' => array('return on investment', 'returns'),
+            'BRRRR' => array('buy rehab rent refinance repeat', 'brrrr strategy'),
+            'HELOC' => array('home equity line of credit', 'home equity'),
+        );
+
+        $kw_lower = strtolower($keyword);
+        if (isset($synonyms[$kw_lower])) {
+            return $synonyms[$kw_lower];
+        }
+
+        // Check if keyword is a synonym value
+        foreach ($synonyms as $primary => $syns) {
+            if (in_array($kw_lower, array_map('strtolower', $syns))) {
+                return array_merge(array($primary), $syns);
+            }
+        }
+
+        return array();
+    }
+
+    /**
+     * Get synonym-aware keyword overlap score
+     */
+    private function get_synonym_keyword_score($source_keywords, $target_keywords) {
+        $score = 0;
+        $matched = array();
+
+        foreach ($source_keywords as $src_kw) {
+            $src_lower = strtolower($src_kw);
+            $src_synonyms = array_merge(array($src_lower), array_map('strtolower', $this->get_keyword_synonyms($src_kw)));
+
+            foreach ($target_keywords as $tgt_kw) {
+                $tgt_lower = strtolower($tgt_kw);
+                if (in_array($tgt_lower, $src_synonyms) && !in_array($tgt_lower, $matched)) {
+                    $score += 4;
+                    $matched[] = $tgt_lower;
+                }
+            }
+        }
+
+        return min($score, 20);
+    }
+
+    /**
+     * Build synonym map from catalog (for ownership map)
+     */
+    public function build_synonym_map() {
+        $catalog = $this->get_catalog();
+        $synonyms = array();
+
+        foreach ($catalog as $entry) {
+            $keywords = $entry['semantic_keywords'] ?? array();
+            foreach ($keywords as $kw) {
+                $kw_lower = strtolower($kw);
+                $syns = $this->get_keyword_synonyms($kw);
+                if (!empty($syns)) {
+                    $synonyms[$kw_lower] = $syns;
+                }
+            }
+        }
+
+        update_option($this->synonym_map_option, $synonyms, false);
+        $this->debug_log("Built synonym map: " . count($synonyms) . " keyword groups");
+        return $synonyms;
+    }
+
+    /**
+     * Build the intelligent linking prompt - v5.0 Enhanced
+     * Now includes summaries, anchor phrases, and more context
      */
     private function build_linking_prompt($source, $source_entry, $source_content,
         $available_pages, $available_posts, $used_anchors, $page_slots, $post_slots) {
 
-        $prompt = "You are an SEO expert creating internal links for a blog post.\n\n";
+        $prompt = "You are an expert SEO strategist creating semantically relevant internal links.\n\n";
         $prompt .= "=== SOURCE POST ===\n";
         $prompt .= "Title: " . $source->post_title . "\n";
         $prompt .= "Topic Cluster: " . ($source_entry['topic_cluster'] ?? 'general') . "\n";
         $prompt .= "Funnel Stage: " . ($source_entry['funnel_stage'] ?? 'awareness') . "\n";
         $prompt .= "Difficulty: " . ($source_entry['difficulty_level'] ?? 'intermediate') . "\n";
+        $prompt .= "Persona: " . ($source_entry['target_persona'] ?? 'general') . "\n";
         $prompt .= "Topics: " . implode(', ', $source_entry['main_topics'] ?? array()) . "\n";
+        $prompt .= "Entities: " . implode(', ', array_slice($source_entry['entities'] ?? array(), 0, 10)) . "\n";
         $prompt .= "Content:\n" . $source_content . "\n\n";
 
         if (!empty($used_anchors)) {
-            $prompt .= "ALREADY USED ANCHORS (DO NOT USE):\n" . implode(', ', $used_anchors) . "\n\n";
+            $prompt .= "=== ALREADY USED ANCHORS (NEVER USE THESE) ===\n" . implode(', ', $used_anchors) . "\n\n";
         }
+
+        // Get site-wide anchor usage for diversity check
+        $anchor_usage = get_option($this->anchor_usage_option, array());
 
         $links_requested = array();
 
         if ($page_slots > 0 && !empty($available_pages)) {
-            $prompt .= "=== AVAILABLE PAGES (max " . $page_slots . " links) ===\n";
+            $prompt .= "=== AVAILABLE SERVICE PAGES (max " . $page_slots . " links) ===\n";
             $count = 0;
             foreach ($available_pages as $id => $entry) {
-                if ($count >= 8) break;
+                if ($count >= 15) break; // Increased from 8 to 15
                 $priority = $this->get_page_priority($id);
                 $keywords = $this->get_page_keywords($id);
-                $prompt .= "ID:" . $id . " | " . $entry['title'] . " | P:" . $priority;
+                $prompt .= "\nID:" . $id . " | " . $entry['title'] . " | Priority:" . $priority;
                 $prompt .= " | Cluster:" . ($entry['topic_cluster'] ?? 'none');
-                if ($keywords) $prompt .= " | ANCHORS:" . $keywords;
+                $prompt .= " | Persona:" . ($entry['target_persona'] ?? 'general');
+
+                // v5.0: Add summary for context
+                if (!empty($entry['summary'])) {
+                    $prompt .= "\n  Summary: " . substr($entry['summary'], 0, 150) . "...";
+                }
+
+                // v5.0: Add suggested anchor phrases
+                $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
+                if (!empty($anchor_phrases)) {
+                    $prompt .= "\n  Best Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 5));
+                }
+                if ($keywords) {
+                    $prompt .= "\n  Keywords: " . $keywords;
+                }
                 $prompt .= "\n";
                 $count++;
             }
@@ -1717,13 +2079,25 @@ class LendCity_Smart_Linker {
         }
 
         if ($post_slots > 0 && !empty($available_posts)) {
-            $prompt .= "=== AVAILABLE POSTS (max " . $post_slots . " links) - SORTED BY RELEVANCE ===\n";
+            $prompt .= "=== AVAILABLE BLOG POSTS (max " . $post_slots . " links) - SORTED BY RELEVANCE ===\n";
             $count = 0;
             foreach ($available_posts as $id => $entry) {
-                if ($count >= 12) break;
-                $prompt .= "ID:" . $id . " | " . $entry['title'];
+                if ($count >= 20) break; // Increased from 12 to 20
+                $prompt .= "\nID:" . $id . " | " . $entry['title'];
                 $prompt .= " | Cluster:" . ($entry['topic_cluster'] ?? 'none');
                 $prompt .= " | Funnel:" . ($entry['funnel_stage'] ?? 'awareness');
+                $prompt .= " | Persona:" . ($entry['target_persona'] ?? 'general');
+
+                // v5.0: Add summary for semantic context
+                if (!empty($entry['summary'])) {
+                    $prompt .= "\n  Summary: " . substr($entry['summary'], 0, 120) . "...";
+                }
+
+                // v5.0: Add suggested anchor phrases
+                $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
+                if (!empty($anchor_phrases)) {
+                    $prompt .= "\n  Best Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 4));
+                }
                 $prompt .= "\n";
                 $count++;
             }
@@ -1733,17 +2107,27 @@ class LendCity_Smart_Linker {
 
         $prompt .= "=== TASK ===\n";
         $prompt .= "Find: " . implode(' + ', $links_requested) . "\n\n";
-        $prompt .= "SMART LINKING RULES:\n";
-        $prompt .= "1. Prefer targets in SAME or RELATED topic clusters\n";
-        $prompt .= "2. Link to content that advances the reader's journey (awareness→consideration→decision)\n";
-        $prompt .= "3. Anchor text: 2-5 words that EXIST in source content and describe target\n";
-        $prompt .= "4. Each anchor must be UNIQUE - never duplicate\n";
-        $prompt .= "5. Higher priority pages (P:4-5) should get links if relevant\n";
-        $prompt .= "6. Spread links throughout article. Max 1 link per paragraph.\n";
-        $prompt .= "7. Quality > quantity - skip if no good semantic match\n\n";
+
+        $prompt .= "=== v5.0 SEMANTIC LINKING RULES ===\n";
+        $prompt .= "1. SEMANTIC RELEVANCE: Only link when source paragraph ACTUALLY discusses the target topic\n";
+        $prompt .= "2. ANCHOR SELECTION: Use 2-4 word phrases that EXIST EXACTLY in the source content\n";
+        $prompt .= "3. PREFER SUGGESTED ANCHORS: Use 'Best Anchors' when they appear naturally in content\n";
+        $prompt .= "4. CLUSTER MATCHING: Prioritize same/related topic clusters for topical authority\n";
+        $prompt .= "5. PERSONA ALIGNMENT: Match reader personas (don't link investor→first-time-buyer)\n";
+        $prompt .= "6. FUNNEL PROGRESSION: Link to content that advances the reader journey\n";
+        $prompt .= "7. DISTRIBUTE EVENLY: Spread links throughout the ENTIRE article (not just intro)\n";
+        $prompt .= "8. MAX 1 LINK PER PARAGRAPH: Never add multiple links to same paragraph\n";
+        $prompt .= "9. ANCHOR DIVERSITY: Vary anchor text - don't use same phrase repeatedly\n";
+        $prompt .= "10. QUALITY OVER QUANTITY: Return fewer links if no good semantic matches exist\n\n";
+
+        $prompt .= "CRITICAL: Anchor text MUST:\n";
+        $prompt .= "- Be an EXACT phrase from the source content (2-4 words ideal)\n";
+        $prompt .= "- Semantically describe what the target page is about\n";
+        $prompt .= "- Read naturally in the sentence context\n\n";
+
         $prompt .= "Respond with ONLY a JSON array:\n";
-        $prompt .= '[{"target_id": 123, "anchor_text": "meaningful phrase", "is_page": true/false}, ...]\n';
-        $prompt .= 'Return [] if no good opportunities.\n';
+        $prompt .= '[{"target_id": 123, "anchor_text": "exact phrase from content", "is_page": true/false, "paragraph_hint": "first few words of paragraph"}, ...]\n';
+        $prompt .= 'Return [] if no good semantic opportunities exist.\n';
 
         return $prompt;
     }
@@ -1950,6 +2334,9 @@ class LendCity_Smart_Linker {
         );
         update_post_meta($post_id, $this->link_meta_key, $links);
         $this->clear_links_cache();
+
+        // v5.0: Track anchor usage for diversity scoring
+        $this->track_anchor_usage($anchor_text, $target_id);
 
         $this->debug_log("Inserted link to {$target_url} in post {$post_id}");
 
