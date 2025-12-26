@@ -2979,24 +2979,15 @@ class LendCity_Smart_Linker {
                 $prompt .= "Content Lifespan: {$catalog_entry['content_lifespan']}\n";
             }
 
-            // Parse JSON fields
-            if (!empty($catalog_entry['main_topics'])) {
-                $topics = json_decode($catalog_entry['main_topics'], true);
-                if (is_array($topics)) {
-                    $prompt .= "Main Topics: " . implode(', ', $topics) . "\n";
-                }
+            // Array fields (already decoded by hydrate_catalog_entry)
+            if (!empty($catalog_entry['main_topics']) && is_array($catalog_entry['main_topics'])) {
+                $prompt .= "Main Topics: " . implode(', ', $catalog_entry['main_topics']) . "\n";
             }
-            if (!empty($catalog_entry['semantic_keywords'])) {
-                $keywords = json_decode($catalog_entry['semantic_keywords'], true);
-                if (is_array($keywords)) {
-                    $prompt .= "Semantic Keywords: " . implode(', ', array_slice($keywords, 0, 15)) . "\n";
-                }
+            if (!empty($catalog_entry['semantic_keywords']) && is_array($catalog_entry['semantic_keywords'])) {
+                $prompt .= "Semantic Keywords: " . implode(', ', array_slice($catalog_entry['semantic_keywords'], 0, 15)) . "\n";
             }
-            if (!empty($catalog_entry['target_regions'])) {
-                $regions = json_decode($catalog_entry['target_regions'], true);
-                if (is_array($regions)) {
-                    $prompt .= "Target Regions: " . implode(', ', $regions) . "\n";
-                }
+            if (!empty($catalog_entry['target_regions']) && is_array($catalog_entry['target_regions'])) {
+                $prompt .= "Target Regions: " . implode(', ', $catalog_entry['target_regions']) . "\n";
             }
             $prompt .= "\n";
         }
