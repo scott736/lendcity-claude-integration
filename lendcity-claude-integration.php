@@ -1,9 +1,9 @@
 <?php
 /**
- * Plugin Name: LendCity Claude Integration
+ * Plugin Name: LendCity Marketing
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.2.1
+ * Version: 11.2.2
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -61,9 +61,8 @@ function lendcity_claude_activate() {
     if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
         wp_schedule_event(time(), 'hourly', 'lendcity_auto_schedule_articles');
     }
-    if (!wp_next_scheduled('lendcity_check_podcasts')) {
-        wp_schedule_event(time(), 'every_15_minutes', 'lendcity_check_podcasts');
-    }
+    // Podcast cron is scheduled dynamically on Mondays via setup_podcast_cron()
+    // Don't schedule here - let the Monday-only logic handle it
 }
 
 // Deactivation hook - runs when plugin is deactivated
@@ -261,14 +260,12 @@ class LendCity_Claude_Integration {
             // Version changed - clear old crons and reschedule
             lendcity_claude_clear_all_crons();
             
-            // Reschedule (NOT link queue - that's scheduled dynamically when needed)
+            // Reschedule (NOT link queue or podcast - those are scheduled dynamically)
             if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
                 wp_schedule_event(time(), 'hourly', 'lendcity_auto_schedule_articles');
             }
-            if (!wp_next_scheduled('lendcity_check_podcasts')) {
-                wp_schedule_event(time(), 'every_15_minutes', 'lendcity_check_podcasts');
-            }
-            
+            // Podcast cron handled by setup_podcast_cron() on Mondays only
+
             update_option('lendcity_claude_last_version', LENDCITY_CLAUDE_VERSION);
             lendcity_debug_log('Cleaned up stale crons and rescheduled for version ' . LENDCITY_CLAUDE_VERSION);
         }
@@ -319,7 +316,7 @@ class LendCity_Claude_Integration {
         if ($catalog_count === 0) {
             ?>
             <div class="notice notice-info is-dismissible" id="lendcity-v11-notice">
-                <p><strong>LendCity Claude v11.0 - Scalable Database Catalog</strong></p>
+                <p><strong>LendCity Marketing v11.0 - Scalable Database Catalog</strong></p>
                 <p>This version features a new high-performance database-backed catalog with enriched metadata for smarter linking:</p>
                 <ul style="list-style: disc; margin-left: 20px;">
                     <li><strong>Topic Clusters</strong> - Group related content together</li>
@@ -337,8 +334,8 @@ class LendCity_Claude_Integration {
 
     public function add_admin_menu() {
         add_menu_page(
-            'Claude AI',
-            'Claude AI',
+            'LendCity Marketing',
+            'LendCity Marketing',
             'manage_options',
             'lendcity-claude',
             array($this, 'dashboard_page'),

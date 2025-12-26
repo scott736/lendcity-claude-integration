@@ -1,4 +1,4 @@
-# LendCity Claude Integration Plugin
+# LendCity Marketing Plugin
 
 **Version:** 10.0.7  
 **WordPress Plugin for AI-Powered Content Management**
@@ -120,6 +120,6 @@ Main logic is in:
 
 1. Upload `lendcity-claude-integration` folder to `/wp-content/plugins/`
 2. Activate in WordPress admin
-3. Go to Claude AI → Settings and add API keys
+3. Go to LendCity Marketing → Settings and add API keys
 4. Build the catalog in Smart Linker tab
 5. Configure podcasts in Podcast Publisher tab
