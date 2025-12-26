@@ -2136,11 +2136,10 @@ class LendCity_Smart_Linker {
         // v12.2: Show DETAILED info for top candidates (for anchor selection)
         $links_requested = array();
 
+        // v12.2.1: NO LIMITS - Show ALL pages with anchor suggestions
         if ($page_slots > 0 && !empty($available_pages)) {
-            $prompt .= "=== TOP PAGE CANDIDATES WITH ANCHOR SUGGESTIONS (max " . $page_slots . " links) ===\n";
-            $count = 0;
+            $prompt .= "=== ALL SERVICE PAGES WITH ANCHOR SUGGESTIONS (" . count($available_pages) . " pages, max " . $page_slots . " links) ===\n";
             foreach ($available_pages as $id => $entry) {
-                if ($count >= 25) break; // Increased from 15 to 25
                 $priority = $this->get_page_priority($id);
                 $inbound = $entry['inbound_link_count'] ?? 0;
                 $prompt .= "\nID:" . $id . " | " . $entry['title'] . " | P" . $priority . " | Inbound:" . $inbound;
@@ -2148,30 +2147,27 @@ class LendCity_Smart_Linker {
                 // Add anchor phrases for selection
                 $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
                 if (!empty($anchor_phrases)) {
-                    $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 6));
+                    $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 5));
                 }
                 $prompt .= "\n";
-                $count++;
             }
             $prompt .= "\n";
             $links_requested[] = "Up to $page_slots page links";
         }
 
+        // v12.2.1: NO LIMITS - Show ALL posts with anchor suggestions
         if ($post_slots > 0 && !empty($available_posts)) {
-            $prompt .= "=== TOP POST CANDIDATES WITH ANCHOR SUGGESTIONS (max " . $post_slots . " links) ===\n";
-            $count = 0;
+            $prompt .= "=== ALL BLOG POSTS WITH ANCHOR SUGGESTIONS (" . count($available_posts) . " posts, max " . $post_slots . " links) ===\n";
             foreach ($available_posts as $id => $entry) {
-                if ($count >= 30) break; // Increased from 20 to 30
                 $inbound = $entry['inbound_link_count'] ?? 0;
                 $prompt .= "\nID:" . $id . " | " . $entry['title'] . " | Inbound:" . $inbound;
 
                 // Add anchor phrases for selection
                 $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
                 if (!empty($anchor_phrases)) {
-                    $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 5));
+                    $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 4));
                 }
                 $prompt .= "\n";
-                $count++;
             }
             $prompt .= "\n";
             $links_requested[] = "Up to $post_slots post links";

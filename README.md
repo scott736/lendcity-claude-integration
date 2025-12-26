@@ -1,6 +1,6 @@
 # LendCity Tools Plugin
 
-**Version:** 12.2.0
+**Version:** 12.2.1
 **WordPress Plugin for AI-Powered Content Management**
 
 ## Overview
@@ -149,9 +149,13 @@ Main logic is in:
   - Prioritizes orphan pages (low inbound link count) automatically
   - Shows inbound link counts so Claude knows which pages need links
   - Respects page priority settings (P1-P5) in linking decisions
-  - Increased detailed candidates: 25 pages + 30 posts with anchor suggestions
   - Better topic cluster integrity and funnel progression
   - Truly holistic SEO linking strategy
+- v12.2.1: **No Limits Mode** - Claude now sees ALL pages AND posts with anchor suggestions:
+  - Removed 25 page / 30 post limit entirely
+  - Every single page and post includes anchor phrase suggestions
+  - Maximum information for optimal link selection
+  - Works with sites up to 1000+ posts (fits within 200k token context)
 
 ## Installation
 
