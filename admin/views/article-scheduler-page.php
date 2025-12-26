@@ -37,9 +37,10 @@ if (isset($_POST['save_scheduler_settings']) && wp_verify_nonce($_POST['settings
     if ($new_frequency >= 1 && $new_frequency <= 30) {
         update_option('lendcity_article_frequency', $new_frequency);
         $publish_frequency = $new_frequency;
-        
-        // Reschedule cron when frequency changes
+
+        // Reschedule cron with new frequency
         wp_clear_scheduled_hook('lendcity_auto_schedule_articles');
+        wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
     }
     
     if (preg_match('/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/', $new_time)) {

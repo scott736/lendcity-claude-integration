@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.2.7
+ * Version: 11.2.8
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.2.7');
+define('LENDCITY_CLAUDE_VERSION', '11.2.8');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -33,6 +33,12 @@ function lendcity_claude_cron_schedules($schedules) {
             'display' => __('Every 15 Minutes')
         );
     }
+    // Dynamic article frequency schedule (matches publishing frequency setting)
+    $frequency_days = get_option('lendcity_article_frequency', 3);
+    $schedules['lendcity_article_frequency'] = array(
+        'interval' => $frequency_days * DAY_IN_SECONDS,
+        'display' => sprintf(__('Every %d days (Article Frequency)'), $frequency_days)
+    );
     return $schedules;
 }
 
@@ -59,7 +65,7 @@ function lendcity_claude_activate() {
 
     // Schedule fresh crons (NOT link queue - that's scheduled dynamically when needed)
     if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
-        wp_schedule_event(time(), 'hourly', 'lendcity_auto_schedule_articles');
+        wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
     }
     // Podcast cron is scheduled dynamically on Mondays via setup_podcast_cron()
     // Don't schedule here - let the Monday-only logic handle it
@@ -261,7 +267,7 @@ class LendCity_Claude_Integration {
             
             // Reschedule (NOT link queue or podcast - those are scheduled dynamically)
             if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
-                wp_schedule_event(time(), 'hourly', 'lendcity_auto_schedule_articles');
+                wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
             }
             // Podcast cron handled by setup_podcast_cron() on Mondays only
 
@@ -961,21 +967,9 @@ class LendCity_Claude_Integration {
      * Setup the auto-schedule cron based on publishing frequency
      */
     public function setup_auto_schedule_cron() {
-        $frequency_days = get_option('lendcity_article_frequency', 3);
-        $frequency_seconds = $frequency_days * DAY_IN_SECONDS;
-        
-        // Register custom cron schedule based on frequency
-        add_filter('cron_schedules', function($schedules) use ($frequency_days, $frequency_seconds) {
-            $schedules['lendcity_frequency'] = array(
-                'interval' => $frequency_seconds,
-                'display' => 'Every ' . $frequency_days . ' days (LendCity)'
-            );
-            return $schedules;
-        });
-        
-        // Schedule if not already scheduled
+        // Schedule if not already scheduled (uses lendcity_article_frequency registered globally)
         if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
-            wp_schedule_event(time(), 'lendcity_frequency', 'lendcity_auto_schedule_articles');
+            wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
         }
     }
     
