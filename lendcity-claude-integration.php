@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 11.5.2
+ * Version: 11.6.0
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.5.2');
+define('LENDCITY_CLAUDE_VERSION', '11.6.0');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -67,8 +67,7 @@ function lendcity_claude_activate() {
     if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
         wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
     }
-    // Podcast cron is scheduled dynamically on Mondays via setup_podcast_cron()
-    // Don't schedule here - let the Monday-only logic handle it
+    // Podcast publishing is now handled via Transistor webhooks (no cron needed)
 }
 
 // Deactivation hook - runs when plugin is deactivated
@@ -247,8 +246,7 @@ class LendCity_Claude_Integration {
         add_action('wp_ajax_lendcity_test_api', array($this, 'ajax_test_api'));
         add_action('wp_ajax_lendcity_test_tinypng', array($this, 'ajax_test_tinypng'));
         
-        // Podcast AJAX
-        add_action('wp_ajax_lendcity_manual_podcast_check', array($this, 'ajax_manual_podcast_check'));
+        // Podcast AJAX (Backfill only - new episodes handled via Transistor webhook)
         add_action('wp_ajax_lendcity_scan_transistor_embeds', array($this, 'ajax_scan_transistor_embeds'));
         add_action('wp_ajax_lendcity_backfill_podcast_episodes', array($this, 'ajax_backfill_podcast_episodes'));
         add_action('wp_ajax_lendcity_get_podcast_debug_log', array($this, 'ajax_get_podcast_debug_log'));
@@ -259,14 +257,19 @@ class LendCity_Claude_Integration {
         // Auto-schedule cron (maintains minimum scheduled posts)
         add_action('lendcity_auto_schedule_articles', array($this, 'cron_auto_schedule_articles'));
         add_action('init', array($this, 'setup_auto_schedule_cron'));
-        
-        // Podcast auto-publisher cron (every 15 minutes)
-        add_action('lendcity_check_podcasts', array($this, 'cron_check_podcasts'));
-        add_action('init', array($this, 'setup_podcast_cron'));
-        
+
+        // Transistor Webhook REST API
+        add_action('rest_api_init', array($this, 'register_transistor_webhook'));
+
         // Clean up stale crons on admin init (runs once per version)
         add_action('admin_init', array($this, 'maybe_cleanup_stale_crons'));
-        
+
+        // Save show mappings on settings save
+        add_action('admin_init', array($this, 'save_show_mappings'));
+
+        // Webhook secret regeneration AJAX
+        add_action('wp_ajax_lendcity_regenerate_webhook_secret', array($this, 'ajax_regenerate_webhook_secret'));
+
         // Initialize Smart Linker
         new LendCity_Smart_Linker();
     }
@@ -284,11 +287,11 @@ class LendCity_Claude_Integration {
             delete_option('lendcity_smart_linker_queue');
             delete_option('lendcity_smart_linker_queue_status');
 
-            // Reschedule (NOT link queue or podcast - those are scheduled dynamically)
+            // Reschedule (NOT link queue - that's scheduled dynamically)
             if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
                 wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
             }
-            // Podcast cron handled by setup_podcast_cron() on Mondays only
+            // Podcast publishing handled via Transistor webhooks (no cron)
 
             update_option('lendcity_claude_last_version', LENDCITY_CLAUDE_VERSION);
             lendcity_debug_log('Cleaned up stale crons and queue for version ' . LENDCITY_CLAUDE_VERSION);
@@ -301,21 +304,33 @@ class LendCity_Claude_Integration {
         register_setting('lendcity_claude_settings', 'lendcity_tinypng_api_key');
         register_setting('lendcity_claude_settings', 'lendcity_smart_linker_auto');
         register_setting('lendcity_claude_settings', 'lendcity_debug_mode');
-        
-        // Podcast settings
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_enabled');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_rss');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_category');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_start_date');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_start_hour');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast1_end_hour');
-        
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_enabled');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_rss');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_category');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_start_date');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_start_hour');
-        register_setting('lendcity_claude_settings', 'lendcity_podcast2_end_hour');
+
+        // Podcast webhook settings
+        register_setting('lendcity_claude_settings', 'lendcity_transistor_webhook_secret');
+        register_setting('lendcity_claude_settings', 'lendcity_transistor_api_key');
+        register_setting('lendcity_claude_settings', 'lendcity_transistor_shows'); // JSON: show_id => category mapping
+        register_setting('lendcity_claude_settings', 'lendcity_show_id_1');
+        register_setting('lendcity_claude_settings', 'lendcity_show_category_1');
+        register_setting('lendcity_claude_settings', 'lendcity_show_id_2');
+        register_setting('lendcity_claude_settings', 'lendcity_show_category_2');
+    }
+
+    /**
+     * Save show mappings when settings are saved
+     */
+    public function save_show_mappings() {
+        if (isset($_POST['lendcity_show_id_1']) || isset($_POST['lendcity_show_id_2'])) {
+            $shows = array();
+            if (!empty($_POST['lendcity_show_id_1']) && !empty($_POST['lendcity_show_category_1'])) {
+                $shows[sanitize_text_field($_POST['lendcity_show_id_1'])] = sanitize_text_field($_POST['lendcity_show_category_1']);
+            }
+            if (!empty($_POST['lendcity_show_id_2']) && !empty($_POST['lendcity_show_category_2'])) {
+                $shows[sanitize_text_field($_POST['lendcity_show_id_2'])] = sanitize_text_field($_POST['lendcity_show_category_2']);
+            }
+            if (!empty($shows)) {
+                update_option('lendcity_transistor_shows', json_encode($shows));
+            }
+        }
     }
     
     /**
@@ -1310,215 +1325,153 @@ class LendCity_Claude_Integration {
     }
     
     /**
-     * Setup podcast cron - only schedule if it's Monday and not all done
+     * Register Transistor webhook REST API endpoint
      */
-    public function setup_podcast_cron() {
-        // Get current time in EST
-        $est_timezone = new DateTimeZone('America/Toronto');
-        $now = new DateTime('now', $est_timezone);
-        $current_day = $now->format('l');
-        $current_week = $now->format('Y-W');
-        
-        // Check weekly status
-        $weekly_status = get_option('lendcity_podcast_weekly_status', array());
-        $is_current_week = isset($weekly_status['week']) && $weekly_status['week'] === $current_week;
-        
-        // Check if all enabled podcasts are done
-        $podcast1_enabled = get_option('lendcity_podcast1_enabled', 'no') === 'yes';
-        $podcast2_enabled = get_option('lendcity_podcast2_enabled', 'yes') === 'yes';
-        $podcast1_done = $is_current_week && !empty($weekly_status['podcast1_done']);
-        $podcast2_done = $is_current_week && !empty($weekly_status['podcast2_done']);
-        
-        $all_done = true;
-        if ($podcast1_enabled && !$podcast1_done) $all_done = false;
-        if ($podcast2_enabled && !$podcast2_done) $all_done = false;
-        
-        // Only schedule if it's Monday and not all done
-        if ($current_day === 'Monday' && !$all_done) {
-            if (!wp_next_scheduled('lendcity_check_podcasts')) {
-                wp_schedule_event(time(), 'every_15_minutes', 'lendcity_check_podcasts');
-                lendcity_debug_log('Podcast cron scheduled for Monday');
-            }
-        }
-    }
-    
-    /**
-     * Cron job to check podcast feeds for new episodes
-     * Only runs on Mondays and stops once both podcasts are processed for the week
-     */
-    public function cron_check_podcasts() {
-        // Get current time in EST
-        $est_timezone = new DateTimeZone('America/Toronto');
-        $now = new DateTime('now', $est_timezone);
-        $current_hour = (int)$now->format('G');
-        $current_day = $now->format('l'); // Day name
-        $today_date = $now->format('Y-m-d');
-        $current_week = $now->format('Y-W'); // Year-Week format
-        
-        // Only run on Mondays
-        if ($current_day !== 'Monday') {
-            lendcity_debug_log('Podcast: Not Monday, skipping.');
-            return;
-        }
-        
-        // Check if both podcasts already processed this week
-        $weekly_status = get_option('lendcity_podcast_weekly_status', array());
-        if (isset($weekly_status['week']) && $weekly_status['week'] === $current_week) {
-            $podcast1_done = !empty($weekly_status['podcast1_done']);
-            $podcast2_done = !empty($weekly_status['podcast2_done']);
-            
-            // Check which podcasts are enabled
-            $podcast1_enabled = get_option('lendcity_podcast1_enabled', 'no') === 'yes';
-            $podcast2_enabled = get_option('lendcity_podcast2_enabled', 'yes') === 'yes';
-            
-            // If all enabled podcasts are done, unschedule the cron until next week
-            $all_done = true;
-            if ($podcast1_enabled && !$podcast1_done) $all_done = false;
-            if ($podcast2_enabled && !$podcast2_done) $all_done = false;
-            
-            if ($all_done) {
-                lendcity_debug_log('Podcast: All podcasts processed for week ' . $current_week . ', stopping cron.');
-                wp_clear_scheduled_hook('lendcity_check_podcasts');
-                return;
-            }
-        } else {
-            // New week - reset status
-            $weekly_status = array('week' => $current_week, 'podcast1_done' => false, 'podcast2_done' => false);
-            update_option('lendcity_podcast_weekly_status', $weekly_status);
-        }
-        
-        lendcity_debug_log('Podcast: Checking for new episodes...');
-        
-        // Check Podcast 1 (Wisdom, Lifestyle, Money Show)
-        $podcast1_enabled = get_option('lendcity_podcast1_enabled', 'no');
-        $podcast1_start_date = get_option('lendcity_podcast1_start_date', '2025-01-05');
-        $podcast1_start_hour = (int)get_option('lendcity_podcast1_start_hour', 5);
-        $podcast1_end_hour = (int)get_option('lendcity_podcast1_end_hour', 7);
-        
-        if ($podcast1_enabled === 'yes' && $today_date >= $podcast1_start_date && empty($weekly_status['podcast1_done'])) {
-            if ($current_hour >= $podcast1_start_hour && $current_hour < $podcast1_end_hour) {
-                lendcity_debug_log('Podcast: Checking Podcast 1 (Wisdom, Lifestyle, Money Show)');
-                $result = $this->check_podcast_feed(1);
-                if ($result === true) {
-                    $weekly_status['podcast1_done'] = true;
-                    update_option('lendcity_podcast_weekly_status', $weekly_status);
-                }
-            }
-        }
-        
-        // Check Podcast 2 (Close More Deals)
-        $podcast2_enabled = get_option('lendcity_podcast2_enabled', 'yes');
-        $podcast2_start_date = get_option('lendcity_podcast2_start_date', '2024-12-22');
-        $podcast2_start_hour = (int)get_option('lendcity_podcast2_start_hour', 9);
-        $podcast2_end_hour = (int)get_option('lendcity_podcast2_end_hour', 11);
-        
-        if ($podcast2_enabled === 'yes' && $today_date >= $podcast2_start_date && empty($weekly_status['podcast2_done'])) {
-            if ($current_hour >= $podcast2_start_hour && $current_hour < $podcast2_end_hour) {
-                lendcity_debug_log('Podcast: Checking Podcast 2 (Close More Deals)');
-                $result = $this->check_podcast_feed(2);
-                if ($result === true) {
-                    $weekly_status['podcast2_done'] = true;
-                    update_option('lendcity_podcast_weekly_status', $weekly_status);
-                }
-            }
-        }
-        
-        // Check again if all done after processing
-        $podcast1_enabled = get_option('lendcity_podcast1_enabled', 'no') === 'yes';
-        $podcast2_enabled = get_option('lendcity_podcast2_enabled', 'yes') === 'yes';
-        $all_done = true;
-        if ($podcast1_enabled && empty($weekly_status['podcast1_done'])) $all_done = false;
-        if ($podcast2_enabled && empty($weekly_status['podcast2_done'])) $all_done = false;
-        
-        if ($all_done) {
-            lendcity_log('Podcast: All podcasts processed for week ' . $current_week . ', stopping cron until next Monday.');
-            wp_clear_scheduled_hook('lendcity_check_podcasts');
-        }
-    }
-    
-    /**
-     * Check a specific podcast feed for new episodes
-     * Returns true if episode was successfully processed, false otherwise
-     */
-    private function check_podcast_feed($podcast_num) {
-        $rss_url = get_option("lendcity_podcast{$podcast_num}_rss", '');
-        $category_name = get_option("lendcity_podcast{$podcast_num}_category", '');
-        
-        if (empty($rss_url) || empty($category_name)) {
-            lendcity_log("Podcast {$podcast_num}: Missing RSS URL or category");
-            return false;
-        }
-        
-        // Fetch RSS feed - bypass any caching
-        $response = wp_remote_get($rss_url, array(
-            'timeout' => 30,
-            'headers' => array(
-                'Cache-Control' => 'no-cache, no-store, must-revalidate',
-                'Pragma' => 'no-cache',
-                'Expires' => '0'
-            ),
-            'sslverify' => true
+    public function register_transistor_webhook() {
+        register_rest_route('lendcity/v1', '/transistor-webhook', array(
+            'methods' => 'POST',
+            'callback' => array($this, 'handle_transistor_webhook'),
+            'permission_callback' => '__return_true', // Public endpoint, verified by secret
         ));
-        
-        if (is_wp_error($response)) {
-            lendcity_log("Podcast {$podcast_num}: Failed to fetch RSS - " . $response->get_error_message());
-            return false;
+    }
+
+    /**
+     * Handle incoming Transistor webhook for episode_published events
+     * Webhook URL: https://yoursite.com/wp-json/lendcity/v1/transistor-webhook?key=YOUR_SECRET
+     */
+    public function handle_transistor_webhook($request) {
+        // Verify webhook secret
+        $provided_key = $request->get_param('key');
+        $stored_secret = get_option('lendcity_transistor_webhook_secret', '');
+
+        if (empty($stored_secret)) {
+            // Generate a secret if none exists
+            $stored_secret = wp_generate_password(32, false);
+            update_option('lendcity_transistor_webhook_secret', $stored_secret);
         }
-        
-        $body = wp_remote_retrieve_body($response);
-        
-        // Parse XML
-        libxml_use_internal_errors(true);
-        $xml = simplexml_load_string($body);
-        
-        if ($xml === false) {
-            lendcity_log("Podcast {$podcast_num}: Failed to parse RSS XML");
-            return false;
+
+        if ($provided_key !== $stored_secret) {
+            lendcity_log('Transistor Webhook: Invalid secret key');
+            return new WP_REST_Response(array('error' => 'Invalid key'), 403);
         }
-        
-        // Get processed episodes
+
+        // Get webhook payload
+        $body = $request->get_body();
+        $data = json_decode($body, true);
+
+        if (empty($data)) {
+            lendcity_log('Transistor Webhook: Empty or invalid JSON payload');
+            return new WP_REST_Response(array('error' => 'Invalid payload'), 400);
+        }
+
+        lendcity_log('Transistor Webhook: Received - ' . json_encode($data));
+
+        // Extract episode data from webhook
+        // Transistor webhook format: { "event": "episode_published", "data": { "id": "...", "attributes": {...} } }
+        $event = $data['event'] ?? '';
+        if ($event !== 'episode_published') {
+            lendcity_log('Transistor Webhook: Ignoring event type: ' . $event);
+            return new WP_REST_Response(array('message' => 'Event ignored'), 200);
+        }
+
+        $episode_data = $data['data'] ?? array();
+        $attributes = $episode_data['attributes'] ?? array();
+
+        // Get the share_id from the episode data
+        $share_id = $attributes['share_id'] ?? '';
+        $episode_title = $attributes['title'] ?? 'Untitled Episode';
+        $show_id = $episode_data['relationships']['show']['data']['id'] ?? '';
+
+        if (empty($share_id)) {
+            // Try to extract from share_url
+            $share_url = $attributes['share_url'] ?? '';
+            if (preg_match('/share\.transistor\.fm\/s\/([a-z0-9]+)/i', $share_url, $matches)) {
+                $share_id = $matches[1];
+            }
+        }
+
+        if (empty($share_id)) {
+            lendcity_log('Transistor Webhook: No share_id found in payload');
+            return new WP_REST_Response(array('error' => 'No share_id found'), 400);
+        }
+
+        // Get category from show mapping
+        $shows_config = get_option('lendcity_transistor_shows', '{}');
+        $shows = json_decode($shows_config, true) ?: array();
+        $category_name = $shows[$show_id] ?? 'Podcast';
+
+        // Check if already processed
         $processed = get_option('lendcity_processed_podcast_episodes', array());
-        $processed_guids = array_column($processed, 'guid');
-        
-        // Get latest episode
-        if (!isset($xml->channel->item[0])) {
-            lendcity_debug_log("Podcast {$podcast_num}: No episodes found in feed");
-            return false;
+        foreach ($processed as $ep) {
+            if (isset($ep['share_id']) && $ep['share_id'] === $share_id) {
+                lendcity_log('Transistor Webhook: Episode already processed - ' . $episode_title);
+                return new WP_REST_Response(array('message' => 'Already processed'), 200);
+            }
         }
-        
-        $item = $xml->channel->item[0];
-        $guid = (string)$item->guid;
-        $title = (string)$item->title;
-        
-        // Check if already processed - this counts as "done" for the week
-        if (in_array($guid, $processed_guids)) {
-            lendcity_debug_log("Podcast {$podcast_num}: Episode already processed - {$title}");
-            return true; // Already done for this week
-        }
-        
-        lendcity_log("Podcast {$podcast_num}: New episode found - {$title}");
-        
-        // Process this episode
-        $result = $this->process_podcast_episode($item, $xml, $category_name);
-        
+
+        lendcity_log('Transistor Webhook: Processing new episode - ' . $episode_title);
+
+        // Process the episode using existing function
+        $result = $this->process_episode_from_share_id($share_id, $category_name, $episode_title);
+
         if ($result['success']) {
             // Record as processed
             $processed[] = array(
-                'guid' => $guid,
-                'title' => $title,
+                'share_id' => $share_id,
+                'title' => $episode_title,
                 'post_id' => $result['post_id'],
                 'date' => current_time('mysql'),
-                'podcast' => $podcast_num
+                'show_id' => $show_id
             );
             update_option('lendcity_processed_podcast_episodes', $processed);
-            lendcity_log("Podcast {$podcast_num}: Successfully created post #{$result['post_id']}");
-            return true;
+
+            lendcity_log('Transistor Webhook: Successfully created post #' . $result['post_id']);
+
+            return new WP_REST_Response(array(
+                'success' => true,
+                'post_id' => $result['post_id'],
+                'message' => 'Episode processed successfully'
+            ), 200);
         } else {
-            lendcity_log("Podcast {$podcast_num}: Failed to process - " . ($result['error'] ?? 'Unknown error'));
-            return false;
+            lendcity_log('Transistor Webhook: Failed - ' . ($result['error'] ?? 'Unknown error'));
+            return new WP_REST_Response(array(
+                'error' => $result['error'] ?? 'Processing failed'
+            ), 500);
         }
     }
-    
+
+    /**
+     * Get the webhook URL for display in admin
+     */
+    public function get_transistor_webhook_url() {
+        $secret = get_option('lendcity_transistor_webhook_secret', '');
+        if (empty($secret)) {
+            $secret = wp_generate_password(32, false);
+            update_option('lendcity_transistor_webhook_secret', $secret);
+        }
+        return rest_url('lendcity/v1/transistor-webhook') . '?key=' . $secret;
+    }
+
+    /**
+     * AJAX: Regenerate webhook secret
+     */
+    public function ajax_regenerate_webhook_secret() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $new_secret = wp_generate_password(32, false);
+        update_option('lendcity_transistor_webhook_secret', $new_secret);
+
+        lendcity_log('Transistor webhook secret regenerated');
+
+        wp_send_json_success(array(
+            'message' => 'Webhook secret regenerated',
+            'url' => rest_url('lendcity/v1/transistor-webhook') . '?key=' . $new_secret
+        ));
+    }
+
     /**
      * Process a single podcast episode into a blog post
      */
@@ -1758,96 +1711,7 @@ class LendCity_Claude_Integration {
         
         return array('success' => true, 'post_id' => $post_id, 'title' => $article_data['title'] ?? $episode_title);
     }
-    
-    /**
-     * AJAX: Manual podcast check - bypasses day/time restrictions
-     */
-    public function ajax_manual_podcast_check() {
-        check_ajax_referer('lendcity_claude_nonce', 'nonce');
-        if (!current_user_can('manage_options')) {
-            wp_send_json_error('Permission denied');
-        }
-        
-        $podcast_num = intval($_POST['podcast']);
-        if ($podcast_num < 1 || $podcast_num > 2) {
-            wp_send_json_error('Invalid podcast number');
-        }
-        
-        $rss_url = get_option("lendcity_podcast{$podcast_num}_rss", '');
-        $category_name = get_option("lendcity_podcast{$podcast_num}_category", '');
-        
-        if (empty($rss_url) || empty($category_name)) {
-            wp_send_json_error('RSS URL or category not configured');
-        }
-        
-        // Fetch RSS feed
-        $response = wp_remote_get($rss_url, array(
-            'timeout' => 30,
-            'headers' => array(
-                'Cache-Control' => 'no-cache, no-store, must-revalidate',
-                'Pragma' => 'no-cache',
-                'Expires' => '0'
-            )
-        ));
-        
-        if (is_wp_error($response)) {
-            wp_send_json_error('Failed to fetch RSS: ' . $response->get_error_message());
-        }
-        
-        $body = wp_remote_retrieve_body($response);
-        
-        libxml_use_internal_errors(true);
-        $xml = simplexml_load_string($body);
-        
-        if ($xml === false) {
-            wp_send_json_error('Failed to parse RSS XML');
-        }
-        
-        // Get processed episodes
-        $processed = get_option('lendcity_processed_podcast_episodes', array());
-        $processed_guids = array_column($processed, 'guid');
-        
-        // Get latest episode
-        if (!isset($xml->channel->item[0])) {
-            wp_send_json_error('No episodes found in feed');
-        }
-        
-        $item = $xml->channel->item[0];
-        $guid = (string)$item->guid;
-        $title = (string)$item->title;
-        
-        // Check if already processed
-        if (in_array($guid, $processed_guids)) {
-            wp_send_json_success(array(
-                'message' => 'Latest episode already processed: ' . $title,
-                'post_id' => null
-            ));
-        }
-        
-        // Process this episode
-        $result = $this->process_podcast_episode($item, $xml, $category_name);
-        
-        if ($result['success']) {
-            // Record as processed
-            $processed[] = array(
-                'guid' => $guid,
-                'title' => $title,
-                'post_id' => $result['post_id'],
-                'date' => current_time('mysql'),
-                'podcast' => $podcast_num
-            );
-            update_option('lendcity_processed_podcast_episodes', $processed);
-            
-            wp_send_json_success(array(
-                'message' => 'Created post for: ' . $title,
-                'post_id' => $result['post_id'],
-                'edit_link' => get_edit_post_link($result['post_id'], 'raw')
-            ));
-        } else {
-            wp_send_json_error($result['error'] ?? 'Unknown error processing episode');
-        }
-    }
-    
+
     /**
      * AJAX: Scan posts for Transistor embeds
      */
