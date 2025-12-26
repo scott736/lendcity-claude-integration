@@ -30,6 +30,7 @@ class LendCity_Smart_Linker {
     private $queue_option = 'lendcity_smart_linker_queue';
     private $queue_status_option = 'lendcity_smart_linker_queue_status';
     private $catalog_cache = null;
+    private $links_cache = null; // In-memory cache for get_all_site_links
 
     // SEO Enhancement meta keys
     private $priority_meta_key = '_lendcity_link_priority';
@@ -569,24 +570,40 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Get catalog stats (fast count queries)
+     * Get catalog stats (single optimized query with transient caching)
      */
     public function get_catalog_stats() {
+        // Check transient cache first (5 minute cache)
+        $cached = get_transient('lendcity_catalog_stats');
+        if ($cached !== false) {
+            return $cached;
+        }
+
         global $wpdb;
 
-        $total = $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name}");
-        $posts = $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name} WHERE is_page = 0");
-        $pages = $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name} WHERE is_page = 1");
-        $pillars = $wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name} WHERE is_pillar_content = 1");
-        $clusters = $wpdb->get_var("SELECT COUNT(DISTINCT topic_cluster) FROM {$this->table_name} WHERE topic_cluster IS NOT NULL");
+        // Single query with conditional counts (5 queries → 1)
+        $row = $wpdb->get_row("
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN is_page = 0 THEN 1 ELSE 0 END) as posts,
+                SUM(CASE WHEN is_page = 1 THEN 1 ELSE 0 END) as pages,
+                SUM(CASE WHEN is_pillar_content = 1 THEN 1 ELSE 0 END) as pillars,
+                COUNT(DISTINCT CASE WHEN topic_cluster IS NOT NULL THEN topic_cluster END) as clusters
+            FROM {$this->table_name}
+        ");
 
-        return array(
-            'total' => intval($total),
-            'posts' => intval($posts),
-            'pages' => intval($pages),
-            'pillars' => intval($pillars),
-            'clusters' => intval($clusters)
+        $stats = array(
+            'total' => intval($row->total ?? 0),
+            'posts' => intval($row->posts ?? 0),
+            'pages' => intval($row->pages ?? 0),
+            'pillars' => intval($row->pillars ?? 0),
+            'clusters' => intval($row->clusters ?? 0)
         );
+
+        // Cache for 5 minutes
+        set_transient('lendcity_catalog_stats', $stats, 5 * MINUTE_IN_SECONDS);
+
+        return $stats;
     }
 
     /**
@@ -618,10 +635,12 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Clear the in-memory catalog cache
+     * Clear the in-memory catalog cache and transients
      */
     public function clear_catalog_cache() {
         $this->catalog_cache = null;
+        delete_transient('lendcity_catalog_stats');
+        delete_transient('lendcity_link_stats');
     }
 
     // =========================================================================
@@ -1764,6 +1783,7 @@ class LendCity_Smart_Linker {
             'added_at' => current_time('mysql')
         );
         update_post_meta($post_id, $this->link_meta_key, $links);
+        $this->clear_links_cache();
 
         $this->debug_log("Inserted link to {$target_url} in post {$post_id}");
 
@@ -2116,6 +2136,7 @@ class LendCity_Smart_Linker {
                 return !isset($l['link_id']) || $l['link_id'] !== $link_id;
             });
             update_post_meta($post_id, $this->link_meta_key, array_values($links));
+            $this->clear_links_cache();
             return true;
         }
 
@@ -2128,6 +2149,7 @@ class LendCity_Smart_Linker {
 
         if (count($links) < $original_count) {
             update_post_meta($post_id, $this->link_meta_key, array_values($links));
+            $this->clear_links_cache();
             return true;
         }
 
@@ -2146,6 +2168,7 @@ class LendCity_Smart_Linker {
 
         wp_update_post(array('ID' => $post_id, 'post_content' => $new_content));
         delete_post_meta($post_id, $this->link_meta_key);
+        $this->clear_links_cache();
         return true;
     }
 
@@ -2179,6 +2202,7 @@ class LendCity_Smart_Linker {
             }
         }
 
+        $this->clear_links_cache();
         return array('deleted' => $deleted, 'posts_affected' => $posts_affected);
     }
 
@@ -2217,6 +2241,7 @@ class LendCity_Smart_Linker {
             }
         }
         update_post_meta($source_id, $this->link_meta_key, $links);
+        $this->clear_links_cache();
 
         return array('success' => true);
     }
@@ -2247,13 +2272,25 @@ class LendCity_Smart_Linker {
                 $updated++;
             }
         }
+
+        if ($updated > 0) {
+            $this->clear_links_cache();
+        }
         return $updated;
     }
 
     /**
-     * Get all Claude links across site
+     * Get all Claude links across site (with in-memory caching)
      */
     public function get_all_site_links($limit = 0) {
+        // Use in-memory cache if available (avoids duplicate queries in same request)
+        if ($this->links_cache !== null) {
+            if ($limit > 0) {
+                return array_slice($this->links_cache, 0, $limit);
+            }
+            return $this->links_cache;
+        }
+
         global $wpdb;
 
         $results = $wpdb->get_results("
@@ -2279,14 +2316,25 @@ class LendCity_Smart_Linker {
                     $link['source_post_title'] = $post_titles_cache[$row->post_id];
                     $link['post_date'] = $row->post_date;
                     $all_links[] = $link;
-
-                    if ($limit > 0 && count($all_links) >= $limit) {
-                        return $all_links;
-                    }
                 }
             }
         }
+
+        // Cache for subsequent calls in same request
+        $this->links_cache = $all_links;
+
+        if ($limit > 0) {
+            return array_slice($all_links, 0, $limit);
+        }
         return $all_links;
+    }
+
+    /**
+     * Clear links cache (call after modifying links)
+     */
+    public function clear_links_cache() {
+        $this->links_cache = null;
+        delete_transient('lendcity_link_stats');
     }
 
     /**
@@ -2433,9 +2481,15 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Get link distribution stats
+     * Get link distribution stats (with transient caching)
      */
     public function get_link_stats() {
+        // Check transient cache first (5 minute cache)
+        $cached = get_transient('lendcity_link_stats');
+        if ($cached !== false) {
+            return $cached;
+        }
+
         $catalog = $this->get_catalog();
         $all_links = $this->get_all_site_links(2000);
 
@@ -2469,7 +2523,7 @@ class LendCity_Smart_Linker {
             }
         }
 
-        return array(
+        $stats = array(
             'total_items' => count($catalog),
             'total_links' => count($all_links),
             'zero_links' => $zero_links,
@@ -2479,6 +2533,11 @@ class LendCity_Smart_Linker {
             'four_to_ten' => $four_to_ten,
             'over_ten' => $over_ten
         );
+
+        // Cache for 5 minutes
+        set_transient('lendcity_link_stats', $stats, 5 * MINUTE_IN_SECONDS);
+
+        return $stats;
     }
 
     // =========================================================================
