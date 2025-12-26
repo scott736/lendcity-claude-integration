@@ -56,13 +56,27 @@ class LendCity_Claude_API {
             error_log('LendCity Claude API Error: ' . $response->get_error_message());
             return false;
         }
-        
-        $response_body = json_decode(wp_remote_retrieve_body($response), true);
-        
+
+        $response_code = wp_remote_retrieve_response_code($response);
+        $raw_body = wp_remote_retrieve_body($response);
+        $response_body = json_decode($raw_body, true);
+
+        // Log detailed error info for non-200 responses
+        if ($response_code !== 200) {
+            $error_msg = isset($response_body['error']['message'])
+                ? $response_body['error']['message']
+                : 'Unknown error';
+            error_log('LendCity Claude API Error (HTTP ' . $response_code . '): ' . $error_msg);
+            error_log('LendCity Claude API Model: ' . $this->model);
+            error_log('LendCity Claude API Full Response: ' . substr($raw_body, 0, 500));
+            return false;
+        }
+
         if (isset($response_body['content'][0]['text'])) {
             return $response_body['content'][0]['text'];
         }
-        
+
+        error_log('LendCity Claude API Error: Response missing content - ' . substr($raw_body, 0, 500));
         return false;
     }
     
