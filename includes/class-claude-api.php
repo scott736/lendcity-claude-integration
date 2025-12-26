@@ -7,7 +7,7 @@ class LendCity_Claude_API {
     
     private $api_key;
     private $api_url = 'https://api.anthropic.com/v1/messages';
-    private $model = 'claude-sonnet-4-5-20251101';
+    private $model = 'claude-opus-4-5-20251101';
     
     public function __construct() {
         $this->api_key = get_option('lendcity_claude_api_key');
