@@ -1283,7 +1283,8 @@ class LendCity_Smart_Linker {
         foreach ($matches as $match) {
             if (count($links_created) >= $available_slots) break;
 
-            $anchor = $match['anchor'];
+            // Use matched_text (actual text found) if available, otherwise use canonical anchor
+            $anchor = isset($match['matched_text']) ? $match['matched_text'] : $match['anchor'];
             $anchor_lower = strtolower($anchor);
 
             // Skip if anchor already used
@@ -4019,7 +4020,82 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Find matching keywords in text content
+     * Generate semantic variations of a keyword for fuzzy matching
+     * Handles plurals, common suffixes, and word form variations
+     *
+     * @param string $keyword The keyword to generate variations for
+     * @return array Array of variations including the original
+     */
+    private function generate_keyword_variations($keyword) {
+        $variations = array($keyword);
+        $words = explode(' ', $keyword);
+        $last_word = end($words);
+
+        // Generate variations of the last word (most common for plurals)
+        $last_word_variations = array($last_word);
+
+        // Plural/singular variations
+        if (substr($last_word, -1) === 's' && strlen($last_word) > 3) {
+            // Remove 's' for singular
+            $last_word_variations[] = substr($last_word, 0, -1);
+            // Handle 'ies' -> 'y' (properties -> property)
+            if (substr($last_word, -3) === 'ies') {
+                $last_word_variations[] = substr($last_word, 0, -3) . 'y';
+            }
+            // Handle 'es' -> '' (taxes -> tax)
+            if (substr($last_word, -2) === 'es') {
+                $last_word_variations[] = substr($last_word, 0, -2);
+            }
+        } else {
+            // Add 's' for plural
+            $last_word_variations[] = $last_word . 's';
+            // Handle 'y' -> 'ies' (property -> properties)
+            if (substr($last_word, -1) === 'y' && strlen($last_word) > 2) {
+                $last_word_variations[] = substr($last_word, 0, -1) . 'ies';
+            }
+        }
+
+        // Common suffix variations
+        // -ing / -ment / -ion variations
+        if (substr($last_word, -3) === 'ing') {
+            $base = substr($last_word, 0, -3);
+            $last_word_variations[] = $base; // invest
+            $last_word_variations[] = $base . 'ment'; // investment
+            $last_word_variations[] = $base . 'or'; // investor
+            $last_word_variations[] = $base . 'er'; // invester
+        } elseif (substr($last_word, -4) === 'ment') {
+            $base = substr($last_word, 0, -4);
+            $last_word_variations[] = $base; // invest
+            $last_word_variations[] = $base . 'ing'; // investing
+            $last_word_variations[] = $base . 'or'; // investor
+        } elseif (substr($last_word, -2) === 'or' || substr($last_word, -2) === 'er') {
+            $base = substr($last_word, 0, -2);
+            $last_word_variations[] = $base; // invest
+            $last_word_variations[] = $base . 'ing'; // investing
+            $last_word_variations[] = $base . 'ment'; // investment
+        }
+
+        // -tion / -sion variations
+        if (substr($last_word, -4) === 'tion' || substr($last_word, -4) === 'sion') {
+            $base = substr($last_word, 0, -4);
+            $last_word_variations[] = $base . 'te'; // calculate
+            $last_word_variations[] = $base . 'ting'; // calculating
+        }
+
+        // Build full phrase variations
+        foreach ($last_word_variations as $variant) {
+            if ($variant !== $last_word) {
+                $words_copy = $words;
+                $words_copy[count($words_copy) - 1] = $variant;
+                $variations[] = implode(' ', $words_copy);
+            }
+        }
+
+        return array_unique($variations);
+    }
+
+    /**
+     * Find matching keywords in text content with SEMANTIC/FUZZY matching
      * Returns keywords found in the text that have owners (excluding self)
      *
      * @param string $content The text to search
@@ -4036,6 +4112,7 @@ class LendCity_Smart_Linker {
 
         $content_lower = strtolower($content);
         $matches = array();
+        $matched_urls = array(); // Prevent duplicate URLs
 
         // Sort keywords by length (longer first) to match longer phrases before shorter ones
         $keywords = $ownership['map'];
@@ -4049,15 +4126,33 @@ class LendCity_Smart_Linker {
                 continue;
             }
 
-            // Check if keyword exists in content (word boundary matching)
-            if (preg_match('/\b' . preg_quote($normalized, '/') . '\b/i', $content_lower)) {
+            // Skip if we already matched this URL (avoid duplicate links)
+            if (in_array($owner['url'], $matched_urls)) {
+                continue;
+            }
+
+            // Generate semantic variations of the keyword
+            $variations = $this->generate_keyword_variations($normalized);
+
+            // Check if any variation exists in content
+            $found_variation = null;
+            foreach ($variations as $variant) {
+                if (preg_match('/\b' . preg_quote($variant, '/') . '\b/i', $content_lower, $match)) {
+                    $found_variation = $match[0]; // Use the actual matched text
+                    break;
+                }
+            }
+
+            if ($found_variation !== null) {
                 $matches[] = array(
                     'keyword' => $normalized,
-                    'anchor' => $owner['anchor'],
+                    'anchor' => $owner['anchor'], // Use the canonical anchor from ownership
+                    'matched_text' => $found_variation, // What was actually found
                     'target_url' => $owner['url'],
                     'target_post_id' => $owner['post_id'],
                     'score' => $owner['score']
                 );
+                $matched_urls[] = $owner['url'];
 
                 if (count($matches) >= $limit) {
                     break;
