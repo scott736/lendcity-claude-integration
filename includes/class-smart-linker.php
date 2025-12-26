@@ -21,21 +21,35 @@ if (!defined('ABSPATH')) {
 }
 
 class LendCity_Smart_Linker {
-    
+
     private $api_key;
-    private $catalog_option = 'lendcity_post_catalog';
     private $link_meta_key = '_lendcity_smart_links';
     private $original_content_meta = '_lendcity_original_content';
     private $queue_option = 'lendcity_smart_linker_queue';
     private $queue_status_option = 'lendcity_smart_linker_queue_status';
-    private $catalog_cache = null; // In-memory cache to avoid repeated DB queries
-    
+
+    /**
+     * Catalog Database instance
+     *
+     * PERFORMANCE NOTE: This replaces the old serialized wp_options storage.
+     * The LendCity_Catalog_DB class stores each post as a separate row with
+     * proper indexing, enabling fast lookups and updates without loading
+     * the entire catalog into memory.
+     *
+     * @var LendCity_Catalog_DB
+     */
+    private $catalog_db = null;
+
     // SEO Enhancement meta keys
     private $priority_meta_key = '_lendcity_link_priority'; // 1-5, higher = more links
     private $keywords_meta_key = '_lendcity_target_keywords'; // comma-separated keywords for anchor text
-    
+
     public function __construct() {
         $this->api_key = get_option('lendcity_claude_api_key');
+
+        // Initialize the catalog database handler
+        // This creates the table if needed and handles migration from wp_options
+        $this->catalog_db = new LendCity_Catalog_DB();
         
         // Hook into post publish to auto-catalog and auto-link
         add_action('transition_post_status', array($this, 'on_post_publish'), 10, 3);
@@ -133,13 +147,10 @@ class LendCity_Smart_Linker {
         }
         
         $this->debug_log('Cleaning up deleted post ' . $post_id . ' - ' . $post->post_title);
-        
-        // 1. Remove from catalog
-        $catalog = $this->get_catalog();
-        if (isset($catalog[$post_id])) {
-            unset($catalog[$post_id]);
-            update_option($this->catalog_option, $catalog);
-            $this->clear_catalog_cache();
+
+        // 1. Remove from catalog (using optimized database table)
+        if ($this->catalog_db->entry_exists($post_id)) {
+            $this->catalog_db->delete_entry($post_id);
             $this->debug_log('Removed post ' . $post_id . ' from catalog');
         }
         
@@ -271,13 +282,10 @@ class LendCity_Smart_Linker {
         
         $this->debug_log('Processing auto-link for post ' . $post_id);
         
-        // Add to catalog
+        // Add to catalog (using optimized database table)
         $entry = $this->build_single_post_catalog($post_id);
         if ($entry) {
-            $catalog = $this->get_catalog();
-            $catalog[$post_id] = $entry;
-            update_option($this->catalog_option, $catalog);
-            $this->clear_catalog_cache();
+            $this->catalog_db->save_entry($post_id, $entry);
             $this->debug_log('Added post ' . $post_id . ' to catalog');
         }
         
@@ -730,38 +738,40 @@ class LendCity_Smart_Linker {
     
     /**
      * Get the current catalog
+     *
+     * PERFORMANCE NOTE: Now uses LendCity_Catalog_DB which stores entries in a
+     * dedicated database table with proper indexing. The in-memory cache within
+     * the DB class ensures we don't hit the database multiple times per request.
+     *
+     * For partial access (single entry), use $this->catalog_db->get_entry($post_id)
+     * instead of loading the full catalog.
+     *
+     * @return array Associative array of post_id => catalog entry
      */
     public function get_catalog() {
-        if ($this->catalog_cache === null) {
-            $this->catalog_cache = get_option($this->catalog_option, array());
-        }
-        return $this->catalog_cache;
+        return $this->catalog_db->get_all_entries();
     }
-    
+
     /**
      * Clear the catalog cache (call after updating catalog)
+     *
+     * NOTE: The new database class handles caching internally. This method now
+     * delegates to the DB class's cache clearing mechanism.
      */
     public function clear_catalog_cache() {
-        $this->catalog_cache = null;
+        $this->catalog_db->clear_cache();
     }
-    
+
     /**
      * Get catalog stats
+     *
+     * PERFORMANCE NOTE: Now uses optimized COUNT queries instead of loading
+     * the entire catalog into memory.
+     *
+     * @return array Stats with 'total', 'posts', and 'pages' counts
      */
     public function get_catalog_stats() {
-        $catalog = $this->get_catalog();
-        $posts = 0;
-        $pages = 0;
-        
-        foreach ($catalog as $entry) {
-            if (isset($entry['is_page']) && $entry['is_page']) {
-                $pages++;
-            } else {
-                $posts++;
-            }
-        }
-        
-        return array('total' => count($catalog), 'posts' => $posts, 'pages' => $pages);
+        return $this->catalog_db->get_stats();
     }
     
     /**

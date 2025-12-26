@@ -605,7 +605,6 @@ jQuery(document).ready(function($) {
             nonce: nonce,
             post_id: postId
         }, function(response) {
-            console.log('Replace response:', response);
             if (response.success && response.data && response.data.thumb_url) {
                 $btn.text('Done!').css('color', '#28a745');
                 // Update the image
@@ -623,8 +622,7 @@ jQuery(document).ready(function($) {
                 $btn.prop('disabled', false).text('Replace Image');
             }
         }).fail(function(xhr, status, error) {
-            console.log('Replace failed:', xhr.responseText);
-            alert('Request failed: ' + error + '\n\nCheck browser console for details.');
+            alert('Request failed: ' + error);
             $btn.prop('disabled', false).text('Replace Image');
         });
     });

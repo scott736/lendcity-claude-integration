@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Claude Integration
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 10.0.7
+ * Version: 10.1.0
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '10.0.7');
+define('LENDCITY_CLAUDE_VERSION', '10.1.0');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -135,6 +135,7 @@ function lendcity_log($message) {
 
 // Include required files
 require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-claude-api.php';
+require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-catalog-db.php';
 require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-smart-linker.php';
 
 class LendCity_Claude_Integration {
@@ -374,18 +375,17 @@ class LendCity_Claude_Integration {
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Permission denied');
         }
-        
+
         $post_id = intval($_POST['post_id']);
         $smart_linker = new LendCity_Smart_Linker();
         $entry = $smart_linker->build_single_post_catalog($post_id);
-        
+
         if ($entry && is_array($entry) && isset($entry['post_id'])) {
-            // Save to catalog
-            $catalog = $smart_linker->get_catalog();
-            $catalog[$post_id] = $entry;
-            update_option('lendcity_post_catalog', $catalog);
+            // Save to catalog using optimized database table
+            $catalog_db = new LendCity_Catalog_DB();
+            $catalog_db->save_entry($post_id, $entry);
             update_option('lendcity_post_catalog_built_at', current_time('mysql'));
-            
+
             wp_send_json_success(array(
                 'post_id' => $post_id,
                 'title' => $entry['title']
@@ -397,34 +397,36 @@ class LendCity_Claude_Integration {
     
     /**
      * Build catalog entries in batches - SINGLE API call per batch
+     *
+     * PERFORMANCE NOTE: Now saves entries individually to the optimized database
+     * table instead of rewriting the entire serialized catalog option.
      */
     public function ajax_build_catalog_batch() {
         check_ajax_referer('lendcity_claude_nonce', 'nonce');
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Permission denied');
         }
-        
+
         $post_ids = isset($_POST['post_ids']) ? array_map('intval', $_POST['post_ids']) : array();
-        
+
         if (empty($post_ids)) {
             wp_send_json_error('No post IDs provided');
         }
-        
+
         $smart_linker = new LendCity_Smart_Linker();
-        
+
         // Use batch function - single API call for all posts
         $entries = $smart_linker->build_batch_catalog($post_ids);
-        
+
         if (!empty($entries)) {
-            // Save to catalog
-            $catalog = $smart_linker->get_catalog();
+            // Save to catalog using optimized database table
+            $catalog_db = new LendCity_Catalog_DB();
             foreach ($entries as $post_id => $entry) {
-                $catalog[$post_id] = $entry;
+                $catalog_db->save_entry($post_id, $entry);
             }
-            update_option('lendcity_post_catalog', $catalog);
             update_option('lendcity_post_catalog_built_at', current_time('mysql'));
         }
-        
+
         wp_send_json_success(array(
             'processed' => count($post_ids),
             'success' => count($entries),
@@ -434,16 +436,23 @@ class LendCity_Claude_Integration {
     
     /**
      * Clear the entire catalog
+     *
+     * NOTE: Now clears both the new database table and any legacy options data.
      */
     public function ajax_clear_catalog() {
         check_ajax_referer('lendcity_claude_nonce', 'nonce');
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Permission denied');
         }
-        
+
+        // Clear the optimized database table
+        $catalog_db = new LendCity_Catalog_DB();
+        $catalog_db->clear_all();
+
+        // Also clear any legacy data
         delete_option('lendcity_post_catalog');
         delete_option('lendcity_post_catalog_built_at');
-        
+
         wp_send_json_success(array('message' => 'Catalog cleared'));
     }
     
