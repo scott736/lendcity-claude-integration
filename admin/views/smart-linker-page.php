@@ -519,6 +519,96 @@ $total_links = $smart_linker->get_total_link_count();
             <p id="links-showing" style="color: #666; margin-top: 10px;">Showing 1-<?php echo min(50, $total_links); ?> of <?php echo $total_links; ?> links</p>
         <?php endif; ?>
     </div>
+
+    <!-- Meta Queue Panel (Persistent Background Processing) -->
+    <?php $meta_queue_status = $smart_linker->get_meta_queue_status(); ?>
+    <div id="meta-queue-panel" style="background: linear-gradient(135deg, #11998e, #38ef7d); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <h2 style="margin: 0; color: white;">Background SEO Queue</h2>
+            <span style="background: rgba(255,255,255,0.3); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">PERSISTENT</span>
+        </div>
+        <p style="margin-bottom: 15px; opacity: 0.9;">Start SEO metadata processing and close your browser — it continues in the background. Come back anytime to check progress.</p>
+
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 15px;">
+            <button type="button" id="start-meta-queue-btn" class="button button-large" style="background: white; color: #11998e; border: none; font-weight: bold;">
+                Start Background Queue
+            </button>
+            <button type="button" id="clear-meta-queue-btn" class="button" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid white;">
+                Clear Queue
+            </button>
+        </div>
+
+        <div style="display: flex; gap: 15px; flex-wrap: wrap; margin-bottom: 15px;">
+            <label style="color: white; cursor: pointer;">
+                <input type="checkbox" id="meta-queue-skip-existing" checked>
+                Skip posts with existing SEO
+            </label>
+            <label style="color: white; cursor: pointer;">
+                <input type="checkbox" id="meta-queue-only-linked" checked>
+                Only process linked content
+            </label>
+        </div>
+
+        <!-- Queue Status Display -->
+        <div id="meta-queue-status-display" style="display: <?php echo $meta_queue_status['status'] !== 'idle' ? 'block' : 'none'; ?>; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <strong id="meta-queue-state"><?php echo ucfirst($meta_queue_status['status']); ?></strong>
+                <span id="meta-queue-percent"><?php echo $meta_queue_status['percent']; ?>%</span>
+            </div>
+            <div style="background: #e0e0e0; height: 20px; border-radius: 4px; overflow: hidden;">
+                <div id="meta-queue-progress-bar" style="background: linear-gradient(90deg, #11998e, #38ef7d); height: 100%; width: <?php echo $meta_queue_status['percent']; ?>%; transition: width 0.3s;"></div>
+            </div>
+            <div style="margin-top: 10px; display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px;">
+                <span>Completed: <strong id="meta-queue-completed"><?php echo $meta_queue_status['completed']; ?></strong></span>
+                <span>Pending: <strong id="meta-queue-pending"><?php echo $meta_queue_status['pending']; ?></strong></span>
+                <span>Failed: <strong id="meta-queue-failed"><?php echo $meta_queue_status['failed']; ?></strong></span>
+                <span>Total: <strong id="meta-queue-total"><?php echo $meta_queue_status['total']; ?></strong></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- SEO Health Monitor Panel -->
+    <div style="background: linear-gradient(135deg, #f093fb, #f5576c); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <h2 style="margin: 0; color: white;">SEO Health Monitor</h2>
+            <span style="background: rgba(255,255,255,0.3); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">AI ALERTS</span>
+        </div>
+        <p style="margin-bottom: 15px; opacity: 0.9;">Detects when SEO metadata should be updated based on inbound link patterns. Posts with high-frequency anchors missing from titles are flagged.</p>
+
+        <button type="button" id="scan-seo-health-btn" class="button button-large" style="background: white; color: #f5576c; border: none; font-weight: bold;">
+            Scan for SEO Issues
+        </button>
+
+        <div id="seo-health-results" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333; max-height: 400px; overflow-y: auto;">
+            <div id="seo-health-loading" style="text-align: center; padding: 20px;">
+                <span class="spinner is-active" style="float: none;"></span> Analyzing...
+            </div>
+            <div id="seo-health-content" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- Duplicate Anchor Detection Panel -->
+    <div style="background: linear-gradient(135deg, #ff9a56, #ff6b6b); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+            <h2 style="margin: 0; color: white;">Duplicate Anchor Detection</h2>
+            <span style="background: rgba(255,255,255,0.3); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">SEO FIX</span>
+        </div>
+        <p style="margin-bottom: 5px; opacity: 0.9;">Finds anchor text used to link to multiple different pages — bad for SEO. Pages are prioritized; duplicates are removed from posts only.</p>
+        <p style="margin-bottom: 15px; font-size: 12px; opacity: 0.8;">
+            <strong>How it works:</strong> Same anchor → multiple URLs = confusing for search engines. We keep the page link, remove duplicate anchors from posts.
+        </p>
+
+        <button type="button" id="scan-duplicate-anchors-btn" class="button button-large" style="background: white; color: #ff6b6b; border: none; font-weight: bold;">
+            Scan for Duplicate Anchors
+        </button>
+
+        <div id="duplicate-anchors-results" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333; max-height: 400px; overflow-y: auto;">
+            <div id="duplicate-anchors-loading" style="text-align: center; padding: 20px;">
+                <span class="spinner is-active" style="float: none;"></span> Scanning...
+            </div>
+            <div id="duplicate-anchors-content" style="display: none;"></div>
+        </div>
+    </div>
 </div>
 
 <!-- Select2 for searchable dropdowns -->
@@ -1414,6 +1504,245 @@ jQuery(document).ready(function($) {
         smartBulkRunning = false;
         $('#smart-bulk-state').text('Stopped');
         $('#bulk-smart-metadata-btn').prop('disabled', false).text('Bulk Generate for All Linked Content');
+    });
+
+    // ========== META QUEUE (PERSISTENT BACKGROUND) ==========
+    var metaQueuePolling = null;
+
+    function updateMetaQueueUI(status) {
+        $('#meta-queue-state').text(status.status.charAt(0).toUpperCase() + status.status.slice(1));
+        $('#meta-queue-percent').text(status.percent + '%');
+        $('#meta-queue-progress-bar').css('width', status.percent + '%');
+        $('#meta-queue-completed').text(status.completed);
+        $('#meta-queue-pending').text(status.pending);
+        $('#meta-queue-failed').text(status.failed);
+        $('#meta-queue-total').text(status.total);
+
+        if (status.status !== 'idle' && status.total > 0) {
+            $('#meta-queue-status-display').show();
+        }
+
+        if (status.status === 'completed' || status.status === 'idle') {
+            if (metaQueuePolling) {
+                clearInterval(metaQueuePolling);
+                metaQueuePolling = null;
+            }
+            $('#start-meta-queue-btn').prop('disabled', false).text('Start Background Queue');
+        }
+    }
+
+    function pollMetaQueueStatus() {
+        $.post(ajaxurl, {
+            action: 'lendcity_get_meta_queue_status',
+            nonce: nonce
+        }, function(response) {
+            if (response.success) {
+                updateMetaQueueUI(response.data);
+            }
+        });
+    }
+
+    // Start meta queue
+    $('#start-meta-queue-btn').on('click', function() {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Starting...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_init_meta_queue',
+            nonce: nonce,
+            skip_existing: $('#meta-queue-skip-existing').is(':checked') ? 'true' : 'false',
+            only_linked: $('#meta-queue-only-linked').is(':checked') ? 'true' : 'false'
+        }, function(response) {
+            if (response.success) {
+                $('#meta-queue-status-display').show();
+                updateMetaQueueUI({ status: 'running', percent: 0, completed: 0, pending: response.data.total, failed: 0, total: response.data.total });
+
+                // Start polling
+                if (!metaQueuePolling) {
+                    metaQueuePolling = setInterval(pollMetaQueueStatus, 5000);
+                }
+                $btn.text('Processing...');
+            } else {
+                alert('Error: ' + response.data);
+                $btn.prop('disabled', false).text('Start Background Queue');
+            }
+        }).fail(function() {
+            alert('Request failed');
+            $btn.prop('disabled', false).text('Start Background Queue');
+        });
+    });
+
+    // Clear meta queue
+    $('#clear-meta-queue-btn').on('click', function() {
+        if (!confirm('Clear the metadata queue?')) return;
+
+        $.post(ajaxurl, {
+            action: 'lendcity_clear_meta_queue',
+            nonce: nonce
+        }, function(response) {
+            if (response.success) {
+                if (metaQueuePolling) {
+                    clearInterval(metaQueuePolling);
+                    metaQueuePolling = null;
+                }
+                $('#meta-queue-status-display').hide();
+                $('#start-meta-queue-btn').prop('disabled', false).text('Start Background Queue');
+            }
+        });
+    });
+
+    // Check queue status on page load
+    if ($('#meta-queue-status-display').is(':visible')) {
+        pollMetaQueueStatus();
+        metaQueuePolling = setInterval(pollMetaQueueStatus, 5000);
+    }
+
+    // ========== SEO HEALTH MONITOR ==========
+    $('#scan-seo-health-btn').on('click', function() {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Scanning...');
+        $('#seo-health-results').show();
+        $('#seo-health-loading').show();
+        $('#seo-health-content').hide();
+
+        $.post(ajaxurl, {
+            action: 'lendcity_get_seo_health_issues',
+            nonce: nonce
+        }, function(response) {
+            $('#seo-health-loading').hide();
+            $('#seo-health-content').show();
+            $btn.prop('disabled', false).text('Scan for SEO Issues');
+
+            if (response.success && response.data.issues.length > 0) {
+                var html = '<p style="margin-top: 0;"><strong>' + response.data.count + ' SEO issues found</strong></p>';
+                html += '<table class="wp-list-table widefat fixed striped" style="margin-top: 10px;">';
+                html += '<thead><tr><th>Page/Post</th><th>Issues</th><th>Top Anchors</th><th>Action</th></tr></thead><tbody>';
+
+                response.data.issues.forEach(function(issue) {
+                    var severityColor = issue.severity === 'high' ? '#dc3545' : '#ffc107';
+                    var anchors = Object.keys(issue.top_anchors).slice(0, 3).join(', ');
+
+                    html += '<tr data-post-id="' + issue.post_id + '">';
+                    html += '<td><a href="' + issue.url + '" target="_blank">' + issue.post_title + '</a>';
+                    html += '<span style="font-size: 11px; color: #666; margin-left: 5px;">(' + issue.post_type + ')</span></td>';
+                    html += '<td>';
+                    issue.suggestions.forEach(function(s) {
+                        html += '<div style="font-size: 12px; color: ' + severityColor + '; margin-bottom: 3px;">• ' + s + '</div>';
+                    });
+                    html += '</td>';
+                    html += '<td style="font-size: 12px; color: #666;">' + anchors + '</td>';
+                    html += '<td><button type="button" class="button auto-fix-seo-btn" data-post-id="' + issue.post_id + '">Auto Fix</button></td>';
+                    html += '</tr>';
+                });
+
+                html += '</tbody></table>';
+                $('#seo-health-content').html(html);
+            } else {
+                $('#seo-health-content').html('<p style="color: #28a745; margin: 0;">✓ No SEO issues detected. All content looks healthy!</p>');
+            }
+        }).fail(function() {
+            $('#seo-health-loading').hide();
+            $('#seo-health-content').show().html('<p style="color: #dc3545;">Failed to scan. Please try again.</p>');
+            $btn.prop('disabled', false).text('Scan for SEO Issues');
+        });
+    });
+
+    // Auto-fix SEO
+    $(document).on('click', '.auto-fix-seo-btn', function() {
+        var $btn = $(this);
+        var postId = $btn.data('post-id');
+        $btn.prop('disabled', true).text('Fixing...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_auto_fix_seo',
+            nonce: nonce,
+            post_id: postId
+        }, function(response) {
+            if (response.success) {
+                $btn.closest('tr').fadeOut(300, function() { $(this).remove(); });
+            } else {
+                alert('Error: ' + response.data);
+                $btn.prop('disabled', false).text('Auto Fix');
+            }
+        }).fail(function() {
+            alert('Request failed');
+            $btn.prop('disabled', false).text('Auto Fix');
+        });
+    });
+
+    // ========== DUPLICATE ANCHOR DETECTION ==========
+    $('#scan-duplicate-anchors-btn').on('click', function() {
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Scanning...');
+        $('#duplicate-anchors-results').show();
+        $('#duplicate-anchors-loading').show();
+        $('#duplicate-anchors-content').hide();
+
+        $.post(ajaxurl, {
+            action: 'lendcity_get_duplicate_anchors',
+            nonce: nonce
+        }, function(response) {
+            $('#duplicate-anchors-loading').hide();
+            $('#duplicate-anchors-content').show();
+            $btn.prop('disabled', false).text('Scan for Duplicate Anchors');
+
+            if (response.success && response.data.duplicates.length > 0) {
+                var html = '<p style="margin-top: 0;"><strong>' + response.data.count + ' duplicate anchors found</strong></p>';
+                html += '<p style="font-size: 12px; color: #666; margin-bottom: 15px;">Pages are prioritized — duplicates will be removed from posts only.</p>';
+                html += '<table class="wp-list-table widefat fixed striped" style="margin-top: 10px;">';
+                html += '<thead><tr><th>Anchor Text</th><th>Used For</th><th>Keep (Page)</th><th>Action</th></tr></thead><tbody>';
+
+                response.data.duplicates.forEach(function(dup) {
+                    var targets = dup.targets.map(function(t) {
+                        return '<div style="font-size: 11px; margin-bottom: 2px;">' +
+                            '<span style="color: ' + (t.post_type === 'page' ? '#28a745' : '#666') + ';">[' + t.post_type + ']</span> ' +
+                            t.url.replace(/^https?:\/\/[^\/]+/, '') + '</div>';
+                    }).join('');
+
+                    html += '<tr data-anchor="' + dup.anchor + '">';
+                    html += '<td><code style="font-size: 13px;">' + dup.anchor + '</code><br><small style="color: #666;">(' + dup.count + ' targets)</small></td>';
+                    html += '<td>' + targets + '</td>';
+                    html += '<td style="font-size: 11px; color: #28a745;">' + dup.keep_url.replace(/^https?:\/\/[^\/]+/, '') + '</td>';
+                    html += '<td><button type="button" class="button fix-duplicate-anchor-btn" data-anchor="' + dup.anchor + '">Fix (Remove from Posts)</button></td>';
+                    html += '</tr>';
+                });
+
+                html += '</tbody></table>';
+                $('#duplicate-anchors-content').html(html);
+            } else {
+                $('#duplicate-anchors-content').html('<p style="color: #28a745; margin: 0;">✓ No duplicate anchors found. All anchor texts are unique!</p>');
+            }
+        }).fail(function() {
+            $('#duplicate-anchors-loading').hide();
+            $('#duplicate-anchors-content').show().html('<p style="color: #dc3545;">Failed to scan. Please try again.</p>');
+            $btn.prop('disabled', false).text('Scan for Duplicate Anchors');
+        });
+    });
+
+    // Fix duplicate anchor
+    $(document).on('click', '.fix-duplicate-anchor-btn', function() {
+        var $btn = $(this);
+        var anchor = $btn.data('anchor');
+        $btn.prop('disabled', true).text('Fixing...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_fix_duplicate_anchor',
+            nonce: nonce,
+            anchor: anchor
+        }, function(response) {
+            if (response.success) {
+                $btn.closest('tr').fadeOut(300, function() { $(this).remove(); });
+                if (response.data.fixed > 0) {
+                    alert('Fixed! Removed ' + response.data.fixed + ' duplicate link(s).');
+                }
+            } else {
+                alert('Error fixing anchor');
+                $btn.prop('disabled', false).text('Fix (Remove from Posts)');
+            }
+        }).fail(function() {
+            alert('Request failed');
+            $btn.prop('disabled', false).text('Fix (Remove from Posts)');
+        });
     });
 });
 </script>

@@ -29,6 +29,8 @@ class LendCity_Smart_Linker {
     private $original_content_meta = '_lendcity_original_content';
     private $queue_option = 'lendcity_smart_linker_queue';
     private $queue_status_option = 'lendcity_smart_linker_queue_status';
+    private $meta_queue_option = 'lendcity_meta_queue';
+    private $meta_queue_status_option = 'lendcity_meta_queue_status';
     private $catalog_cache = null;
     private $links_cache = null; // In-memory cache for get_all_site_links
 
@@ -68,6 +70,7 @@ class LendCity_Smart_Linker {
         add_action('lendcity_process_link_queue', array($this, 'process_queue_batch'));
         add_action('lendcity_process_queue_batch', array($this, 'process_queue_batch'));
         add_action('lendcity_auto_link_new_post', array($this, 'process_new_post_auto_link'));
+        add_action('lendcity_process_meta_queue', array($this, 'process_meta_queue_batch'));
 
         // Loopback processing (non-cron)
         add_action('wp_ajax_lendcity_background_process', array($this, 'ajax_background_process'));
@@ -3133,5 +3136,450 @@ class LendCity_Smart_Linker {
         }
 
         return $posts_to_process;
+    }
+
+    // =========================================================================
+    // METADATA QUEUE SYSTEM - Persistent background processing
+    // =========================================================================
+
+    /**
+     * Initialize metadata queue for background processing
+     *
+     * @param array $post_ids List of post IDs to process
+     * @param bool $skip_existing Skip posts with existing SEO metadata
+     * @return array Queue status
+     */
+    public function init_meta_queue($post_ids, $skip_existing = false) {
+        if (empty($post_ids)) {
+            return array('success' => false, 'message' => 'No posts to process');
+        }
+
+        // Filter out posts with existing metadata if requested
+        if ($skip_existing) {
+            $post_ids = array_filter($post_ids, function($post_id) {
+                $title = get_post_meta($post_id, '_seopress_titles_title', true);
+                $desc = get_post_meta($post_id, '_seopress_titles_desc', true);
+                return empty($title) && empty($desc);
+            });
+            $post_ids = array_values($post_ids);
+        }
+
+        if (empty($post_ids)) {
+            return array('success' => false, 'message' => 'All posts already have SEO metadata');
+        }
+
+        $queue_data = array(
+            'pending' => $post_ids,
+            'completed' => array(),
+            'failed' => array(),
+            'total' => count($post_ids),
+            'started_at' => current_time('mysql'),
+            'skip_existing' => $skip_existing
+        );
+
+        update_option($this->meta_queue_option, $queue_data);
+        update_option($this->meta_queue_status_option, 'running');
+
+        // Schedule first batch
+        if (!wp_next_scheduled('lendcity_process_meta_queue')) {
+            wp_schedule_single_event(time() + 2, 'lendcity_process_meta_queue');
+        }
+
+        return array(
+            'success' => true,
+            'total' => count($post_ids),
+            'message' => 'Meta queue initialized with ' . count($post_ids) . ' posts'
+        );
+    }
+
+    /**
+     * Process a batch of metadata queue items
+     */
+    public function process_meta_queue_batch() {
+        $queue = get_option($this->meta_queue_option, array());
+        $status = get_option($this->meta_queue_status_option, 'idle');
+
+        if ($status !== 'running' || empty($queue['pending'])) {
+            update_option($this->meta_queue_status_option, 'idle');
+            return;
+        }
+
+        // Process batch of 3 posts per cron run
+        $batch_size = 3;
+        $batch = array_splice($queue['pending'], 0, $batch_size);
+
+        foreach ($batch as $post_id) {
+            $post = get_post($post_id);
+            if (!$post) {
+                $queue['failed'][] = array('id' => $post_id, 'error' => 'Post not found');
+                continue;
+            }
+
+            // Generate smart metadata
+            $result = $this->generate_smart_metadata($post_id);
+
+            if (is_wp_error($result)) {
+                $queue['failed'][] = array('id' => $post_id, 'error' => $result->get_error_message());
+            } elseif (isset($result['error'])) {
+                $queue['failed'][] = array('id' => $post_id, 'error' => $result['error']);
+            } else {
+                // Apply metadata
+                if (!empty($result['title'])) {
+                    update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($result['title']));
+                }
+                if (!empty($result['description'])) {
+                    update_post_meta($post_id, '_seopress_titles_desc', sanitize_textarea_field($result['description']));
+                }
+                if (!empty($result['focus_keyphrase'])) {
+                    update_post_meta($post_id, '_seopress_analysis_target_kw', sanitize_text_field($result['focus_keyphrase']));
+                }
+                if (!empty($result['tags']) && is_array($result['tags'])) {
+                    wp_set_post_tags($post_id, $result['tags'], false);
+                }
+
+                $queue['completed'][] = $post_id;
+            }
+        }
+
+        // Update queue
+        update_option($this->meta_queue_option, $queue);
+
+        // Schedule next batch if more items pending
+        if (!empty($queue['pending'])) {
+            wp_schedule_single_event(time() + 3, 'lendcity_process_meta_queue');
+        } else {
+            update_option($this->meta_queue_status_option, 'completed');
+        }
+    }
+
+    /**
+     * Get current metadata queue status
+     *
+     * @return array Queue status with counts
+     */
+    public function get_meta_queue_status() {
+        $queue = get_option($this->meta_queue_option, array());
+        $status = get_option($this->meta_queue_status_option, 'idle');
+
+        if (empty($queue)) {
+            return array(
+                'status' => 'idle',
+                'pending' => 0,
+                'completed' => 0,
+                'failed' => 0,
+                'total' => 0,
+                'percent' => 0
+            );
+        }
+
+        $pending = count($queue['pending'] ?? array());
+        $completed = count($queue['completed'] ?? array());
+        $failed = count($queue['failed'] ?? array());
+        $total = $queue['total'] ?? 0;
+
+        return array(
+            'status' => $status,
+            'pending' => $pending,
+            'completed' => $completed,
+            'failed' => $failed,
+            'failed_details' => $queue['failed'] ?? array(),
+            'total' => $total,
+            'percent' => $total > 0 ? round(($completed + $failed) / $total * 100) : 0,
+            'started_at' => $queue['started_at'] ?? ''
+        );
+    }
+
+    /**
+     * Clear metadata queue
+     */
+    public function clear_meta_queue() {
+        delete_option($this->meta_queue_option);
+        update_option($this->meta_queue_status_option, 'idle');
+        wp_clear_scheduled_hook('lendcity_process_meta_queue');
+        return array('success' => true);
+    }
+
+    // =========================================================================
+    // DUPLICATE ANCHOR DETECTION - Prioritize pages, remove from posts only
+    // =========================================================================
+
+    /**
+     * Get all duplicate anchors across the site
+     * Returns anchors used for multiple different target URLs
+     *
+     * @return array List of duplicate anchor issues with prioritization
+     */
+    public function get_duplicate_anchors() {
+        $all_links = $this->get_all_site_links(5000);
+
+        // Group by anchor text
+        $anchors_by_text = array();
+        foreach ($all_links as $link) {
+            $anchor = strtolower(trim($link['anchor']));
+            if (empty($anchor) || strlen($anchor) < 3) continue;
+
+            if (!isset($anchors_by_text[$anchor])) {
+                $anchors_by_text[$anchor] = array();
+            }
+            // Track unique URLs per anchor
+            if (!in_array($link['url'], array_column($anchors_by_text[$anchor], 'url'))) {
+                $anchors_by_text[$anchor][] = array(
+                    'url' => $link['url'],
+                    'source_id' => $link['source_id'],
+                    'source_type' => get_post_type($link['source_id'])
+                );
+            }
+        }
+
+        // Find duplicates (same anchor pointing to multiple URLs)
+        $duplicates = array();
+        foreach ($anchors_by_text as $anchor => $targets) {
+            if (count($targets) <= 1) continue;
+
+            // Get target post types and prioritize
+            $target_data = array();
+            foreach ($targets as $target) {
+                $target_id = url_to_postid($target['url']);
+                $target_type = $target_id ? get_post_type($target_id) : 'external';
+                $target_data[] = array(
+                    'url' => $target['url'],
+                    'post_id' => $target_id,
+                    'post_type' => $target_type,
+                    'source_id' => $target['source_id'],
+                    'source_type' => $target['source_type'],
+                    'priority' => $target_type === 'page' ? 1 : ($target_type === 'post' ? 2 : 3)
+                );
+            }
+
+            // Sort by priority (pages first)
+            usort($target_data, function($a, $b) {
+                return $a['priority'] - $b['priority'];
+            });
+
+            $duplicates[] = array(
+                'anchor' => $anchor,
+                'count' => count($target_data),
+                'targets' => $target_data,
+                'keep_url' => $target_data[0]['url'], // Keep the page version
+                'remove_from' => array_slice($target_data, 1) // Remove from posts
+            );
+        }
+
+        // Sort by count descending
+        usort($duplicates, function($a, $b) {
+            return $b['count'] - $a['count'];
+        });
+
+        return $duplicates;
+    }
+
+    /**
+     * Auto-fix duplicate anchors by removing from posts (keeping pages)
+     *
+     * @param string $anchor The anchor text to fix
+     * @return array Result with count of fixes applied
+     */
+    public function fix_duplicate_anchor($anchor) {
+        $duplicates = $this->get_duplicate_anchors();
+        $fixed = 0;
+        $errors = array();
+
+        foreach ($duplicates as $dup) {
+            if (strtolower($dup['anchor']) !== strtolower($anchor)) continue;
+
+            // Remove anchor links from posts only (keep pages)
+            foreach ($dup['remove_from'] as $target) {
+                if ($target['source_type'] !== 'page') {
+                    // Find and remove this specific link from the source post
+                    $source_id = $target['source_id'];
+                    $source_post = get_post($source_id);
+
+                    if (!$source_post) continue;
+
+                    $content = $source_post->post_content;
+                    $url = esc_url($target['url']);
+                    $anchor_esc = preg_quote($dup['anchor'], '/');
+
+                    // Remove the link but keep the anchor text
+                    $pattern = '/<a[^>]*href=["\']' . preg_quote($url, '/') . '["\'][^>]*>' . $anchor_esc . '<\/a>/i';
+                    $new_content = preg_replace($pattern, $dup['anchor'], $content);
+
+                    if ($new_content !== $content) {
+                        wp_update_post(array(
+                            'ID' => $source_id,
+                            'post_content' => $new_content
+                        ));
+                        $fixed++;
+                    }
+                }
+            }
+            break;
+        }
+
+        return array(
+            'success' => true,
+            'fixed' => $fixed,
+            'anchor' => $anchor
+        );
+    }
+
+    // =========================================================================
+    // SEO HEALTH MONITOR - Detect when SEO should change based on links
+    // =========================================================================
+
+    /**
+     * Analyze SEO health and detect issues
+     * Returns posts where SEO metadata may need updating based on link patterns
+     *
+     * @return array List of SEO health issues with recommendations
+     */
+    public function get_seo_health_issues() {
+        $issues = array();
+        $all_links = $this->get_all_site_links(5000);
+
+        // Build inbound anchor map
+        $inbound_anchors_by_url = array();
+        foreach ($all_links as $link) {
+            if (!isset($inbound_anchors_by_url[$link['url']])) {
+                $inbound_anchors_by_url[$link['url']] = array();
+            }
+            $inbound_anchors_by_url[$link['url']][] = strtolower($link['anchor']);
+        }
+
+        // Check each URL with inbound links
+        foreach ($inbound_anchors_by_url as $url => $anchors) {
+            $post_id = url_to_postid($url);
+            if (!$post_id) continue;
+
+            $post = get_post($post_id);
+            if (!$post || $post->post_status !== 'publish') continue;
+
+            // Get current SEO data
+            $current_title = get_post_meta($post_id, '_seopress_titles_title', true);
+            $current_desc = get_post_meta($post_id, '_seopress_titles_desc', true);
+            $current_focus = get_post_meta($post_id, '_seopress_analysis_target_kw', true);
+
+            // Analyze anchor patterns
+            $anchor_counts = array_count_values($anchors);
+            arsort($anchor_counts);
+            $top_anchors = array_slice($anchor_counts, 0, 5, true);
+            $most_used_anchor = key($top_anchors);
+            $anchor_count = current($top_anchors);
+
+            // Check if most-used anchor is missing from SEO title
+            $title_lower = strtolower($current_title);
+            $missing_from_title = !empty($most_used_anchor) &&
+                                   $anchor_count >= 2 &&
+                                   strpos($title_lower, $most_used_anchor) === false;
+
+            // Check for SEO gaps
+            $has_issue = false;
+            $issue_types = array();
+            $suggestions = array();
+
+            // Issue: High-frequency anchor not in title
+            if ($missing_from_title && $anchor_count >= 3) {
+                $has_issue = true;
+                $issue_types[] = 'anchor_not_in_title';
+                $suggestions[] = "Add '{$most_used_anchor}' to SEO title (used {$anchor_count}x in inbound links)";
+            }
+
+            // Issue: No SEO title set but has inbound links
+            if (empty($current_title) && count($anchors) >= 2) {
+                $has_issue = true;
+                $issue_types[] = 'missing_seo_title';
+                $suggestions[] = "Create SEO title based on anchor patterns: " . implode(', ', array_keys($top_anchors));
+            }
+
+            // Issue: No meta description but significant inbound links
+            if (empty($current_desc) && count($anchors) >= 3) {
+                $has_issue = true;
+                $issue_types[] = 'missing_meta_desc';
+                $suggestions[] = "Add meta description incorporating top anchor themes";
+            }
+
+            // Issue: Focus keyword doesn't match anchor patterns
+            if (!empty($current_focus) && !empty($most_used_anchor) && $anchor_count >= 3) {
+                if (strpos(strtolower($current_focus), $most_used_anchor) === false &&
+                    strpos($most_used_anchor, strtolower($current_focus)) === false) {
+                    $has_issue = true;
+                    $issue_types[] = 'focus_mismatch';
+                    $suggestions[] = "Consider updating focus keyphrase to '{$most_used_anchor}' (most-used anchor)";
+                }
+            }
+
+            if ($has_issue) {
+                $issues[] = array(
+                    'post_id' => $post_id,
+                    'post_title' => $post->post_title,
+                    'post_type' => $post->post_type,
+                    'url' => $url,
+                    'inbound_link_count' => count($anchors),
+                    'top_anchors' => $top_anchors,
+                    'current_seo' => array(
+                        'title' => $current_title,
+                        'description' => $current_desc,
+                        'focus_keyphrase' => $current_focus
+                    ),
+                    'issue_types' => $issue_types,
+                    'suggestions' => $suggestions,
+                    'severity' => count($issue_types) >= 2 ? 'high' : 'medium'
+                );
+            }
+        }
+
+        // Sort by severity and link count
+        usort($issues, function($a, $b) {
+            if ($a['severity'] !== $b['severity']) {
+                return $a['severity'] === 'high' ? -1 : 1;
+            }
+            return $b['inbound_link_count'] - $a['inbound_link_count'];
+        });
+
+        return $issues;
+    }
+
+    /**
+     * Auto-fix SEO for a specific post based on health analysis
+     *
+     * @param int $post_id Post ID to fix
+     * @return array Result with changes made
+     */
+    public function auto_fix_seo($post_id) {
+        $result = $this->generate_smart_metadata($post_id);
+
+        if (is_wp_error($result)) {
+            return array('success' => false, 'error' => $result->get_error_message());
+        }
+
+        if (isset($result['error'])) {
+            return array('success' => false, 'error' => $result['error']);
+        }
+
+        $changes = array();
+
+        if (!empty($result['title'])) {
+            update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($result['title']));
+            $changes[] = 'title';
+        }
+        if (!empty($result['description'])) {
+            update_post_meta($post_id, '_seopress_titles_desc', sanitize_textarea_field($result['description']));
+            $changes[] = 'description';
+        }
+        if (!empty($result['focus_keyphrase'])) {
+            update_post_meta($post_id, '_seopress_analysis_target_kw', sanitize_text_field($result['focus_keyphrase']));
+            $changes[] = 'focus_keyphrase';
+        }
+        if (!empty($result['tags']) && is_array($result['tags'])) {
+            wp_set_post_tags($post_id, $result['tags'], false);
+            $changes[] = 'tags';
+        }
+
+        return array(
+            'success' => true,
+            'post_id' => $post_id,
+            'changes' => $changes,
+            'new_seo' => $result
+        );
     }
 }

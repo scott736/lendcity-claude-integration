@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '11.3.5');
+define('LENDCITY_CLAUDE_VERSION', '11.4.0');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -218,6 +218,19 @@ class LendCity_Claude_Integration {
         add_action('wp_ajax_lendcity_generate_smart_metadata', array($this, 'ajax_generate_smart_metadata'));
         add_action('wp_ajax_lendcity_get_smart_metadata_posts', array($this, 'ajax_get_smart_metadata_posts'));
         add_action('wp_ajax_lendcity_bulk_smart_metadata', array($this, 'ajax_bulk_smart_metadata'));
+
+        // Meta Queue AJAX (persistent background processing)
+        add_action('wp_ajax_lendcity_init_meta_queue', array($this, 'ajax_init_meta_queue'));
+        add_action('wp_ajax_lendcity_get_meta_queue_status', array($this, 'ajax_get_meta_queue_status'));
+        add_action('wp_ajax_lendcity_clear_meta_queue', array($this, 'ajax_clear_meta_queue'));
+
+        // SEO Health Monitor AJAX
+        add_action('wp_ajax_lendcity_get_seo_health_issues', array($this, 'ajax_get_seo_health_issues'));
+        add_action('wp_ajax_lendcity_auto_fix_seo', array($this, 'ajax_auto_fix_seo'));
+
+        // Duplicate Anchor AJAX
+        add_action('wp_ajax_lendcity_get_duplicate_anchors', array($this, 'ajax_get_duplicate_anchors'));
+        add_action('wp_ajax_lendcity_fix_duplicate_anchor', array($this, 'ajax_fix_duplicate_anchor'));
 
         // Article Scheduler AJAX
         add_action('wp_ajax_lendcity_process_article', array($this, 'ajax_process_article'));
@@ -2664,6 +2677,152 @@ class LendCity_Claude_Integration {
             'success' => $success_count,
             'errors' => $error_count
         ));
+    }
+
+    // ==================== META QUEUE AJAX (Persistent Background) ====================
+
+    /**
+     * Initialize metadata queue for background processing
+     */
+    public function ajax_init_meta_queue() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $skip_existing = isset($_POST['skip_existing']) && $_POST['skip_existing'] === 'true';
+        $only_linked = isset($_POST['only_linked']) && $_POST['only_linked'] === 'true';
+
+        $smart_linker = new LendCity_Smart_Linker();
+
+        // Get posts to process
+        $post_ids = $smart_linker->get_posts_for_smart_metadata($only_linked);
+
+        if (empty($post_ids)) {
+            wp_send_json_error('No posts found to process');
+        }
+
+        $result = $smart_linker->init_meta_queue($post_ids, $skip_existing);
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result['message']);
+        }
+    }
+
+    /**
+     * Get current metadata queue status
+     */
+    public function ajax_get_meta_queue_status() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $status = $smart_linker->get_meta_queue_status();
+
+        wp_send_json_success($status);
+    }
+
+    /**
+     * Clear metadata queue
+     */
+    public function ajax_clear_meta_queue() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->clear_meta_queue();
+
+        wp_send_json_success($result);
+    }
+
+    // ==================== SEO HEALTH MONITOR AJAX ====================
+
+    /**
+     * Get SEO health issues
+     */
+    public function ajax_get_seo_health_issues() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $issues = $smart_linker->get_seo_health_issues();
+
+        wp_send_json_success(array(
+            'issues' => $issues,
+            'count' => count($issues)
+        ));
+    }
+
+    /**
+     * Auto-fix SEO for a specific post
+     */
+    public function ajax_auto_fix_seo() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $post_id = intval($_POST['post_id']);
+        if (!$post_id) {
+            wp_send_json_error('Invalid post ID');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->auto_fix_seo($post_id);
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result['error']);
+        }
+    }
+
+    // ==================== DUPLICATE ANCHOR AJAX ====================
+
+    /**
+     * Get duplicate anchors
+     */
+    public function ajax_get_duplicate_anchors() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $duplicates = $smart_linker->get_duplicate_anchors();
+
+        wp_send_json_success(array(
+            'duplicates' => $duplicates,
+            'count' => count($duplicates)
+        ));
+    }
+
+    /**
+     * Fix a specific duplicate anchor
+     */
+    public function ajax_fix_duplicate_anchor() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $anchor = sanitize_text_field($_POST['anchor']);
+        if (empty($anchor)) {
+            wp_send_json_error('Invalid anchor');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->fix_duplicate_anchor($anchor);
+
+        wp_send_json_success($result);
     }
 
     // ==================== ARTICLE SCHEDULER AJAX ====================
