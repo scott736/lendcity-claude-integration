@@ -1,6 +1,6 @@
 # LendCity Tools Plugin
 
-**Version:** 10.0.7  
+**Version:** 12.0.0
 **WordPress Plugin for AI-Powered Content Management**
 
 ## Overview
@@ -21,6 +21,14 @@ This plugin integrates Claude AI into WordPress for LendCity Mortgages, providin
 - Tracks all links with ability to remove/update
 - Priority pages and keyword targeting
 - Auto-cleanup when posts are deleted (removes from catalog + removes links pointing to deleted post)
+- **v5.0 Semantic Intelligence:**
+  - TF-IDF weighted keyword matching
+  - Synonym-aware matching (mortgage = home loan)
+  - Entity-to-cluster relevance scoring
+  - Anchor diversity tracking
+  - Reciprocal link detection
+  - Persona conflict penalties
+  - Deep page priority scoring
 
 ### Podcast Publisher
 - Monitors RSS feeds for new episodes (Mondays only)
@@ -115,6 +123,18 @@ Main logic is in:
 - v11.1.0: Enriched catalog v4.0 (topic clusters, personas, funnel stages, geographic targeting)
 - v11.1.1: Fixed dbDelta compatibility issues (direct SQL)
 - v11.2.0: Smart Metadata v2 - Runs AFTER linking for optimal SEO using catalog + inbound anchors
+- v12.0.0: **Semantic Intelligence v5.0** - Major linking improvements:
+  - TF-IDF weighted keyword matching (rare keywords worth more)
+  - Synonym-aware keyword matching (mortgage = home loan)
+  - Entity-to-cluster relevance scoring
+  - Anchor diversity tracking (penalize overused anchors)
+  - Reciprocal link detection (avoid A→B + B→A)
+  - Persona conflict penalties (don't link investor→first-time-buyer)
+  - Deep page priority (prioritize orphaned pages)
+  - Optimal anchor length scoring (2-4 words preferred)
+  - Enhanced linking prompt with summaries + anchor suggestions
+  - Increased candidate pool (15 pages, 20 posts shown to Claude)
+  - New `build_semantic_indexes()` method for catalog optimization
 
 ## Installation
 
