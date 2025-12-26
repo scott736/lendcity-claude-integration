@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Claude Integration
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 10.0.7
+ * Version: 11.0.0
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '10.0.7');
+define('LENDCITY_CLAUDE_VERSION', '11.0.0');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -1324,34 +1324,61 @@ class LendCity_Claude_Integration {
     /**
      * Check a specific podcast feed for new episodes
      * Returns true if episode was successfully processed, false otherwise
+     * Uses transient caching to reduce API calls
      */
     private function check_podcast_feed($podcast_num) {
         $rss_url = get_option("lendcity_podcast{$podcast_num}_rss", '');
         $category_name = get_option("lendcity_podcast{$podcast_num}_category", '');
-        
+
         if (empty($rss_url) || empty($category_name)) {
             lendcity_log("Podcast {$podcast_num}: Missing RSS URL or category");
             return false;
         }
-        
-        // Fetch RSS feed - bypass any caching
-        $response = wp_remote_get($rss_url, array(
-            'timeout' => 30,
-            'headers' => array(
-                'Cache-Control' => 'no-cache, no-store, must-revalidate',
-                'Pragma' => 'no-cache',
-                'Expires' => '0'
-            ),
-            'sslverify' => true
-        ));
-        
-        if (is_wp_error($response)) {
-            lendcity_log("Podcast {$podcast_num}: Failed to fetch RSS - " . $response->get_error_message());
-            return false;
+
+        // Try to get cached RSS data first (cache for 10 minutes)
+        $cache_key = 'lendcity_rss_cache_' . md5($rss_url);
+        $cached_body = get_transient($cache_key);
+
+        if ($cached_body !== false) {
+            lendcity_debug_log("Podcast {$podcast_num}: Using cached RSS data");
+            $body = $cached_body;
+        } else {
+            // Fetch RSS feed with retry logic
+            $max_retries = 3;
+            $response = false;
+
+            for ($attempt = 1; $attempt <= $max_retries; $attempt++) {
+                $response = wp_remote_get($rss_url, array(
+                    'timeout' => 30,
+                    'headers' => array(
+                        'Cache-Control' => 'no-cache, no-store, must-revalidate',
+                        'Pragma' => 'no-cache',
+                        'Expires' => '0'
+                    ),
+                    'sslverify' => true
+                ));
+
+                if (!is_wp_error($response)) {
+                    break; // Success
+                }
+
+                if ($attempt < $max_retries) {
+                    lendcity_debug_log("Podcast {$podcast_num}: RSS fetch failed, retry {$attempt}/{$max_retries}");
+                    sleep(pow(2, $attempt)); // Exponential backoff: 2, 4 seconds
+                }
+            }
+
+            if (is_wp_error($response)) {
+                lendcity_log("Podcast {$podcast_num}: Failed to fetch RSS after {$max_retries} attempts - " . $response->get_error_message());
+                return false;
+            }
+
+            $body = wp_remote_retrieve_body($response);
+
+            // Cache the RSS body for 10 minutes
+            set_transient($cache_key, $body, 10 * MINUTE_IN_SECONDS);
         }
-        
-        $body = wp_remote_retrieve_body($response);
-        
+
         // Parse XML
         libxml_use_internal_errors(true);
         $xml = simplexml_load_string($body);
@@ -1465,26 +1492,7 @@ class LendCity_Claude_Integration {
         if (empty($transcript) || strlen($transcript) < 500) {
             return array('success' => false, 'error' => 'Transcript too short or empty');
         }
-        
-        // If transcript is very long, summarize it first to capture full meaning
-        $max_transcript_length = 15000;
-        if (strlen($transcript) > $max_transcript_length) {
-            $api = new LendCity_Claude_API();
-            
-            $summary_prompt = "You are summarizing a podcast transcript for LendCity Mortgages (Canadian mortgage brokerage for investment properties).\n\n";
-            $summary_prompt .= "Create a detailed summary that captures ALL the key points, advice, strategies, and insights from this episode. ";
-            $summary_prompt .= "Include specific numbers, tips, and actionable advice mentioned. ";
-            $summary_prompt .= "The summary should be comprehensive enough that someone could write a full article from it without missing important content.\n\n";
-            $summary_prompt .= "TRANSCRIPT:\n{$transcript}\n\n";
-            $summary_prompt .= "Provide a detailed summary (aim for 2000-3000 words) covering all main topics discussed:";
-            
-            $summary_response = $api->generate_content($summary_prompt);
-            
-            if (!is_wp_error($summary_response) && !empty($summary_response)) {
-                $transcript = $summary_response;
-            }
-        }
-        
+
         // Get existing tags
         $existing_tags = get_tags(array('hide_empty' => false));
         $existing_tag_names = array();
@@ -1492,13 +1500,25 @@ class LendCity_Claude_Integration {
             $existing_tag_names[] = $tag->name;
         }
         $existing_tags_list = !empty($existing_tag_names) ? implode(', ', $existing_tag_names) : 'None yet';
-        
-        // Send to Claude for processing
+
+        // Initialize API
         $api = new LendCity_Claude_API();
-        
+
+        // OPTIMIZED: For long transcripts, use a combined prompt that processes the full
+        // transcript in a single API call instead of separate summarize + generate calls
+        $max_transcript_length = 15000;
+        $is_long_transcript = strlen($transcript) > $max_transcript_length;
+
         $prompt = "You are a friendly content writer for LendCity Mortgages (Canadian mortgage brokerage for investment properties).\n\n";
-        $prompt .= "You have a podcast transcript below. Your job is to turn it into a blog article (~1000 words).\n\n";
-        
+
+        if ($is_long_transcript) {
+            $prompt .= "IMPORTANT: This is a LONG transcript. Read the ENTIRE transcript carefully before writing.\n";
+            $prompt .= "Extract ALL key points, strategies, and actionable advice from throughout the episode.\n";
+            $prompt .= "Make sure your article captures insights from the beginning, middle, AND end of the transcript.\n\n";
+        }
+
+        $prompt .= "Your job is to turn this podcast transcript into a blog article (~1000 words).\n\n";
+
         $prompt .= "WRITING STYLE (VERY IMPORTANT):\n";
         $prompt .= "- Write like a friendly expert explaining things to a regular person\n";
         $prompt .= "- Use simple, everyday words - avoid fancy or complex vocabulary\n";
@@ -1509,7 +1529,7 @@ class LendCity_Claude_Integration {
         $prompt .= "- Sound like a real person talking, not a robot or marketing brochure\n";
         $prompt .= "- Be direct and get to the point\n";
         $prompt .= "- Use 'you' and 'your' to speak directly to the reader\n\n";
-        
+
         $prompt .= "TASKS:\n";
         $prompt .= "1. Create a NEW catchy SEO title (50-60 chars) - NOT the episode title, create something fresh. NEVER include years (2024, 2025, etc) in the title.\n";
         $prompt .= "2. Create a meta description (150-160 chars)\n";
@@ -1517,23 +1537,25 @@ class LendCity_Claude_Integration {
         $prompt .= "4. Select exactly 8 tags\n";
         $prompt .= "5. Suggest image search words (2-4 words) for Unsplash\n";
         $prompt .= "6. Create 6-8 FAQ questions and answers\n\n";
-        
+
         $prompt .= "ARTICLE RULES:\n";
         $prompt .= "- The article should be useful on its own, even without listening to the podcast\n";
         $prompt .= "- Cover the main points from the transcript\n";
         $prompt .= "- Use proper HTML: <h2>, <h3>, <p>, <ul>, <li> tags\n";
         $prompt .= "- NEVER include years (2024, 2025, etc) in titles or content - keep it evergreen\n";
         $prompt .= "- Don't mention 'this episode' or 'the podcast' in the article\n\n";
-        
+
         $prompt .= "EXISTING TAGS (reuse when relevant): " . $existing_tags_list . "\n\n";
-        
+
         $prompt .= "PODCAST EPISODE TITLE (for context only): {$episode_title}\n\n";
         $prompt .= "TRANSCRIPT:\n{$transcript}\n\n";
-        
+
         $prompt .= "Return as JSON:\n";
         $prompt .= '{"title":"NEW SEO title","description":"meta desc","content":"<p>Article HTML</p>","tags":["tag1","tag2","tag3","tag4","tag5","tag6","tag7","tag8"],"image_search":"search terms","faqs":[{"question":"Q1?","answer":"A1"},{"question":"Q2?","answer":"A2"}]}';
-        
-        $response = $api->generate_content($prompt, 8000);
+
+        // Use higher token limit for long transcripts
+        $max_tokens = $is_long_transcript ? 10000 : 8000;
+        $response = $api->generate_content($prompt, $max_tokens);
         
         if (is_wp_error($response)) {
             return array('success' => false, 'error' => $response->get_error_message());

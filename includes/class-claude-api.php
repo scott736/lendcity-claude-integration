@@ -4,13 +4,28 @@
  */
 
 class LendCity_Claude_API {
-    
+
     private $api_key;
     private $api_url = 'https://api.anthropic.com/v1/messages';
     private $model = 'claude-sonnet-4-5-20250929';
-    
+
+    // Retry settings for resilient API calls
+    private $max_retries = 3;
+    private $retry_delays = array(2, 4, 8); // Exponential backoff in seconds
+    private $debug_mode = null;
+
     public function __construct() {
         $this->api_key = get_option('lendcity_claude_api_key');
+        $this->debug_mode = get_option('lendcity_debug_mode', 'no') === 'yes';
+    }
+
+    /**
+     * Debug logging helper
+     */
+    private function debug_log($message) {
+        if ($this->debug_mode) {
+            error_log('LendCity Claude API: ' . $message);
+        }
     }
     
     /**
@@ -337,7 +352,8 @@ class LendCity_Claude_API {
     /**
      * Generate long-form content (articles, rewrites, etc.)
      * Returns raw text response from Claude
-     * 
+     * Includes retry logic with exponential backoff for resilience
+     *
      * @param string $prompt The prompt to send to Claude
      * @param int $max_tokens Maximum tokens to generate (default 4096 for ~3000 words)
      * @return string|WP_Error The generated content or error
@@ -346,7 +362,7 @@ class LendCity_Claude_API {
         if (empty($this->api_key)) {
             return new WP_Error('no_api_key', 'Claude API key is not set.');
         }
-        
+
         $body = array(
             'model' => $this->model,
             'max_tokens' => $max_tokens,
@@ -357,48 +373,78 @@ class LendCity_Claude_API {
                 )
             )
         );
-        
-        error_log('LendCity: Sending article generation request to Claude API');
-        
-        $response = wp_remote_post($this->api_url, array(
-            'headers' => array(
-                'Content-Type' => 'application/json',
-                'x-api-key' => $this->api_key,
-                'anthropic-version' => '2023-06-01'
-            ),
-            'body' => json_encode($body),
-            'timeout' => 120 // Longer timeout for content generation
-        ));
-        
-        if (is_wp_error($response)) {
-            error_log('LendCity Claude API Error: ' . $response->get_error_message());
-            return $response;
+
+        $this->debug_log('Sending article generation request to Claude API');
+
+        $last_error = '';
+
+        // Retry loop with exponential backoff
+        for ($attempt = 0; $attempt <= $this->max_retries; $attempt++) {
+            // Wait before retry (skip on first attempt)
+            if ($attempt > 0) {
+                $delay = isset($this->retry_delays[$attempt - 1]) ? $this->retry_delays[$attempt - 1] : 8;
+                $this->debug_log("Retry attempt {$attempt} after {$delay}s delay");
+                sleep($delay);
+            }
+
+            $response = wp_remote_post($this->api_url, array(
+                'headers' => array(
+                    'Content-Type' => 'application/json',
+                    'x-api-key' => $this->api_key,
+                    'anthropic-version' => '2023-06-01'
+                ),
+                'body' => json_encode($body),
+                'timeout' => 180 // Longer timeout for content generation
+            ));
+
+            // Network error - retry
+            if (is_wp_error($response)) {
+                $last_error = $response->get_error_message();
+                $this->debug_log('Network error: ' . $last_error);
+                continue;
+            }
+
+            $response_code = wp_remote_retrieve_response_code($response);
+            $response_body = wp_remote_retrieve_body($response);
+
+            $this->debug_log('Response code: ' . $response_code);
+
+            // Rate limited (429) or server error (5xx) - retry
+            if ($response_code === 429 || $response_code >= 500) {
+                $error_data = json_decode($response_body, true);
+                $last_error = isset($error_data['error']['message'])
+                    ? $error_data['error']['message']
+                    : 'HTTP ' . $response_code;
+                $this->debug_log('Rate limit or server error: ' . $last_error);
+                continue;
+            }
+
+            // Client error (4xx except 429) - don't retry
+            if ($response_code !== 200) {
+                $error_data = json_decode($response_body, true);
+                $error_message = isset($error_data['error']['message'])
+                    ? $error_data['error']['message']
+                    : 'Unknown API error (code: ' . $response_code . ')';
+                error_log('LendCity Claude API Error: ' . $error_message);
+                return new WP_Error('api_error', $error_message);
+            }
+
+            // Success - parse response
+            $data = json_decode($response_body, true);
+
+            if (!isset($data['content'][0]['text'])) {
+                error_log('LendCity: Unexpected Claude API response format');
+                return new WP_Error('invalid_response', 'Unexpected response format from Claude API');
+            }
+
+            $content = $data['content'][0]['text'];
+            $this->debug_log('Successfully received ' . strlen($content) . ' characters');
+
+            return $content;
         }
-        
-        $response_code = wp_remote_retrieve_response_code($response);
-        $response_body = wp_remote_retrieve_body($response);
-        
-        error_log('LendCity: Claude API response code: ' . $response_code);
-        
-        if ($response_code !== 200) {
-            $error_data = json_decode($response_body, true);
-            $error_message = isset($error_data['error']['message']) 
-                ? $error_data['error']['message'] 
-                : 'Unknown API error (code: ' . $response_code . ')';
-            error_log('LendCity Claude API Error: ' . $error_message);
-            return new WP_Error('api_error', $error_message);
-        }
-        
-        $data = json_decode($response_body, true);
-        
-        if (!isset($data['content'][0]['text'])) {
-            error_log('LendCity: Unexpected Claude API response format');
-            return new WP_Error('invalid_response', 'Unexpected response format from Claude API');
-        }
-        
-        $content = $data['content'][0]['text'];
-        error_log('LendCity: Successfully received ' . strlen($content) . ' characters from Claude');
-        
-        return $content;
+
+        // All retries exhausted
+        error_log('LendCity Claude API: All retries exhausted - ' . $last_error);
+        return new WP_Error('api_error', 'API request failed after ' . ($this->max_retries + 1) . ' attempts: ' . $last_error);
     }
 }

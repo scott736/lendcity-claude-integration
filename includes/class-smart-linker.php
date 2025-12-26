@@ -21,21 +21,34 @@ if (!defined('ABSPATH')) {
 }
 
 class LendCity_Smart_Linker {
-    
+
     private $api_key;
     private $catalog_option = 'lendcity_post_catalog';
+    private $catalog_meta_option = 'lendcity_post_catalog_meta'; // NEW: Catalog metadata (indexes, stats)
     private $link_meta_key = '_lendcity_smart_links';
     private $original_content_meta = '_lendcity_original_content';
     private $queue_option = 'lendcity_smart_linker_queue';
     private $queue_status_option = 'lendcity_smart_linker_queue_status';
     private $catalog_cache = null; // In-memory cache to avoid repeated DB queries
-    
+    private $catalog_indexes = null; // In-memory topic/keyword indexes
+
     // SEO Enhancement meta keys
     private $priority_meta_key = '_lendcity_link_priority'; // 1-5, higher = more links
     private $keywords_meta_key = '_lendcity_target_keywords'; // comma-separated keywords for anchor text
-    
+
+    // Performance: Cached options to avoid repeated DB queries
+    private $debug_mode = null;
+    private $auto_link_enabled = null;
+
+    // API retry settings
+    private $max_retries = 3;
+    private $retry_delays = array(2, 4, 8); // Exponential backoff in seconds
+
     public function __construct() {
         $this->api_key = get_option('lendcity_claude_api_key');
+        // Cache frequently accessed options
+        $this->debug_mode = get_option('lendcity_debug_mode', 'no') === 'yes';
+        $this->auto_link_enabled = get_option('lendcity_smart_linker_auto', 'yes') === 'yes';
         
         // Hook into post publish to auto-catalog and auto-link
         add_action('transition_post_status', array($this, 'on_post_publish'), 10, 3);
@@ -56,9 +69,10 @@ class LendCity_Smart_Linker {
     
     /**
      * Debug logging helper - only logs if debug mode is enabled
+     * Uses cached value to avoid repeated DB queries
      */
     private function debug_log($message) {
-        if (get_option('lendcity_debug_mode', 'no') === 'yes') {
+        if ($this->debug_mode) {
             error_log('LendCity Smart Linker: ' . $message);
         }
     }
@@ -84,9 +98,9 @@ class LendCity_Smart_Linker {
         if ($post->post_type !== 'post') {
             return;
         }
-        
-        // Check if auto-linking is enabled
-        if (get_option('lendcity_smart_linker_auto', 'yes') !== 'yes') {
+
+        // Check if auto-linking is enabled (use cached value)
+        if (!$this->auto_link_enabled) {
             return;
         }
         
@@ -342,61 +356,74 @@ class LendCity_Smart_Linker {
         // Separate pages and posts from catalog
         $available_pages = array();
         $available_posts = array();
-        
+
         foreach ($catalog as $id => $entry) {
             if ($id == $source_id) continue;
             if (in_array($entry['url'], $linked_urls)) continue;
-            
+
             if (isset($entry['is_page']) && $entry['is_page']) {
                 $available_pages[$id] = $entry;
             } else {
                 $available_posts[$id] = $entry;
             }
         }
-        
+
+        // Get source entry for pre-filtering
+        $source_entry = isset($catalog[$source_id]) ? $catalog[$source_id] : null;
+
+        // PRE-FILTER: Score and rank post candidates by relevance
+        if (!empty($available_posts) && $source_entry) {
+            $available_posts = $this->prefilter_candidates($available_posts, $source_entry, 20);
+        }
+
         // Get source post content for context - FULL article for proper link distribution
         $source_content = wp_strip_all_tags($source->post_content);
         if (strlen($source_content) > 10000) {
             $source_content = substr($source_content, 0, 10000) . '...';
         }
-        
-        $source_entry = isset($catalog[$source_id]) ? $catalog[$source_id] : null;
+
         $source_topics = $source_entry ? implode(', ', $source_entry['main_topics']) : '';
-        
-        // Build prompt
-        $prompt = "You are an SEO expert creating internal links for a blog post.\n\n";
+
+        // Build prompt with intelligence data
+        $prompt = "You are an expert internal linking strategist for a mortgage/real estate website.\n\n";
         $prompt .= "=== SOURCE POST (we are adding links TO this post's content) ===\n";
         $prompt .= "Title: " . $source->post_title . "\n";
         $prompt .= "Topics: " . $source_topics . "\n";
+        // Include intelligence fields if available
+        if ($source_entry) {
+            $prompt .= "Audience: " . (isset($source_entry['target_audience']) ? $source_entry['target_audience'] : 'all') . "\n";
+            $prompt .= "Difficulty: " . (isset($source_entry['difficulty_level']) ? $source_entry['difficulty_level'] : 'intermediate') . "\n";
+            $prompt .= "Funnel Stage: " . (isset($source_entry['funnel_stage']) ? $source_entry['funnel_stage'] : 'awareness') . "\n";
+        }
         $prompt .= "Content Preview:\n" . $source_content . "\n\n";
-        
+
         if (!empty($used_anchors)) {
             $prompt .= "ALREADY USED ANCHORS IN THIS POST (DO NOT USE THESE):\n";
             $prompt .= implode(', ', $used_anchors) . "\n\n";
         }
-        
+
         $links_requested = array();
-        
+
         // Page linking section - now with priority and keywords
         if ($page_slots > 0 && !empty($available_pages)) {
-            $prompt .= "=== AVAILABLE PAGES ===\n";
+            $prompt .= "=== AVAILABLE PAGES (service pages - high value) ===\n";
             $count = 0;
-            
+
             // Sort pages by priority (highest first)
             uasort($available_pages, function($a, $b) {
                 $prio_a = $this->get_page_priority($a['post_id'] ?? 0);
                 $prio_b = $this->get_page_priority($b['post_id'] ?? 0);
                 return $prio_b - $prio_a;
             });
-            
+
             foreach ($available_pages as $id => $entry) {
-                if ($count >= 10) break; // Reduced from 15
+                if ($count >= 10) break;
                 $priority = $this->get_page_priority($id);
                 $keywords = $this->get_page_keywords($id);
-                
-                $prompt .= "ID:" . $id . " | " . $entry['title'] . " | P:" . $priority;
+
+                $prompt .= "ID:" . $id . " | " . $entry['title'] . " | Priority:" . $priority;
                 if ($keywords) {
-                    $prompt .= " | ANCHORS: " . $keywords;
+                    $prompt .= " | Preferred Anchors: " . $keywords;
                 }
                 $prompt .= "\n";
                 $count++;
@@ -404,29 +431,40 @@ class LendCity_Smart_Linker {
             $prompt .= "\n";
             $links_requested[] = "Up to " . $page_slots . " page links";
         }
-        
-        // Post linking section
+
+        // Post linking section - now with relevance scores
         if ($post_slots > 0 && !empty($available_posts)) {
-            $prompt .= "=== AVAILABLE POSTS ===\n";
+            $prompt .= "=== AVAILABLE POSTS (ranked by relevance to source) ===\n";
             $count = 0;
             foreach ($available_posts as $id => $entry) {
-                if ($count >= 15) break; // Reduced from 30
-                $prompt .= "ID:" . $id . " | " . $entry['title'] . "\n";
+                if ($count >= 15) break;
+                $relevance = isset($entry['_relevance_score']) ? $entry['_relevance_score'] : 0;
+                $prompt .= "ID:" . $id . " | Rel:" . $relevance . " | " . $entry['title'];
+                $prompt .= " | " . (isset($entry['difficulty_level']) ? $entry['difficulty_level'] : 'intermediate') . "\n";
                 $count++;
             }
             $prompt .= "\n";
             $links_requested[] = "Up to " . $post_slots . " post links";
         }
-        
+
         $prompt .= "=== TASK ===\n";
         $prompt .= "Find: " . implode(' + ', $links_requested) . "\n\n";
-        $prompt .= "RULES:\n";
-        $prompt .= "1. Anchor text: 2-5 words that exist in source content and describe the target\n";
-        $prompt .= "2. EACH ANCHOR MUST BE UNIQUE - never use the same anchor text twice in one article\n";
-        $prompt .= "3. Higher priority pages (P:4-5) preferred. Use ANCHORS keywords if listed.\n";
-        $prompt .= "4. Spread links throughout article (beginning, middle, end). Max 1 link per paragraph.\n";
-        $prompt .= "5. Quality over quantity - skip if no good match.\n";
-        $prompt .= "6. If you can't find a meaningful anchor phrase, DO NOT force a bad one - skip that target\n\n";
+
+        $prompt .= "SELECTION CRITERIA:\n";
+        $prompt .= "- Prioritize higher relevance scores (Rel:)\n";
+        $prompt .= "- Consider audience and difficulty alignment\n";
+        $prompt .= "- Higher priority pages (Priority:4-5) should get links first\n";
+        $prompt .= "- Use Preferred Anchors when listed for pages\n\n";
+
+        $prompt .= "ANCHOR TEXT RULES (CRITICAL - violations will be rejected):\n";
+        $prompt .= "1. MUST be a COMPLETE phrase that makes sense standalone (2-5 words)\n";
+        $prompt .= "2. MUST describe the TARGET page topic\n";
+        $prompt .= "3. GOOD: 'BRRRR investment strategy', 'mortgage pre-approval', 'rental property financing'\n";
+        $prompt .= "4. BAD (will be rejected): 'with the', 'investment with', 'for your', 'the market'\n";
+        $prompt .= "5. Do NOT start with: the, a, an, this, that, with, and, or, in, on, to\n";
+        $prompt .= "6. EACH ANCHOR MUST BE UNIQUE in this article\n";
+        $prompt .= "7. Spread links throughout (beginning, middle, end). Max 1 link per paragraph.\n\n";
+
         $prompt .= "Respond with ONLY a JSON array:\n";
         $prompt .= '[{"target_id": 123, "anchor_text": "meaningful descriptive phrase", "is_page": true/false}, ...]\n';
         $prompt .= 'Return empty array [] if no good opportunities.\n';
@@ -449,34 +487,42 @@ class LendCity_Smart_Linker {
         // Insert links
         $links_created = array();
         $errors = array();
+        $skipped_anchors = 0;
         $page_links_added = $existing_page_links;
         $post_links_added = $current_link_count - $existing_page_links;
         $anchors_used_this_session = array(); // Track anchors used in this batch
-        
+
         foreach ($suggestions as $suggestion) {
             $target_id = intval($suggestion['target_id']);
             $anchor = sanitize_text_field($suggestion['anchor_text']);
             $is_page = !empty($suggestion['is_page']);
-            
+
             if (!$target_id || !$anchor) continue;
-            
+
+            // Validate anchor text quality before inserting
+            if (!$this->validate_anchor_text($anchor)) {
+                $this->debug_log("Rejected poor anchor text: '{$anchor}' for target {$target_id}");
+                $skipped_anchors++;
+                continue;
+            }
+
             // Check for duplicate anchor text (case-insensitive)
             $anchor_lower = strtolower(trim($anchor));
             if (in_array($anchor_lower, $used_anchors) || in_array($anchor_lower, $anchors_used_this_session)) {
                 $errors[] = "Skipped duplicate anchor: '{$anchor}'";
                 continue;
             }
-            
+
             // Enforce 3 page max, 7 post max
             if ($is_page && $page_links_added >= 3) continue;
             if (!$is_page && $post_links_added >= 7) continue;
-            
+
             // Check we're not over total limit (10 = 3 pages + 7 posts)
             if (count($links_created) + $current_link_count >= 10) break;
-            
+
             $target_entry = isset($catalog[$target_id]) ? $catalog[$target_id] : null;
             if (!$target_entry) continue;
-            
+
             $result = $this->insert_link_in_post($source_id, $anchor, $target_entry['url'], $target_id, $is_page);
             
             if ($result['success']) {
@@ -496,15 +542,20 @@ class LendCity_Smart_Linker {
                 $errors[] = $result['message'];
             }
         }
-        
+
+        if ($skipped_anchors > 0) {
+            $this->debug_log("Skipped {$skipped_anchors} links due to poor anchor text quality");
+        }
+
         return array(
             'success' => true,
             'links_created' => count($links_created),
             'links' => $links_created,
-            'errors' => $errors
+            'errors' => $errors,
+            'skipped_anchors' => $skipped_anchors
         );
     }
-    
+
     /**
      * Build catalog for a single post or page
      */
@@ -542,40 +593,48 @@ class LendCity_Smart_Linker {
         $prompt .= "TITLE: " . $post->post_title . "\n";
         $prompt .= "URL: " . get_permalink($post_id) . "\n\n";
         $prompt .= "CONTENT:\n" . $content . "\n\n";
-        
+
         if ($is_page) {
             $prompt .= "NOTE: This is a HIGH-VALUE SERVICE PAGE for a mortgage business. Even if content is minimal, analyze based on title and URL.\n\n";
         }
-        
-        $prompt .= "Respond with ONLY a JSON object:\n";
+
+        $prompt .= "Respond with ONLY a JSON object. Be thorough and accurate:\n";
         $prompt .= "{\n";
-        $prompt .= '  "summary": "4-5 sentence summary covering the main points, key advice, and unique insights from the content",' . "\n";
+        $prompt .= '  "summary": "4-5 sentence summary covering the main points, key advice, and unique insights",' . "\n";
         $prompt .= '  "main_topics": ["topic1", "topic2", "topic3", "topic4", "topic5", "topic6"],' . "\n";
         $prompt .= '  "semantic_keywords": ["keyword1", "keyword2", "...8-10 related terms, synonyms, and variations"],' . "\n";
         $prompt .= '  "entities": ["specific names, places, products, companies, or programs mentioned"],' . "\n";
         $prompt .= '  "content_themes": ["broader themes like investment, financing, Canadian real estate, etc"],' . "\n";
-        $prompt .= '  "good_anchor_phrases": ["natural phrases other posts might use to link here"]' . "\n";
+        $prompt .= '  "good_anchor_phrases": ["5-8 natural 2-5 word phrases that would make excellent anchor text for links TO this page"],' . "\n";
+        // NEW: Intelligence fields for smarter linking
+        $prompt .= '  "reader_intent": "educational OR transactional OR navigational - what is the reader trying to accomplish?",' . "\n";
+        $prompt .= '  "difficulty_level": "beginner OR intermediate OR advanced - how sophisticated is this content?",' . "\n";
+        $prompt .= '  "funnel_stage": "awareness OR consideration OR decision - where is this in the buyer journey?",' . "\n";
+        $prompt .= '  "content_type": "how-to OR guide OR comparison OR case-study OR FAQ OR news OR service-page",' . "\n";
+        $prompt .= '  "target_audience": "new investors OR experienced investors OR realtors OR homeowners OR all",' . "\n";
+        $prompt .= '  "topic_cluster": "main topic cluster this belongs to, e.g. brrrr-strategy, mortgage-types, market-analysis",' . "\n";
+        $prompt .= '  "is_pillar_content": true or false - is this comprehensive cornerstone content?' . "\n";
         $prompt .= "}\n";
         
-        $response = $this->call_claude_api($prompt, 800);
-        
+        $response = $this->call_claude_api($prompt, 1200); // Increased for new fields
+
         if (!$response['success']) {
             error_log('LendCity Smart Linker: API failed for post ' . $post_id . ' - ' . ($response['error'] ?? 'unknown error'));
             return false;
         }
-        
+
         $data = json_decode($response['text'], true);
         if (!$data && preg_match('/\{.*\}/s', $response['text'], $matches)) {
             $data = json_decode($matches[0], true);
         }
-        
+
         if (!$data) {
             error_log('LendCity Smart Linker: Failed to parse catalog for post ' . $post_id . ' - Response: ' . substr($response['text'], 0, 200));
             return false;
         }
-        
+
         error_log('LendCity Smart Linker: Successfully cataloged ' . $post->post_type . ' ' . $post_id . ' - ' . $post->post_title);
-        
+
         return array(
             'post_id' => $post_id,
             'type' => $post->post_type,
@@ -588,6 +647,14 @@ class LendCity_Smart_Linker {
             'entities' => isset($data['entities']) ? $data['entities'] : array(),
             'content_themes' => isset($data['content_themes']) ? $data['content_themes'] : array(),
             'good_anchor_phrases' => isset($data['good_anchor_phrases']) ? $data['good_anchor_phrases'] : array(),
+            // NEW: Intelligence fields for smarter linking
+            'reader_intent' => isset($data['reader_intent']) ? strtolower($data['reader_intent']) : 'educational',
+            'difficulty_level' => isset($data['difficulty_level']) ? strtolower($data['difficulty_level']) : 'intermediate',
+            'funnel_stage' => isset($data['funnel_stage']) ? strtolower($data['funnel_stage']) : 'awareness',
+            'content_type' => isset($data['content_type']) ? strtolower($data['content_type']) : 'guide',
+            'target_audience' => isset($data['target_audience']) ? strtolower($data['target_audience']) : 'all',
+            'topic_cluster' => isset($data['topic_cluster']) ? sanitize_title($data['topic_cluster']) : '',
+            'is_pillar_content' => isset($data['is_pillar_content']) ? (bool)$data['is_pillar_content'] : false,
             'updated_at' => current_time('mysql')
         );
     }
@@ -650,18 +717,26 @@ class LendCity_Smart_Linker {
         $prompt .= "[\n";
         $prompt .= "  {\n";
         $prompt .= '    "id": POST_ID_NUMBER,' . "\n";
-        $prompt .= '    "summary": "4-5 sentence summary covering the main points, key advice, and unique insights from the article",' . "\n";
+        $prompt .= '    "summary": "4-5 sentence summary covering the main points, key advice, and unique insights",' . "\n";
         $prompt .= '    "main_topics": ["6 main topics from throughout the article"],' . "\n";
-        $prompt .= '    "semantic_keywords": ["8-10 related terms, synonyms, variations found anywhere in content"],' . "\n";
+        $prompt .= '    "semantic_keywords": ["8-10 related terms, synonyms, variations"],' . "\n";
         $prompt .= '    "entities": ["specific names, places, programs, products mentioned"],' . "\n";
         $prompt .= '    "content_themes": ["broader themes like investment, financing, Canadian real estate"],' . "\n";
-        $prompt .= '    "good_anchor_phrases": ["natural phrases from any part of article that other posts could use to link here"]' . "\n";
+        $prompt .= '    "good_anchor_phrases": ["5-8 natural 2-5 word phrases for anchor text"],' . "\n";
+        // NEW: Intelligence fields
+        $prompt .= '    "reader_intent": "educational/transactional/navigational",' . "\n";
+        $prompt .= '    "difficulty_level": "beginner/intermediate/advanced",' . "\n";
+        $prompt .= '    "funnel_stage": "awareness/consideration/decision",' . "\n";
+        $prompt .= '    "content_type": "how-to/guide/comparison/case-study/FAQ/news/service-page",' . "\n";
+        $prompt .= '    "target_audience": "new investors/experienced investors/realtors/homeowners/all",' . "\n";
+        $prompt .= '    "topic_cluster": "main-topic-slug like brrrr-strategy or mortgage-types",' . "\n";
+        $prompt .= '    "is_pillar_content": true/false' . "\n";
         $prompt .= "  }\n";
         $prompt .= "]\n";
         $prompt .= "Return one object per article in the same order. Analyze the ENTIRE content, not just the beginning.";
         
-        // Large token limit for batch response
-        $response = $this->call_claude_api($prompt, 4000);
+        // Large token limit for batch response (increased for new fields)
+        $response = $this->call_claude_api($prompt, 6000);
         
         if (!$response['success']) {
             error_log('LendCity Smart Linker: Batch API failed - ' . ($response['error'] ?? 'unknown error'));
@@ -719,10 +794,18 @@ class LendCity_Smart_Linker {
                 'entities' => isset($data['entities']) ? $data['entities'] : array(),
                 'content_themes' => isset($data['content_themes']) ? $data['content_themes'] : array(),
                 'good_anchor_phrases' => isset($data['good_anchor_phrases']) ? $data['good_anchor_phrases'] : array(),
+                // NEW: Intelligence fields for smarter linking
+                'reader_intent' => isset($data['reader_intent']) ? strtolower($data['reader_intent']) : 'educational',
+                'difficulty_level' => isset($data['difficulty_level']) ? strtolower($data['difficulty_level']) : 'intermediate',
+                'funnel_stage' => isset($data['funnel_stage']) ? strtolower($data['funnel_stage']) : 'awareness',
+                'content_type' => isset($data['content_type']) ? strtolower($data['content_type']) : 'guide',
+                'target_audience' => isset($data['target_audience']) ? strtolower($data['target_audience']) : 'all',
+                'topic_cluster' => isset($data['topic_cluster']) ? sanitize_title($data['topic_cluster']) : '',
+                'is_pillar_content' => isset($data['is_pillar_content']) ? (bool)$data['is_pillar_content'] : false,
                 'updated_at' => current_time('mysql')
             );
         }
-        
+
         error_log('LendCity Smart Linker: Batch cataloged ' . count($entries) . ' of ' . count($post_ids) . ' posts in single API call');
         
         return $entries;
@@ -752,7 +835,7 @@ class LendCity_Smart_Linker {
         $catalog = $this->get_catalog();
         $posts = 0;
         $pages = 0;
-        
+
         foreach ($catalog as $entry) {
             if (isset($entry['is_page']) && $entry['is_page']) {
                 $pages++;
@@ -760,10 +843,203 @@ class LendCity_Smart_Linker {
                 $posts++;
             }
         }
-        
+
         return array('total' => count($catalog), 'posts' => $posts, 'pages' => $pages);
     }
-    
+
+    // ==================== INTELLIGENCE: PRE-FILTERING & SCORING ====================
+
+    /**
+     * Calculate relevance score between two catalog entries
+     * Higher score = more relevant (better link candidate)
+     * Uses topic overlap, keyword matching, audience compatibility, and funnel alignment
+     */
+    private function calculate_relevance_score($source_entry, $target_entry) {
+        $score = 0;
+
+        // Topic overlap (most important) - up to 30 points
+        $source_topics = isset($source_entry['main_topics']) ? array_map('strtolower', $source_entry['main_topics']) : array();
+        $target_topics = isset($target_entry['main_topics']) ? array_map('strtolower', $target_entry['main_topics']) : array();
+        $topic_overlap = count(array_intersect($source_topics, $target_topics));
+        $score += min($topic_overlap * 5, 30);
+
+        // Keyword overlap - up to 20 points
+        $source_keywords = isset($source_entry['semantic_keywords']) ? array_map('strtolower', $source_entry['semantic_keywords']) : array();
+        $target_keywords = isset($target_entry['semantic_keywords']) ? array_map('strtolower', $target_entry['semantic_keywords']) : array();
+        $keyword_overlap = count(array_intersect($source_keywords, $target_keywords));
+        $score += min($keyword_overlap * 2, 20);
+
+        // Theme overlap - up to 15 points
+        $source_themes = isset($source_entry['content_themes']) ? array_map('strtolower', $source_entry['content_themes']) : array();
+        $target_themes = isset($target_entry['content_themes']) ? array_map('strtolower', $target_entry['content_themes']) : array();
+        $theme_overlap = count(array_intersect($source_themes, $target_themes));
+        $score += min($theme_overlap * 5, 15);
+
+        // Same topic cluster - 15 points bonus
+        $source_cluster = isset($source_entry['topic_cluster']) ? $source_entry['topic_cluster'] : '';
+        $target_cluster = isset($target_entry['topic_cluster']) ? $target_entry['topic_cluster'] : '';
+        if (!empty($source_cluster) && $source_cluster === $target_cluster) {
+            $score += 15;
+        }
+
+        // Audience compatibility - up to 10 points
+        $source_audience = isset($source_entry['target_audience']) ? $source_entry['target_audience'] : 'all';
+        $target_audience = isset($target_entry['target_audience']) ? $target_entry['target_audience'] : 'all';
+        if ($source_audience === $target_audience || $source_audience === 'all' || $target_audience === 'all') {
+            $score += 10;
+        } elseif ($this->audiences_compatible($source_audience, $target_audience)) {
+            $score += 5;
+        }
+
+        // Difficulty level flow (beginner -> intermediate -> advanced) - up to 10 points
+        $source_level = isset($source_entry['difficulty_level']) ? $source_entry['difficulty_level'] : 'intermediate';
+        $target_level = isset($target_entry['difficulty_level']) ? $target_entry['difficulty_level'] : 'intermediate';
+        if ($this->difficulty_flow_valid($source_level, $target_level)) {
+            $score += 10;
+        }
+
+        // Funnel stage progression - up to 10 points
+        $source_funnel = isset($source_entry['funnel_stage']) ? $source_entry['funnel_stage'] : 'awareness';
+        $target_funnel = isset($target_entry['funnel_stage']) ? $target_entry['funnel_stage'] : 'awareness';
+        if ($this->funnel_flow_valid($source_funnel, $target_funnel)) {
+            $score += 10;
+        }
+
+        // Bonus for linking to pillar content - 5 points
+        if (isset($target_entry['is_pillar_content']) && $target_entry['is_pillar_content']) {
+            $score += 5;
+        }
+
+        return $score;
+    }
+
+    /**
+     * Check if audiences are compatible for linking
+     */
+    private function audiences_compatible($source, $target) {
+        // Define compatible audience pairs
+        $compatible = array(
+            'new investors' => array('all', 'homeowners'),
+            'experienced investors' => array('all', 'realtors'),
+            'realtors' => array('all', 'experienced investors'),
+            'homeowners' => array('all', 'new investors'),
+        );
+
+        if (isset($compatible[$source]) && in_array($target, $compatible[$source])) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Check if difficulty progression is valid (same or one level up)
+     */
+    private function difficulty_flow_valid($source, $target) {
+        $levels = array('beginner' => 1, 'intermediate' => 2, 'advanced' => 3);
+        $source_level = isset($levels[$source]) ? $levels[$source] : 2;
+        $target_level = isset($levels[$target]) ? $levels[$target] : 2;
+
+        // Valid: same level, or target is one level higher (reader progresses)
+        return ($source_level === $target_level || $target_level === $source_level + 1);
+    }
+
+    /**
+     * Check if funnel progression is valid
+     */
+    private function funnel_flow_valid($source, $target) {
+        $stages = array('awareness' => 1, 'consideration' => 2, 'decision' => 3);
+        $source_stage = isset($stages[$source]) ? $stages[$source] : 1;
+        $target_stage = isset($stages[$target]) ? $stages[$target] : 1;
+
+        // Valid: same stage, or target is next stage (moves user down funnel)
+        return ($source_stage === $target_stage || $target_stage === $source_stage + 1);
+    }
+
+    /**
+     * Pre-filter and score candidates before sending to Claude
+     * Returns top N candidates sorted by relevance score
+     */
+    private function prefilter_candidates($candidates, $reference_entry, $max_candidates = 20) {
+        $scored = array();
+
+        foreach ($candidates as $id => $entry) {
+            $score = $this->calculate_relevance_score($entry, $reference_entry);
+            $scored[$id] = array(
+                'entry' => $entry,
+                'score' => $score
+            );
+        }
+
+        // Sort by score descending
+        uasort($scored, function($a, $b) {
+            return $b['score'] - $a['score'];
+        });
+
+        // Return top candidates
+        $result = array();
+        $count = 0;
+        foreach ($scored as $id => $data) {
+            if ($count >= $max_candidates) break;
+            // Only include if score is above minimum threshold
+            if ($data['score'] >= 10) {
+                $result[$id] = $data['entry'];
+                $result[$id]['_relevance_score'] = $data['score']; // Include score for prompt context
+                $count++;
+            }
+        }
+
+        $this->debug_log('Pre-filtered ' . count($candidates) . ' candidates down to ' . count($result) . ' (threshold: 10+)');
+
+        return $result;
+    }
+
+    /**
+     * Validate anchor text quality
+     * Returns true if anchor is suitable, false if not
+     */
+    private function validate_anchor_text($anchor) {
+        // Trim and normalize
+        $anchor = trim($anchor);
+
+        // Too short (less than 2 words typically)
+        if (strlen($anchor) < 5) {
+            return false;
+        }
+
+        // Too long (more than 8 words typically awkward)
+        if (str_word_count($anchor) > 8) {
+            return false;
+        }
+
+        // Starts with common bad patterns
+        $bad_starts = array('the ', 'a ', 'an ', 'this ', 'that ', 'with ', 'and ', 'or ', 'in ', 'on ', 'to ');
+        foreach ($bad_starts as $bad) {
+            if (stripos($anchor, $bad) === 0) {
+                return false;
+            }
+        }
+
+        // Ends with bad patterns
+        $bad_ends = array(' the', ' a', ' an', ' and', ' or', ' to', ' in', ' on', ' with');
+        foreach ($bad_ends as $bad) {
+            if (substr(strtolower($anchor), -strlen($bad)) === $bad) {
+                return false;
+            }
+        }
+
+        // Contains only stopwords
+        $stopwords = array('the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could', 'should', 'may', 'might', 'must', 'shall', 'can', 'need', 'dare', 'ought', 'used', 'it', 'its');
+        $words = preg_split('/\s+/', strtolower($anchor));
+        $meaningful_words = array_diff($words, $stopwords);
+        if (count($meaningful_words) < 1) {
+            return false;
+        }
+
+        return true;
+    }
+
+    // ==================== END INTELLIGENCE HELPERS ====================
+
     /**
      * REVERSED LOGIC: Find posts that should link TO a target page/post
      * and insert links in those source posts
@@ -813,45 +1089,66 @@ class LendCity_Smart_Linker {
         if (empty($potential_sources)) {
             return array('success' => false, 'message' => 'No eligible source posts found (all may have 8 links already)');
         }
-        
-        // Build prompt to find best sources and anchor text
-        $prompt = "You are an SEO expert finding internal linking opportunities.\n\n";
+
+        // PRE-FILTER: Score and rank candidates by relevance before sending to Claude
+        $filtered_sources = $this->prefilter_candidates($potential_sources, $target_entry, 25);
+
+        if (empty($filtered_sources)) {
+            return array('success' => false, 'message' => 'No relevant source posts found after filtering');
+        }
+
+        // Build prompt with intelligence data
+        $prompt = "You are an expert internal linking strategist for a mortgage/real estate website.\n\n";
         $prompt .= "=== TARGET PAGE (we want links TO this page) ===\n";
         $prompt .= "Title: " . $target_entry['title'] . "\n";
         $prompt .= "URL: " . $target_entry['url'] . "\n";
         $prompt .= "Topics: " . implode(', ', $target_entry['main_topics']) . "\n";
         $prompt .= "Summary: " . $target_entry['summary'] . "\n";
-        $prompt .= "Good anchor phrases: " . implode(', ', $target_entry['good_anchor_phrases']) . "\n\n";
-        
-        $prompt .= "=== POTENTIAL SOURCE POSTS (posts that could link TO the target) ===\n";
+        $prompt .= "Good anchor phrases: " . implode(', ', $target_entry['good_anchor_phrases']) . "\n";
+        // Include intelligence fields
+        $prompt .= "Reader Intent: " . (isset($target_entry['reader_intent']) ? $target_entry['reader_intent'] : 'educational') . "\n";
+        $prompt .= "Difficulty: " . (isset($target_entry['difficulty_level']) ? $target_entry['difficulty_level'] : 'intermediate') . "\n";
+        $prompt .= "Funnel Stage: " . (isset($target_entry['funnel_stage']) ? $target_entry['funnel_stage'] : 'awareness') . "\n";
+        $prompt .= "Audience: " . (isset($target_entry['target_audience']) ? $target_entry['target_audience'] : 'all') . "\n";
+        $prompt .= "Is Pillar Content: " . (isset($target_entry['is_pillar_content']) && $target_entry['is_pillar_content'] ? 'YES' : 'no') . "\n\n";
+
+        $prompt .= "=== PRE-FILTERED SOURCE POSTS (ranked by relevance) ===\n";
         $count = 0;
-        foreach ($potential_sources as $id => $entry) {
-            if ($count >= 30) break; // Limit for prompt size
-            $prompt .= "ID: " . $id . " | Title: " . $entry['title'] . "\n";
+        foreach ($filtered_sources as $id => $entry) {
+            $relevance = isset($entry['_relevance_score']) ? $entry['_relevance_score'] : 0;
+            $prompt .= "ID: " . $id . " | Relevance: " . $relevance . " | Title: " . $entry['title'] . "\n";
             $prompt .= "Topics: " . implode(', ', $entry['main_topics']) . "\n";
+            $prompt .= "Audience: " . (isset($entry['target_audience']) ? $entry['target_audience'] : 'all');
+            $prompt .= " | Difficulty: " . (isset($entry['difficulty_level']) ? $entry['difficulty_level'] : 'intermediate') . "\n";
             // Include existing anchors to avoid
             if (!empty($used_anchors_by_post[$id])) {
-                $prompt .= "ALREADY USED ANCHORS (DO NOT USE THESE): " . implode(', ', $used_anchors_by_post[$id]) . "\n";
+                $prompt .= "ALREADY USED ANCHORS (DO NOT USE): " . implode(', ', $used_anchors_by_post[$id]) . "\n";
             }
             $prompt .= "\n";
             $count++;
         }
-        
+
         $prompt .= "=== TASK ===\n";
-        $prompt .= "Select source posts that have genuine topical relevance to link to the target.\n";
-        $prompt .= "For each, suggest anchor text that would naturally fit in that post.\n\n";
-        $prompt .= "ANCHOR TEXT RULES (CRITICAL):\n";
-        $prompt .= "1. Anchor text MUST be a COMPLETE, MEANINGFUL phrase (not fragments like 'investment with' or 'the property')\n";
-        $prompt .= "2. Anchor text should DESCRIBE what the TARGET page is about\n";
-        $prompt .= "3. Good examples: 'real estate investing strategies', 'mortgage pre-approval process', 'Ontario rental properties'\n";
-        $prompt .= "4. BAD examples: 'with the', 'investment with', 'for your', 'the market' (meaningless fragments)\n";
-        $prompt .= "5. 2-5 words that make sense as a standalone description of the target\n";
-        $prompt .= "6. CRITICAL: Do NOT use anchor text already used in a post (check ALREADY USED ANCHORS)\n";
-        $prompt .= "7. Each anchor text must be UNIQUE\n\n";
+        $prompt .= "Select the BEST source posts to link to the target. Consider:\n";
+        $prompt .= "- Topic relevance (shared topics/themes)\n";
+        $prompt .= "- Audience alignment (same or compatible audiences)\n";
+        $prompt .= "- User journey (awareness → consideration → decision progression)\n";
+        $prompt .= "- Content difficulty progression (beginner → intermediate → advanced)\n\n";
+
+        $prompt .= "ANCHOR TEXT RULES (CRITICAL - violations will be rejected):\n";
+        $prompt .= "1. MUST be a COMPLETE phrase that makes sense standalone (2-5 words)\n";
+        $prompt .= "2. MUST describe the TARGET page topic, not the source\n";
+        $prompt .= "3. GOOD: 'BRRRR investment strategy', 'mortgage pre-approval', 'rental property financing'\n";
+        $prompt .= "4. BAD (will be rejected): 'with the', 'investment with', 'for your', 'the market', 'this is'\n";
+        $prompt .= "5. Do NOT start with: the, a, an, this, that, with, and, or, in, on, to\n";
+        $prompt .= "6. Do NOT end with: the, a, an, and, or, to, in, on, with\n";
+        $prompt .= "7. NEVER reuse anchors already used in that post\n\n";
+
         $prompt .= "QUALITY RULES:\n";
-        $prompt .= "1. Only select posts with genuine topical relevance - don't force irrelevant links\n";
-        $prompt .= "2. Quality over quantity - skip posts if no GOOD anchor phrase exists\n";
-        $prompt .= "3. If you can't find a meaningful anchor, DO NOT suggest that link\n\n";
+        $prompt .= "- Only suggest links with GENUINE topical relevance\n";
+        $prompt .= "- Quality over quantity - skip if no good anchor exists\n";
+        $prompt .= "- Maximum 15 links suggested\n\n";
+
         $prompt .= "Respond with ONLY a JSON array:\n";
         $prompt .= '[{"source_id": 123, "anchor_text": "meaningful descriptive phrase"}, ...]\n';
         
@@ -873,13 +1170,21 @@ class LendCity_Smart_Linker {
         // Now insert links in each suggested source post
         $links_created = array();
         $errors = array();
-        
+        $skipped_anchors = 0;
+
         foreach ($suggestions as $suggestion) {
             $source_id = intval($suggestion['source_id']);
             $anchor = sanitize_text_field($suggestion['anchor_text']);
-            
+
             if (!$source_id || !$anchor) continue;
-            
+
+            // Validate anchor text quality before inserting
+            if (!$this->validate_anchor_text($anchor)) {
+                $this->debug_log("Rejected poor anchor text: '{$anchor}' for source {$source_id}");
+                $skipped_anchors++;
+                continue;
+            }
+
             $result = $this->insert_link_in_post($source_id, $anchor, $target_entry['url'], $target_id, $target_entry['is_page']);
             
             if ($result['success']) {
@@ -894,15 +1199,20 @@ class LendCity_Smart_Linker {
             }
         }
         
+        if ($skipped_anchors > 0) {
+            $this->debug_log("Skipped {$skipped_anchors} links due to poor anchor text quality");
+        }
+
         return array(
             'success' => true,
             'links_created' => count($links_created),
             'links' => $links_created,
             'errors' => $errors,
+            'skipped_anchors' => $skipped_anchors,
             'target_title' => $target_entry['title']
         );
     }
-    
+
     /**
      * Get link suggestions WITHOUT inserting (for review mode)
      */
@@ -1808,47 +2118,75 @@ class LendCity_Smart_Linker {
     }
     
     /**
-     * Call Claude API
+     * Call Claude API with retry logic and exponential backoff
+     * Retries on network errors and rate limits (429)
      */
     private function call_claude_api($prompt, $max_tokens = 1000) {
         if (empty($this->api_key)) {
             return array('success' => false, 'error' => 'API key not set');
         }
-        
-        $response = wp_remote_post('https://api.anthropic.com/v1/messages', array(
-            'timeout' => 120,
-            'headers' => array(
-                'Content-Type' => 'application/json',
-                'x-api-key' => $this->api_key,
-                'anthropic-version' => '2023-06-01'
-            ),
-            'body' => json_encode(array(
-                'model' => 'claude-sonnet-4-20250514',
-                'max_tokens' => $max_tokens,
-                'messages' => array(array('role' => 'user', 'content' => $prompt))
-            ))
-        ));
-        
-        if (is_wp_error($response)) {
-            error_log('LendCity API: WP Error - ' . $response->get_error_message());
-            return array('success' => false, 'error' => $response->get_error_message());
+
+        $last_error = '';
+
+        for ($attempt = 0; $attempt <= $this->max_retries; $attempt++) {
+            // Wait before retry (skip on first attempt)
+            if ($attempt > 0) {
+                $delay = isset($this->retry_delays[$attempt - 1]) ? $this->retry_delays[$attempt - 1] : 8;
+                $this->debug_log("API retry attempt {$attempt} after {$delay}s delay");
+                sleep($delay);
+            }
+
+            $response = wp_remote_post('https://api.anthropic.com/v1/messages', array(
+                'timeout' => 120,
+                'headers' => array(
+                    'Content-Type' => 'application/json',
+                    'x-api-key' => $this->api_key,
+                    'anthropic-version' => '2023-06-01'
+                ),
+                'body' => json_encode(array(
+                    'model' => 'claude-sonnet-4-20250514',
+                    'max_tokens' => $max_tokens,
+                    'messages' => array(array('role' => 'user', 'content' => $prompt))
+                ))
+            ));
+
+            // Network error - retry
+            if (is_wp_error($response)) {
+                $last_error = $response->get_error_message();
+                $this->debug_log('API network error: ' . $last_error);
+                continue; // Retry
+            }
+
+            $response_code = wp_remote_retrieve_response_code($response);
+            $body = json_decode(wp_remote_retrieve_body($response), true);
+
+            // Rate limited (429) or server error (5xx) - retry
+            if ($response_code === 429 || $response_code >= 500) {
+                $last_error = 'HTTP ' . $response_code . ' - ' . (isset($body['error']['message']) ? $body['error']['message'] : 'Server error');
+                $this->debug_log('API rate limit or server error: ' . $last_error);
+                continue; // Retry
+            }
+
+            // Client error (4xx except 429) - don't retry
+            if ($response_code !== 200) {
+                $error_msg = isset($body['error']['message']) ? $body['error']['message'] : 'HTTP ' . $response_code;
+                error_log('LendCity API: Error response - ' . $error_msg);
+                return array('success' => false, 'error' => $error_msg);
+            }
+
+            // Validate response structure
+            if (!isset($body['content'][0]['text'])) {
+                error_log('LendCity API: Invalid response structure - ' . wp_remote_retrieve_body($response));
+                return array('success' => false, 'error' => 'Invalid API response');
+            }
+
+            // Success!
+            return array('success' => true, 'text' => $body['content'][0]['text']);
         }
-        
-        $response_code = wp_remote_retrieve_response_code($response);
-        $body = json_decode(wp_remote_retrieve_body($response), true);
-        
-        if ($response_code !== 200) {
-            $error_msg = isset($body['error']['message']) ? $body['error']['message'] : 'HTTP ' . $response_code;
-            error_log('LendCity API: Error response - ' . $error_msg);
-            return array('success' => false, 'error' => $error_msg);
-        }
-        
-        if (!isset($body['content'][0]['text'])) {
-            error_log('LendCity API: Invalid response structure - ' . wp_remote_retrieve_body($response));
-            return array('success' => false, 'error' => 'Invalid API response');
-        }
-        
-        return array('success' => true, 'text' => $body['content'][0]['text']);
+
+        // All retries exhausted
+        error_log('LendCity API: All retries exhausted - ' . $last_error);
+        return array('success' => false, 'error' => 'API request failed after ' . ($this->max_retries + 1) . ' attempts: ' . $last_error);
     }
     
     // ==================== SEO ENHANCEMENT FUNCTIONS ====================
