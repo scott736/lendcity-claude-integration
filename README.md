@@ -1,6 +1,6 @@
 # LendCity Tools Plugin
 
-**Version:** 12.2.2
+**Version:** 12.2.3
 **WordPress Plugin for AI-Powered Content Management**
 
 ## Overview
@@ -136,9 +136,9 @@ Main logic is in:
   - Increased candidate pool (15 pages, 20 posts shown to Claude)
   - New `build_semantic_indexes()` method for catalog optimization
 - v12.1.0: **Background Processing** - All batch operations now run without keeping browser open:
-  - WP Cron-based background queues for Catalog, Ownership Map, Auto-Linker, and SEO Metadata
+  - WP Cron-based background queues for Catalog, Auto-Linker, and SEO Metadata
   - New "Background Queue Status" dashboard showing real-time progress
-  - "BUILD ALL (Background)" button starts all 4 processes via WP Cron
+  - "BUILD ALL (Background)" button starts all 3 processes via WP Cron
   - Individual "Build (Background)" buttons for each step
   - Auto-polling status updates every 5 seconds when queues are active
   - "Stop All Queues" button to cancel all background processing
@@ -159,8 +159,13 @@ Main logic is in:
 - v12.2.2: **Target Keywords Priority** - Manually selected keywords are now top priority:
   - TARGET KEYWORDS shown with ★ marker for each page
   - Rule #1 tells Claude to use TARGET KEYWORDS as anchor text when found in content
-  - Ownership map no longer required - Claude makes dynamic decisions
   - Set keywords in SEO Settings → Priority Pages & Keywords table
+- v12.2.3: **Ownership Map Removed** - Simplified architecture, all links through Claude API:
+  - Completely removed Keyword Ownership Map feature
+  - All linking decisions now made by Claude API (smarter, context-aware)
+  - Database cleanup on plugin load removes legacy ownership data
+  - Reduced complexity - only 3 steps: Catalog → Auto Linker → SEO Metadata
+  - Faster, cleaner, more reliable linking
 
 ## Installation
 
