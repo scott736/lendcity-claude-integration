@@ -331,6 +331,11 @@ class LendCity_Smart_Linker {
     public function get_catalog($filters = array()) {
         global $wpdb;
 
+        // Use cache if available and no filters specified (batch processing optimization)
+        if (empty($filters) && $this->catalog_cache !== null) {
+            return $this->catalog_cache;
+        }
+
         // Build query with filters
         $where = array('1=1');
         $params = array();
@@ -380,7 +385,20 @@ class LendCity_Smart_Linker {
             $catalog[$row['post_id']] = $this->hydrate_catalog_entry($row);
         }
 
+        // Cache if no filters (for batch processing reuse)
+        if (empty($filters)) {
+            $this->catalog_cache = $catalog;
+        }
+
         return $catalog;
+    }
+
+    /**
+     * Pre-load catalog into memory cache (call before batch processing)
+     */
+    public function preload_catalog_cache() {
+        $this->catalog_cache = null; // Clear existing cache
+        return $this->get_catalog(); // This will populate the cache
     }
 
     /**
@@ -2058,20 +2076,29 @@ class LendCity_Smart_Linker {
             'current_post' => '',
             'started_at' => current_time('mysql'),
             'last_activity' => current_time('mysql'),
-            'batch_size' => 3
+            'batch_size' => 15,  // Increased from 3 for faster processing
+            'fast_mode' => true  // Use keyword ownership matching (no API calls)
         );
         update_option($this->queue_status_option, $status, false);
 
+        // Pre-build keyword ownership map for fast linking (avoids building mid-process)
+        $ownership_stats = $this->get_keyword_ownership_stats();
+        if (!$ownership_stats['has_map']) {
+            $this->debug_log('Pre-building keyword ownership map before queue processing...');
+            $this->build_keyword_ownership_map();
+        }
+
         if (count($queue_ids) > 0 && !wp_next_scheduled('lendcity_process_link_queue')) {
             wp_schedule_event(time(), 'every_minute', 'lendcity_process_link_queue');
-            $this->debug_log('Scheduled queue cron for ' . count($queue_ids) . ' items');
+            $this->debug_log('Scheduled queue cron for ' . count($queue_ids) . ' items (fast mode)');
         }
 
         return array('queued' => count($queue_ids), 'skipped' => $skipped);
     }
 
     /**
-     * Process queue batch
+     * Process queue batch - FAST MODE
+     * Uses keyword ownership matching instead of Claude API for 30x speed improvement
      */
     public function process_queue_batch() {
         $lock_key = 'lendcity_queue_processing';
@@ -2093,11 +2120,16 @@ class LendCity_Smart_Linker {
                 $status['completed_at'] = current_time('mysql');
                 update_option($this->queue_status_option, $status, false);
             }
+            $this->clear_catalog_cache(); // Clean up
             delete_transient($lock_key);
             return array('complete' => true);
         }
 
-        $batch_size = isset($status['batch_size']) ? $status['batch_size'] : 3;
+        // Pre-load catalog into memory cache (avoids reloading for each post)
+        $this->preload_catalog_cache();
+
+        $batch_size = isset($status['batch_size']) ? $status['batch_size'] : 15;
+        $fast_mode = isset($status['fast_mode']) ? $status['fast_mode'] : true;
         $processed = 0;
         $links = 0;
 
@@ -2110,7 +2142,13 @@ class LendCity_Smart_Linker {
             $status['last_activity'] = current_time('mysql');
             update_option($this->queue_status_option, $status, false);
 
-            $result = $this->create_links_from_source($post_id);
+            // FAST MODE: Use keyword ownership matching (no API calls, ~2 sec per post)
+            // SLOW MODE: Use Claude API for suggestions (~70 sec per post)
+            if ($fast_mode) {
+                $result = $this->create_links_using_ownership($post_id, false); // No API fallback
+            } else {
+                $result = $this->create_links_from_source($post_id);
+            }
 
             $status['processed']++;
             $processed++;
@@ -2119,7 +2157,7 @@ class LendCity_Smart_Linker {
                 $count = isset($result['links_created']) ? $result['links_created'] : 0;
                 $status['links_created'] += $count;
                 $links += $count;
-                $this->log('Queue: Processed ' . $post_id . ' - ' . $count . ' links');
+                $this->log('Queue: Processed ' . $post_id . ' - ' . $count . ' links' . ($fast_mode ? ' (fast)' : ''));
             } else {
                 $status['errors']++;
             }
@@ -2127,6 +2165,7 @@ class LendCity_Smart_Linker {
             update_option($this->queue_status_option, $status, false);
         }
 
+        $this->clear_catalog_cache(); // Clean up memory
         delete_transient($lock_key);
 
         if (empty($queue)) {
@@ -2219,6 +2258,15 @@ class LendCity_Smart_Linker {
         $status['state'] = 'paused';
         $status['paused_at'] = current_time('mysql');
         update_option($this->queue_status_option, $status, false);
+
+        // Stop the cron from running while paused
+        wp_clear_scheduled_hook('lendcity_process_link_queue');
+        wp_clear_scheduled_hook('lendcity_process_queue_batch');
+
+        // Clear processing lock
+        delete_transient('lendcity_queue_processing');
+
+        $this->debug_log('Queue paused - cron cleared');
     }
 
     /**
@@ -2229,11 +2277,18 @@ class LendCity_Smart_Linker {
         $status['state'] = 'running';
         unset($status['paused_at']);
         update_option($this->queue_status_option, $status, false);
+
+        // Reschedule the cron
+        if (!wp_next_scheduled('lendcity_process_link_queue')) {
+            wp_schedule_event(time(), 'every_minute', 'lendcity_process_link_queue');
+        }
+
         $this->trigger_background_process();
+        $this->debug_log('Queue resumed');
     }
 
     /**
-     * Clear queue
+     * Clear queue (full stop)
      */
     public function clear_queue() {
         delete_option($this->queue_option);
@@ -2241,6 +2296,14 @@ class LendCity_Smart_Linker {
         delete_option('lendcity_queue_token');
         wp_clear_scheduled_hook('lendcity_process_link_queue');
         wp_clear_scheduled_hook('lendcity_process_queue_batch');
+
+        // Clear processing lock
+        delete_transient('lendcity_queue_processing');
+
+        // Clear catalog cache
+        $this->clear_catalog_cache();
+
+        $this->debug_log('Queue cleared completely');
     }
 
     // =========================================================================
