@@ -2142,22 +2142,34 @@ class LendCity_Smart_Linker {
             $status['last_activity'] = current_time('mysql');
             update_option($this->queue_status_option, $status, false);
 
-            // FAST MODE: Use keyword ownership matching (no API calls, ~2 sec per post)
-            // SLOW MODE: Use Claude API for suggestions (~70 sec per post)
+            // HYBRID MODE: Fast keyword matching first, API fallback if 0 links found
+            // This gives speed (most posts) + quality (posts without keyword matches)
             if ($fast_mode) {
-                $result = $this->create_links_using_ownership($post_id, false); // No API fallback
+                $result = $this->create_links_using_ownership($post_id, false);
+                $count = isset($result['links_created']) ? $result['links_created'] : 0;
+
+                // Fallback to API if fast mode found nothing
+                if ($count === 0 && $result['success']) {
+                    $this->log('Queue: No keyword matches for ' . $post_id . ' - trying API...');
+                    $result = $this->create_links_from_source($post_id);
+                    $count = isset($result['links_created']) ? $result['links_created'] : 0;
+                    $mode = 'api-fallback';
+                } else {
+                    $mode = 'fast';
+                }
             } else {
                 $result = $this->create_links_from_source($post_id);
+                $count = isset($result['links_created']) ? $result['links_created'] : 0;
+                $mode = 'api';
             }
 
             $status['processed']++;
             $processed++;
 
             if ($result['success']) {
-                $count = isset($result['links_created']) ? $result['links_created'] : 0;
                 $status['links_created'] += $count;
                 $links += $count;
-                $this->log('Queue: Processed ' . $post_id . ' - ' . $count . ' links' . ($fast_mode ? ' (fast)' : ''));
+                $this->log('Queue: Processed ' . $post_id . ' - ' . $count . ' links (' . $mode . ')');
             } else {
                 $status['errors']++;
             }
