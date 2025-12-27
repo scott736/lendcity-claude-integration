@@ -1925,29 +1925,27 @@ class LendCity_Smart_Linker {
 
     /**
      * v12.2: Build compact catalog table for full site awareness
-     * Shows pages/posts in a condensed format so Claude can make strategic decisions
-     * v12.2.3: Memory optimized - uses streaming queries and limits data
+     * Shows ALL pages/posts in a condensed format so Claude can make strategic decisions
+     * v12.2.5: Memory optimized - streaming queries with minimal columns, NO LIMITS
      */
     private function build_compact_catalog_table($source_id, $linked_urls = array()) {
         global $wpdb;
 
-        $pages_table = "ID|Title|Cluster|Inbound#|Priority\n";
-        $pages_table .= str_repeat("-", 60) . "\n";
+        $pages_table = "ID|Title|Inbound#|Pri\n";
+        $pages_table .= str_repeat("-", 45) . "\n";
 
-        $posts_table = "ID|Title|Cluster|Inbound#\n";
-        $posts_table .= str_repeat("-", 50) . "\n";
+        $posts_table = "ID|Title|Inbound#\n";
+        $posts_table .= str_repeat("-", 40) . "\n";
 
         $page_count = 0;
         $post_count = 0;
 
-        // v12.2.3: Use direct DB query with minimal columns to save memory
-        // Limit to 200 entries max in compact view
+        // v12.2.5: Stream ALL items with minimal columns (no JSON fields = low memory)
         $rows = $wpdb->get_results($wpdb->prepare(
-            "SELECT post_id, url, title, topic_cluster, inbound_link_count, is_page
+            "SELECT post_id, url, title, inbound_link_count, is_page
              FROM {$this->table_name}
              WHERE post_id != %d
-             ORDER BY is_page DESC, inbound_link_count ASC
-             LIMIT 200",
+             ORDER BY is_page DESC, inbound_link_count ASC",
             $source_id
         ), ARRAY_A);
 
@@ -1955,23 +1953,23 @@ class LendCity_Smart_Linker {
             $id = intval($row['post_id']);
             $linked_marker = in_array($row['url'], $linked_urls) ? '[✓]' : '';
 
-            $title = substr($row['title'], 0, 35);
-            if (strlen($row['title']) > 35) $title .= '...';
+            // Shorter title for compact view
+            $title = substr($row['title'], 0, 30);
+            if (strlen($row['title']) > 30) $title .= '..';
 
-            $cluster = substr($row['topic_cluster'] ?? 'general', 0, 12);
             $inbound = $row['inbound_link_count'] ?? 0;
 
             if ($row['is_page']) {
                 $priority = $this->get_page_priority($id);
-                $pages_table .= "{$id}|{$title}|{$cluster}|{$inbound}|P{$priority}{$linked_marker}\n";
+                $pages_table .= "{$id}|{$title}|{$inbound}|P{$priority}{$linked_marker}\n";
                 $page_count++;
             } else {
-                $posts_table .= "{$id}|{$title}|{$cluster}|{$inbound}{$linked_marker}\n";
+                $posts_table .= "{$id}|{$title}|{$inbound}{$linked_marker}\n";
                 $post_count++;
             }
         }
 
-        unset($rows); // Free memory
+        unset($rows); // Free memory immediately
 
         return array(
             'pages' => $pages_table,
@@ -2021,58 +2019,50 @@ class LendCity_Smart_Linker {
             $prompt .= "=== ALREADY USED ANCHORS (NEVER USE THESE) ===\n" . implode(', ', $used_anchors) . "\n\n";
         }
 
-        // v12.2: Show DETAILED info for top candidates (for anchor selection)
+        // v12.2: Show DETAILED info for candidates (for anchor selection)
         $links_requested = array();
 
-        // v12.2.1: NO LIMITS - Show ALL pages with anchor suggestions
-        // v12.2.3: Memory optimization - limit to top 50 pages to prevent memory exhaustion
+        // v12.2.5: Show ALL pages with anchor suggestions (no limits, memory-optimized)
         if ($page_slots > 0 && !empty($available_pages)) {
-            $page_limit = min(50, count($available_pages)); // Memory-safe limit
-            $prompt .= "=== TOP SERVICE PAGES (" . $page_limit . " of " . count($available_pages) . " pages, max " . $page_slots . " links) ===\n";
-            $prompt .= "TARGET KEYWORDS are manually selected by the site owner - USE THESE AS TOP PRIORITY anchors!\n\n";
-            $count = 0;
+            $prompt .= "=== ALL SERVICE PAGES (" . count($available_pages) . " pages, select up to " . $page_slots . " links) ===\n";
+            $prompt .= "★ TARGET KEYWORDS are top priority - use these as anchors when found in content!\n\n";
             foreach ($available_pages as $id => $entry) {
-                if ($count >= $page_limit) break;
                 $priority = $this->get_page_priority($id);
                 $inbound = $entry['inbound_link_count'] ?? 0;
                 $target_keywords = $this->get_page_keywords($id);
-                $prompt .= "ID:" . $id . " | " . $entry['title'] . " | P" . $priority . " | Inbound:" . $inbound;
+                $prompt .= "ID:" . $id . "|" . $entry['title'] . "|P" . $priority . "|In:" . $inbound;
 
-                // Show TARGET KEYWORDS first (top priority)
+                // Show TARGET KEYWORDS (top priority)
                 if (!empty($target_keywords)) {
-                    $prompt .= "\n  ★ TARGET KEYWORDS: " . $target_keywords;
+                    $prompt .= " ★" . $target_keywords;
                 }
 
-                // Add anchor phrases for selection
+                // Add top 3 anchor phrases
                 $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
                 if (!empty($anchor_phrases)) {
-                    $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 5));
+                    $prompt .= " [" . implode(', ', array_slice($anchor_phrases, 0, 3)) . "]";
                 }
-                $prompt .= "\n\n";
-                $count++;
+                $prompt .= "\n";
             }
+            $prompt .= "\n";
             $links_requested[] = "Up to $page_slots page links";
         }
 
-        // v12.2.1: NO LIMITS - Show ALL posts with anchor suggestions
-        // v12.2.3: Memory optimization - limit to top 75 posts to prevent memory exhaustion
+        // v12.2.5: Show ALL posts with anchor suggestions (no limits, memory-optimized)
         if ($post_slots > 0 && !empty($available_posts)) {
-            $post_limit = min(75, count($available_posts)); // Memory-safe limit
-            $prompt .= "=== TOP BLOG POSTS (" . $post_limit . " of " . count($available_posts) . " posts, max " . $post_slots . " links) ===\n\n";
-            $count = 0;
+            $prompt .= "=== ALL BLOG POSTS (" . count($available_posts) . " posts, select up to " . $post_slots . " links) ===\n\n";
             foreach ($available_posts as $id => $entry) {
-                if ($count >= $post_limit) break;
                 $inbound = $entry['inbound_link_count'] ?? 0;
-                $prompt .= "ID:" . $id . " | " . $entry['title'] . " | Inbound:" . $inbound;
+                $prompt .= "ID:" . $id . "|" . $entry['title'] . "|In:" . $inbound;
 
-                // Add anchor phrases for selection
+                // Add top 3 anchor phrases
                 $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
                 if (!empty($anchor_phrases)) {
-                    $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 4));
+                    $prompt .= " [" . implode(', ', array_slice($anchor_phrases, 0, 3)) . "]";
                 }
-                $prompt .= "\n\n";
-                $count++;
+                $prompt .= "\n";
             }
+            $prompt .= "\n";
             $links_requested[] = "Up to $post_slots post links";
         }
 
@@ -2435,7 +2425,7 @@ class LendCity_Smart_Linker {
             'current_post' => '',
             'started_at' => current_time('mysql'),
             'last_activity' => current_time('mysql'),
-            'batch_size' => 2,  // v12.2.3: Reduced to 2 to prevent memory exhaustion
+            'batch_size' => 1,  // v12.2.5: Process 1 post at a time for memory safety
             'fast_mode' => false  // v12.2.2: ALWAYS use Claude API (ownership map removed)
         );
         update_option($this->queue_status_option, $status, false);
@@ -2479,10 +2469,11 @@ class LendCity_Smart_Linker {
             return array('complete' => true);
         }
 
-        // Pre-load catalog into memory cache (avoids reloading for each post)
-        $this->preload_catalog_cache();
+        // v12.2.5: Skip catalog preload - use streaming queries instead to save memory
+        // Each post processes independently with fresh DB queries
+        $this->clear_catalog_cache(); // Ensure clean slate
 
-        $batch_size = isset($status['batch_size']) ? $status['batch_size'] : 15;
+        $batch_size = isset($status['batch_size']) ? $status['batch_size'] : 1;
         $fast_mode = isset($status['fast_mode']) ? $status['fast_mode'] : true;
         $processed = 0;
         $links = 0;

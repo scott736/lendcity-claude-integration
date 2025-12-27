@@ -1,6 +1,6 @@
 # LendCity Tools Plugin
 
-**Version:** 12.2.4
+**Version:** 12.2.5
 **WordPress Plugin for AI-Powered Content Management**
 
 ## Overview
@@ -172,6 +172,13 @@ Main logic is in:
   - Batch size reduced to 2 posts per cron run
   - Added garbage collection between batch items
   - Works on 128MB PHP memory limit
+- v12.2.5: **Full Visibility + Memory Safe** - Best of both worlds:
+  - Claude sees ALL pages AND ALL posts (no limits!)
+  - Streaming DB queries with minimal columns (no JSON blobs loaded)
+  - Compact prompt format (single line per item)
+  - Batch size = 1 post per cron (fresh memory each run)
+  - Disabled catalog preloading (queries on demand)
+  - Recommended: 256MB PHP memory for large sites (500+ posts)
 
 ## Installation
 
