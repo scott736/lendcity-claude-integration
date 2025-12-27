@@ -1925,43 +1925,53 @@ class LendCity_Smart_Linker {
 
     /**
      * v12.2: Build compact catalog table for full site awareness
-     * Shows ALL pages/posts in a condensed format so Claude can make strategic decisions
+     * Shows pages/posts in a condensed format so Claude can make strategic decisions
+     * v12.2.3: Memory optimized - uses streaming queries and limits data
      */
     private function build_compact_catalog_table($source_id, $linked_urls = array()) {
-        $catalog = $this->get_catalog();
+        global $wpdb;
 
-        $pages_table = "ID|Title|Cluster|Persona|Funnel|Inbound#|Priority\n";
-        $pages_table .= str_repeat("-", 80) . "\n";
+        $pages_table = "ID|Title|Cluster|Inbound#|Priority\n";
+        $pages_table .= str_repeat("-", 60) . "\n";
 
-        $posts_table = "ID|Title|Cluster|Persona|Funnel|Inbound#\n";
-        $posts_table .= str_repeat("-", 70) . "\n";
+        $posts_table = "ID|Title|Cluster|Inbound#\n";
+        $posts_table .= str_repeat("-", 50) . "\n";
 
         $page_count = 0;
         $post_count = 0;
 
-        foreach ($catalog as $id => $entry) {
-            if ($id == $source_id) continue;
+        // v12.2.3: Use direct DB query with minimal columns to save memory
+        // Limit to 200 entries max in compact view
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT post_id, url, title, topic_cluster, inbound_link_count, is_page
+             FROM {$this->table_name}
+             WHERE post_id != %d
+             ORDER BY is_page DESC, inbound_link_count ASC
+             LIMIT 200",
+            $source_id
+        ), ARRAY_A);
 
-            // Mark already-linked items
-            $linked_marker = in_array($entry['url'], $linked_urls) ? '[LINKED]' : '';
+        foreach ($rows as $row) {
+            $id = intval($row['post_id']);
+            $linked_marker = in_array($row['url'], $linked_urls) ? '[✓]' : '';
 
-            $title = substr($entry['title'], 0, 40);
-            if (strlen($entry['title']) > 40) $title .= '...';
+            $title = substr($row['title'], 0, 35);
+            if (strlen($row['title']) > 35) $title .= '...';
 
-            $cluster = substr($entry['topic_cluster'] ?? 'general', 0, 15);
-            $persona = substr($entry['target_persona'] ?? 'general', 0, 12);
-            $funnel = substr($entry['funnel_stage'] ?? 'awareness', 0, 10);
-            $inbound = $entry['inbound_link_count'] ?? 0;
+            $cluster = substr($row['topic_cluster'] ?? 'general', 0, 12);
+            $inbound = $row['inbound_link_count'] ?? 0;
 
-            if ($entry['is_page']) {
+            if ($row['is_page']) {
                 $priority = $this->get_page_priority($id);
-                $pages_table .= "{$id}|{$title}|{$cluster}|{$persona}|{$funnel}|{$inbound}|P{$priority}{$linked_marker}\n";
+                $pages_table .= "{$id}|{$title}|{$cluster}|{$inbound}|P{$priority}{$linked_marker}\n";
                 $page_count++;
             } else {
-                $posts_table .= "{$id}|{$title}|{$cluster}|{$persona}|{$funnel}|{$inbound}{$linked_marker}\n";
+                $posts_table .= "{$id}|{$title}|{$cluster}|{$inbound}{$linked_marker}\n";
                 $post_count++;
             }
         }
+
+        unset($rows); // Free memory
 
         return array(
             'pages' => $pages_table,
@@ -2015,10 +2025,14 @@ class LendCity_Smart_Linker {
         $links_requested = array();
 
         // v12.2.1: NO LIMITS - Show ALL pages with anchor suggestions
+        // v12.2.3: Memory optimization - limit to top 50 pages to prevent memory exhaustion
         if ($page_slots > 0 && !empty($available_pages)) {
-            $prompt .= "=== ALL SERVICE PAGES (" . count($available_pages) . " pages, max " . $page_slots . " links) ===\n";
+            $page_limit = min(50, count($available_pages)); // Memory-safe limit
+            $prompt .= "=== TOP SERVICE PAGES (" . $page_limit . " of " . count($available_pages) . " pages, max " . $page_slots . " links) ===\n";
             $prompt .= "TARGET KEYWORDS are manually selected by the site owner - USE THESE AS TOP PRIORITY anchors!\n\n";
+            $count = 0;
             foreach ($available_pages as $id => $entry) {
+                if ($count >= $page_limit) break;
                 $priority = $this->get_page_priority($id);
                 $inbound = $entry['inbound_link_count'] ?? 0;
                 $target_keywords = $this->get_page_keywords($id);
@@ -2035,14 +2049,19 @@ class LendCity_Smart_Linker {
                     $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 5));
                 }
                 $prompt .= "\n\n";
+                $count++;
             }
             $links_requested[] = "Up to $page_slots page links";
         }
 
         // v12.2.1: NO LIMITS - Show ALL posts with anchor suggestions
+        // v12.2.3: Memory optimization - limit to top 75 posts to prevent memory exhaustion
         if ($post_slots > 0 && !empty($available_posts)) {
-            $prompt .= "=== ALL BLOG POSTS (" . count($available_posts) . " posts, max " . $post_slots . " links) ===\n\n";
+            $post_limit = min(75, count($available_posts)); // Memory-safe limit
+            $prompt .= "=== TOP BLOG POSTS (" . $post_limit . " of " . count($available_posts) . " posts, max " . $post_slots . " links) ===\n\n";
+            $count = 0;
             foreach ($available_posts as $id => $entry) {
+                if ($count >= $post_limit) break;
                 $inbound = $entry['inbound_link_count'] ?? 0;
                 $prompt .= "ID:" . $id . " | " . $entry['title'] . " | Inbound:" . $inbound;
 
@@ -2052,6 +2071,7 @@ class LendCity_Smart_Linker {
                     $prompt .= "\n  Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 4));
                 }
                 $prompt .= "\n\n";
+                $count++;
             }
             $links_requested[] = "Up to $post_slots post links";
         }
@@ -2415,7 +2435,7 @@ class LendCity_Smart_Linker {
             'current_post' => '',
             'started_at' => current_time('mysql'),
             'last_activity' => current_time('mysql'),
-            'batch_size' => 5,  // v12.2.2: Reduced batch size for API calls
+            'batch_size' => 2,  // v12.2.3: Reduced to 2 to prevent memory exhaustion
             'fast_mode' => false  // v12.2.2: ALWAYS use Claude API (ownership map removed)
         );
         update_option($this->queue_status_option, $status, false);
@@ -2493,6 +2513,13 @@ class LendCity_Smart_Linker {
             }
 
             update_option($this->queue_status_option, $status, false);
+
+            // v12.2.3: Memory cleanup between posts to prevent exhaustion
+            unset($result);
+            if (function_exists('gc_collect_cycles')) {
+                gc_collect_cycles();
+            }
+            wp_cache_flush();
         }
 
         $this->clear_catalog_cache(); // Clean up memory

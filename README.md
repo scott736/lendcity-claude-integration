@@ -1,6 +1,6 @@
 # LendCity Tools Plugin
 
-**Version:** 12.2.3
+**Version:** 12.2.4
 **WordPress Plugin for AI-Powered Content Management**
 
 ## Overview
@@ -166,6 +166,12 @@ Main logic is in:
   - Database cleanup on plugin load removes legacy ownership data
   - Reduced complexity - only 3 steps: Catalog → Auto Linker → SEO Metadata
   - Faster, cleaner, more reliable linking
+- v12.2.4: **Memory Optimization** - Fixed memory exhaustion crash on large sites:
+  - Compact catalog uses streaming DB queries (200 item limit)
+  - Detailed section limited to top 50 pages + 75 posts
+  - Batch size reduced to 2 posts per cron run
+  - Added garbage collection between batch items
+  - Works on 128MB PHP memory limit
 
 ## Installation
 
