@@ -339,12 +339,8 @@ class LendCity_Claude_Integration {
         register_setting('lendcity_claude_settings', 'lendcity_debug_mode');
 
         // Podcast webhook settings - SEPARATE group to avoid overwriting API keys
-        // Webhook secret uses sanitize callback to ALWAYS preserve existing value (no form field)
-        register_setting('lendcity_podcast_settings', 'lendcity_transistor_webhook_secret', array(
-            'sanitize_callback' => array($this, 'sanitize_webhook_secret')
-        ));
+        // NOTE: Webhook secret is NOT registered - it's managed separately via AJAX only
         register_setting('lendcity_podcast_settings', 'lendcity_transistor_api_key');
-        register_setting('lendcity_podcast_settings', 'lendcity_transistor_shows');
         register_setting('lendcity_podcast_settings', 'lendcity_show_id_1');
         register_setting('lendcity_podcast_settings', 'lendcity_show_category_1');
         register_setting('lendcity_podcast_settings', 'lendcity_show_id_2');
