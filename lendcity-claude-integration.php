@@ -336,13 +336,35 @@ class LendCity_Claude_Integration {
         register_setting('lendcity_claude_settings', 'lendcity_debug_mode');
 
         // Podcast webhook settings - SEPARATE group to avoid overwriting API keys
-        register_setting('lendcity_podcast_settings', 'lendcity_transistor_webhook_secret');
+        // Webhook secret uses sanitize callback to ALWAYS preserve existing value (no form field)
+        register_setting('lendcity_podcast_settings', 'lendcity_transistor_webhook_secret', array(
+            'sanitize_callback' => array($this, 'sanitize_webhook_secret')
+        ));
         register_setting('lendcity_podcast_settings', 'lendcity_transistor_api_key');
         register_setting('lendcity_podcast_settings', 'lendcity_transistor_shows');
         register_setting('lendcity_podcast_settings', 'lendcity_show_id_1');
         register_setting('lendcity_podcast_settings', 'lendcity_show_category_1');
         register_setting('lendcity_podcast_settings', 'lendcity_show_id_2');
         register_setting('lendcity_podcast_settings', 'lendcity_show_category_2');
+    }
+
+    /**
+     * Sanitize webhook secret - ALWAYS preserve existing value
+     * The secret is never submitted via form, so we must keep the existing one
+     */
+    public function sanitize_webhook_secret($value) {
+        // Always return the existing secret - it's managed separately via AJAX regenerate
+        $existing = get_option('lendcity_transistor_webhook_secret', '');
+        if (!empty($existing)) {
+            return $existing;
+        }
+        // If somehow empty, try backup
+        $backup = get_option('lendcity_transistor_webhook_secret_backup', '');
+        if (!empty($backup)) {
+            return $backup;
+        }
+        // Last resort - generate new
+        return wp_generate_password(32, false);
     }
 
     /**
@@ -1461,8 +1483,7 @@ class LendCity_Claude_Integration {
         }
 
         // Get category from show mapping
-        $shows_config = get_option('lendcity_transistor_shows', '{}');
-        $shows = json_decode($shows_config, true) ?: array();
+        $shows = $this->get_show_mappings();
         $category_name = $shows[$show_id] ?? 'Podcast';
 
         // Check if already processed
@@ -1543,6 +1564,37 @@ class LendCity_Claude_Integration {
     public function get_transistor_webhook_url() {
         $secret = $this->get_or_restore_webhook_secret();
         return rest_url('lendcity/v1/transistor-webhook') . '?key=' . $secret;
+    }
+
+    /**
+     * Get show mappings from individual options (WordPress Settings API saves these automatically)
+     * Returns array of show_id => category_name
+     */
+    public function get_show_mappings() {
+        $shows = array();
+
+        // Read from individual options saved by WordPress Settings API
+        $show_id_1 = get_option('lendcity_show_id_1', '');
+        $show_cat_1 = get_option('lendcity_show_category_1', '');
+        $show_id_2 = get_option('lendcity_show_id_2', '');
+        $show_cat_2 = get_option('lendcity_show_category_2', '');
+
+        if (!empty($show_id_1) && !empty($show_cat_1)) {
+            $shows[$show_id_1] = $show_cat_1;
+        }
+        if (!empty($show_id_2) && !empty($show_cat_2)) {
+            $shows[$show_id_2] = $show_cat_2;
+        }
+
+        // Fallback to legacy combined option if individual options are empty
+        if (empty($shows)) {
+            $shows_config = get_option('lendcity_transistor_shows', '');
+            if (!empty($shows_config)) {
+                $shows = json_decode($shows_config, true) ?: array();
+            }
+        }
+
+        return $shows;
     }
 
     /**

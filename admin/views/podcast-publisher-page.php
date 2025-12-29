@@ -33,22 +33,11 @@ if ($plugin_instance && method_exists($plugin_instance, 'get_transistor_webhook_
 // Get Transistor API key
 $transistor_api_key = get_option('lendcity_transistor_api_key', '');
 
-// Get show mappings (show_id => category)
-$shows_config = get_option('lendcity_transistor_shows', '');
-$shows = !empty($shows_config) ? json_decode($shows_config, true) : array();
-
-// Default show mappings if not set
-if (empty($shows)) {
-    $shows = array(
-        '12576' => 'The Wisdom, Lifestyle, Money Show',
-        '39269' => 'Close More Deals – For REALTORS®'
-    );
-    update_option('lendcity_transistor_shows', json_encode($shows));
-}
-
-// Get show IDs and categories as arrays for the form
-$show_ids = array_keys($shows);
-$show_categories = array_values($shows);
+// Get show mappings from individual options (WordPress Settings API saves these)
+$show_id_1 = get_option('lendcity_show_id_1', '');
+$show_cat_1 = get_option('lendcity_show_category_1', '');
+$show_id_2 = get_option('lendcity_show_id_2', '');
+$show_cat_2 = get_option('lendcity_show_category_2', '');
 
 $nonce = wp_create_nonce('lendcity_claude_nonce');
 ?>
@@ -110,9 +99,9 @@ $nonce = wp_create_nonce('lendcity_claude_nonce');
                 <th scope="row">Show 1</th>
                 <td>
                     <label>Show ID:</label>
-                    <input type="text" name="lendcity_show_id_1" value="<?php echo esc_attr($show_ids[0] ?? ''); ?>" class="regular-text" placeholder="e.g., 12576" style="width: 120px;">
+                    <input type="text" name="lendcity_show_id_1" value="<?php echo esc_attr($show_id_1); ?>" class="regular-text" placeholder="e.g., 71061" style="width: 120px;">
                     <label style="margin-left: 15px;">Category:</label>
-                    <input type="text" name="lendcity_show_category_1" value="<?php echo esc_attr($show_categories[0] ?? ''); ?>" class="regular-text" placeholder="e.g., Podcast Name">
+                    <input type="text" name="lendcity_show_category_1" value="<?php echo esc_attr($show_cat_1); ?>" class="regular-text" placeholder="e.g., Podcast Name">
                     <p class="description">Find your Show ID in Transistor: Dashboard → Show Settings → the number in the URL</p>
                 </td>
             </tr>
@@ -120,9 +109,9 @@ $nonce = wp_create_nonce('lendcity_claude_nonce');
                 <th scope="row">Show 2</th>
                 <td>
                     <label>Show ID:</label>
-                    <input type="text" name="lendcity_show_id_2" value="<?php echo esc_attr($show_ids[1] ?? ''); ?>" class="regular-text" placeholder="e.g., 39269" style="width: 120px;">
+                    <input type="text" name="lendcity_show_id_2" value="<?php echo esc_attr($show_id_2); ?>" class="regular-text" placeholder="e.g., 71049" style="width: 120px;">
                     <label style="margin-left: 15px;">Category:</label>
-                    <input type="text" name="lendcity_show_category_2" value="<?php echo esc_attr($show_categories[1] ?? ''); ?>" class="regular-text" placeholder="e.g., Podcast Name">
+                    <input type="text" name="lendcity_show_category_2" value="<?php echo esc_attr($show_cat_2); ?>" class="regular-text" placeholder="e.g., Podcast Name">
                 </td>
             </tr>
         </table>
