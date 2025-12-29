@@ -394,7 +394,7 @@ class LendCity_Claude_API {
                 'anthropic-version' => '2023-06-01'
             ),
             'body' => json_encode($body),
-            'timeout' => 120 // Longer timeout for content generation
+            'timeout' => 300 // 5 minutes for long content generation
         ));
         
         if (is_wp_error($response)) {
