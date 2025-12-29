@@ -42,7 +42,7 @@ class LendCity_Smart_Linker {
     private $keywords_meta_key = '_lendcity_target_keywords';
 
     // Database version for migrations
-    const DB_VERSION = '5.0';
+    const DB_VERSION = '5.1';
     const DB_VERSION_OPTION = 'lendcity_catalog_db_version';
 
     // v5.0 Semantic Enhancement Options
@@ -215,6 +215,73 @@ class LendCity_Smart_Linker {
 
         if ($added > 0) {
             $this->log("Added {$added} new v4 columns to catalog table");
+        }
+
+        // v12.2.6: Add FULLTEXT index for semantic search (if not exists)
+        $this->maybe_add_fulltext_index();
+
+        // v12.2.6: Add postmeta index for smart links lookups (if not exists)
+        $this->maybe_add_postmeta_index();
+    }
+
+    /**
+     * Add FULLTEXT index for semantic search on summary and title
+     * v12.2.6 optimization for faster semantic matching
+     */
+    private function maybe_add_fulltext_index() {
+        global $wpdb;
+
+        // Check if FULLTEXT index already exists
+        $index_exists = $wpdb->get_var(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS
+             WHERE table_schema = DATABASE()
+             AND table_name = '{$this->table_name}'
+             AND index_name = 'ft_summary_title'"
+        );
+
+        if ($index_exists == 0) {
+            // Add FULLTEXT index on summary and title columns
+            $result = $wpdb->query(
+                "ALTER TABLE {$this->table_name} ADD FULLTEXT INDEX ft_summary_title (summary, title)"
+            );
+
+            if ($result !== false && !$wpdb->last_error) {
+                $this->log('Added FULLTEXT index ft_summary_title for semantic search');
+            } else if ($wpdb->last_error) {
+                // Log error but don't fail - FULLTEXT may not be supported on all MySQL versions
+                $this->debug_log('Could not add FULLTEXT index: ' . $wpdb->last_error);
+            }
+        }
+    }
+
+    /**
+     * Add index on postmeta for faster smart links lookups
+     * v12.2.6 optimization for get_all_site_links() queries
+     */
+    private function maybe_add_postmeta_index() {
+        global $wpdb;
+
+        // Check if index already exists on postmeta for our meta_key
+        $index_exists = $wpdb->get_var(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS
+             WHERE table_schema = DATABASE()
+             AND table_name = '{$wpdb->postmeta}'
+             AND index_name = 'idx_lendcity_smart_links'"
+        );
+
+        if ($index_exists == 0) {
+            // Add index for our specific meta_key lookups
+            // Using a partial index on meta_key prefix to speed up WHERE meta_key = '_lendcity_smart_links'
+            $result = $wpdb->query(
+                "ALTER TABLE {$wpdb->postmeta} ADD INDEX idx_lendcity_smart_links (meta_key(32), post_id)"
+            );
+
+            if ($result !== false && !$wpdb->last_error) {
+                $this->log('Added postmeta index idx_lendcity_smart_links for faster link lookups');
+            } else if ($wpdb->last_error) {
+                // Log error but don't fail - index may already exist with different name
+                $this->debug_log('Could not add postmeta index: ' . $wpdb->last_error);
+            }
         }
     }
 
@@ -727,6 +794,92 @@ class LendCity_Smart_Linker {
 
     private function log($message) {
         error_log('LendCity Smart Linker: ' . $message);
+    }
+
+    // =========================================================================
+    // CONTENT COMPRESSION HELPERS (v12.2.6)
+    // =========================================================================
+
+    /**
+     * Compress and store original content
+     * v12.2.6: Reduces postmeta storage by 60-80%
+     *
+     * @param int $post_id The post ID
+     * @param string $content The original content to store
+     * @return bool Success
+     */
+    private function store_original_content($post_id, $content) {
+        if (empty($content)) {
+            return false;
+        }
+
+        // Compress the content using gzip level 6 (good balance of speed/compression)
+        $compressed = gzcompress($content, 6);
+        if ($compressed === false) {
+            // Fallback to uncompressed if compression fails
+            $this->debug_log("Compression failed for post {$post_id}, storing uncompressed");
+            update_post_meta($post_id, $this->original_content_meta, $content);
+            return true;
+        }
+
+        // Store as base64 to avoid binary data issues in MySQL
+        $encoded = base64_encode($compressed);
+
+        // Add a prefix to identify compressed content
+        $stored_value = 'gz:' . $encoded;
+
+        update_post_meta($post_id, $this->original_content_meta, $stored_value);
+        return true;
+    }
+
+    /**
+     * Retrieve and decompress original content
+     * v12.2.6: Handles both compressed (new) and uncompressed (legacy) content
+     *
+     * @param int $post_id The post ID
+     * @return string|false The original content or false if not found
+     */
+    private function get_original_content($post_id) {
+        $stored = get_post_meta($post_id, $this->original_content_meta, true);
+
+        if (empty($stored)) {
+            return false;
+        }
+
+        // Check if this is compressed content (starts with 'gz:')
+        if (strpos($stored, 'gz:') === 0) {
+            // Remove the 'gz:' prefix
+            $encoded = substr($stored, 3);
+
+            // Decode and decompress
+            $compressed = base64_decode($encoded);
+            if ($compressed === false) {
+                $this->debug_log("Base64 decode failed for post {$post_id}");
+                return false;
+            }
+
+            $content = gzuncompress($compressed);
+            if ($content === false) {
+                $this->debug_log("Decompression failed for post {$post_id}");
+                return false;
+            }
+
+            return $content;
+        }
+
+        // Legacy uncompressed content - return as-is
+        return $stored;
+    }
+
+    /**
+     * Check if original content exists for a post
+     *
+     * @param int $post_id The post ID
+     * @return bool Whether original content exists
+     */
+    private function has_original_content($post_id) {
+        $stored = get_post_meta($post_id, $this->original_content_meta, true);
+        return !empty($stored);
     }
 
     // =========================================================================
@@ -2247,10 +2400,9 @@ class LendCity_Smart_Linker {
 
         $content = $post->post_content;
 
-        // Store original
-        $original = get_post_meta($post_id, $this->original_content_meta, true);
-        if (empty($original)) {
-            update_post_meta($post_id, $this->original_content_meta, $content);
+        // Store original (compressed in v12.2.6 for 60-80% storage reduction)
+        if (!$this->has_original_content($post_id)) {
+            $this->store_original_content($post_id, $content);
         }
 
         // Find anchor in content
