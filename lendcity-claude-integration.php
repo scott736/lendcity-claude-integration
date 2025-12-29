@@ -39,6 +39,13 @@ function lendcity_claude_cron_schedules($schedules) {
         'interval' => $frequency_days * DAY_IN_SECONDS,
         'display' => sprintf(__('Every %d days (Article Frequency)'), $frequency_days)
     );
+    // Daily schedule for article processing
+    if (!isset($schedules['daily'])) {
+        $schedules['daily'] = array(
+            'interval' => DAY_IN_SECONDS,
+            'display' => __('Once Daily')
+        );
+    }
     return $schedules;
 }
 
@@ -66,6 +73,13 @@ function lendcity_claude_activate() {
     // Schedule fresh crons (NOT link queue - that's scheduled dynamically when needed)
     if (!wp_next_scheduled('lendcity_auto_schedule_articles')) {
         wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
+    }
+    // Daily article processing cron (processes X articles per day from queue)
+    if (!wp_next_scheduled('lendcity_daily_article_processing')) {
+        // Schedule for 2 AM local time
+        $timezone = get_option('timezone_string') ?: 'America/Toronto';
+        $next_run = new DateTime('tomorrow 02:00:00', new DateTimeZone($timezone));
+        wp_schedule_event($next_run->getTimestamp(), 'daily', 'lendcity_daily_article_processing');
     }
     // Podcast publishing is now handled via Transistor webhooks (no cron needed)
 }
@@ -109,7 +123,8 @@ function lendcity_claude_clear_all_crons() {
     // All hooks that belong to this plugin (including old/renamed ones)
     $plugin_hooks = array(
         'lendcity_process_link_queue',
-        'lendcity_auto_schedule_articles', 
+        'lendcity_auto_schedule_articles',
+        'lendcity_daily_article_processing',
         'lendcity_check_podcasts',
         'lendcity_auto_link_post',
     );
@@ -278,9 +293,13 @@ class LendCity_Claude_Integration {
         add_action('lendcity_process_link_queue', array($this, 'cron_process_link_queue'));
         add_action('lendcity_process_catalog_queue', array($this, 'cron_process_catalog_queue'));
 
-        // Auto-schedule cron (maintains minimum scheduled posts)
+        // Auto-schedule cron (maintains minimum scheduled posts - legacy)
         add_action('lendcity_auto_schedule_articles', array($this, 'cron_auto_schedule_articles'));
         add_action('init', array($this, 'setup_auto_schedule_cron'));
+
+        // Daily article processing cron (processes X articles per day regardless of scheduled count)
+        add_action('lendcity_daily_article_processing', array($this, 'cron_daily_article_processing'));
+        add_action('init', array($this, 'setup_daily_processing_cron'));
 
         // Transistor Webhook REST API
         add_action('rest_api_init', array($this, 'register_transistor_webhook'));
