@@ -293,6 +293,9 @@ class LendCity_Claude_Integration {
         // Webhook secret regeneration AJAX
         add_action('wp_ajax_lendcity_regenerate_webhook_secret', array($this, 'ajax_regenerate_webhook_secret'));
 
+        // Manual episode processing AJAX
+        add_action('wp_ajax_lendcity_manual_process_episode', array($this, 'ajax_manual_process_episode'));
+
         // Initialize Smart Linker
         new LendCity_Smart_Linker();
     }
@@ -1616,6 +1619,39 @@ class LendCity_Claude_Integration {
             'message' => 'Webhook secret regenerated. IMPORTANT: Update the webhook URL in Transistor.fm!',
             'url' => rest_url('lendcity/v1/transistor-webhook') . '?key=' . $new_secret
         ));
+    }
+
+    /**
+     * AJAX: Manual episode processing from share URL
+     */
+    public function ajax_manual_process_episode() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $share_id = sanitize_text_field($_POST['share_id'] ?? '');
+        $category = sanitize_text_field($_POST['category'] ?? 'Podcast');
+
+        if (empty($share_id)) {
+            wp_send_json_error('No share ID provided');
+        }
+
+        lendcity_log('Manual episode processing started for share_id: ' . $share_id);
+
+        // Use existing process_episode_from_share_id method
+        $result = $this->process_episode_from_share_id($share_id, $category, '');
+
+        if ($result['success']) {
+            lendcity_log('Manual episode processing succeeded. Post ID: ' . $result['post_id']);
+            wp_send_json_success(array(
+                'post_id' => $result['post_id'],
+                'edit_url' => get_edit_post_link($result['post_id'], 'raw')
+            ));
+        } else {
+            lendcity_log('Manual episode processing failed: ' . ($result['error'] ?? 'Unknown error'));
+            wp_send_json_error($result['error'] ?? 'Processing failed');
+        }
     }
 
     /**

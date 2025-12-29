@@ -121,31 +121,40 @@ $nonce = wp_create_nonce('lendcity_claude_nonce');
 
     <hr style="margin: 30px 0;">
 
-    <h2>Processed Episodes Log</h2>
-    <p>Episodes processed via webhook appear here. Use this to confirm the integration is working.</p>
+    <h2>Manual Episode Processing</h2>
+    <p>Paste a Transistor share URL to manually process an episode that wasn't captured by webhook.</p>
     <table class="form-table">
         <tr>
-            <th scope="row">Recent Episodes</th>
+            <th scope="row">Share URL</th>
             <td>
-                <?php
-                $processed = get_option('lendcity_processed_podcast_episodes', array());
-                if (!empty($processed)) {
-                    echo '<div style="max-height: 300px; overflow-y: auto; background: #f9f9f9; padding: 10px; border: 1px solid #ddd;">';
-                    echo '<table style="width: 100%; border-collapse: collapse;">';
-                    echo '<tr style="background: #e0e0e0;"><th style="padding: 5px; text-align: left;">Date</th><th style="padding: 5px; text-align: left;">Title</th><th style="padding: 5px; text-align: left;">Post</th></tr>';
-                    foreach (array_reverse($processed) as $ep) {
-                        $edit_link = get_edit_post_link($ep['post_id'], 'raw');
-                        echo '<tr style="border-bottom: 1px solid #ddd;">';
-                        echo '<td style="padding: 5px;"><small>' . esc_html($ep['date']) . '</small></td>';
-                        echo '<td style="padding: 5px;"><small>' . esc_html($ep['title']) . '</small></td>';
-                        echo '<td style="padding: 5px;"><small><a href="' . esc_url($edit_link) . '" target="_blank">#' . esc_html($ep['post_id']) . '</a></small></td>';
-                        echo '</tr>';
+                <input type="text" id="manual-share-url" class="large-text" placeholder="https://share.transistor.fm/s/xxxxxxxx">
+                <p class="description">Find this URL in Transistor: Episode → Share → Copy the share link</p>
+            </td>
+        </tr>
+        <tr>
+            <th scope="row">Category</th>
+            <td>
+                <select id="manual-category">
+                    <?php
+                    // Get categories from show mappings
+                    if (!empty($show_cat_1)) {
+                        echo '<option value="' . esc_attr($show_cat_1) . '">' . esc_html($show_cat_1) . '</option>';
                     }
-                    echo '</table></div>';
-                } else {
-                    echo '<p class="description">No episodes processed yet. Publish an episode in Transistor to test the webhook.</p>';
-                }
-                ?>
+                    if (!empty($show_cat_2)) {
+                        echo '<option value="' . esc_attr($show_cat_2) . '">' . esc_html($show_cat_2) . '</option>';
+                    }
+                    if (empty($show_cat_1) && empty($show_cat_2)) {
+                        echo '<option value="Podcast">Podcast</option>';
+                    }
+                    ?>
+                </select>
+            </td>
+        </tr>
+        <tr>
+            <th scope="row"></th>
+            <td>
+                <button type="button" class="button button-primary" id="manual-process-btn">Process Episode</button>
+                <span id="manual-process-status" style="margin-left: 10px;"></span>
             </td>
         </tr>
     </table>
@@ -194,6 +203,59 @@ jQuery(document).ready(function($) {
             error: function() {
                 $status.html('<span style="color: red;">Request failed</span>');
                 $btn.prop('disabled', false).text('Regenerate Webhook Secret');
+            }
+        });
+    });
+
+    // Manual episode processing
+    $('#manual-process-btn').on('click', function() {
+        var shareUrl = $('#manual-share-url').val().trim();
+        var category = $('#manual-category').val();
+        var $btn = $(this);
+        var $status = $('#manual-process-status');
+
+        if (!shareUrl) {
+            $status.html('<span style="color: red;">Please enter a share URL</span>');
+            return;
+        }
+
+        // Extract share_id from URL
+        var match = shareUrl.match(/share\.transistor\.fm\/[se]\/([a-z0-9]+)/i);
+        if (!match) {
+            $status.html('<span style="color: red;">Invalid URL format. Use: https://share.transistor.fm/s/xxxxxxxx</span>');
+            return;
+        }
+
+        var shareId = match[1];
+        $btn.prop('disabled', true).text('Processing...');
+        $status.html('<span style="color: blue;">Processing episode, this may take a minute...</span>');
+
+        $.ajax({
+            url: ajaxurl,
+            type: 'POST',
+            data: {
+                action: 'lendcity_manual_process_episode',
+                nonce: nonce,
+                share_id: shareId,
+                category: category
+            },
+            timeout: 120000, // 2 minute timeout for Claude API
+            success: function(response) {
+                if (response.success) {
+                    $status.html('<span style="color: green;">Success! Post created: <a href="' + response.data.edit_url + '" target="_blank">#' + response.data.post_id + '</a></span>');
+                    $('#manual-share-url').val('');
+                } else {
+                    $status.html('<span style="color: red;">Error: ' + response.data + '</span>');
+                }
+                $btn.prop('disabled', false).text('Process Episode');
+            },
+            error: function(xhr, status, error) {
+                if (status === 'timeout') {
+                    $status.html('<span style="color: red;">Request timed out. The episode may still be processing.</span>');
+                } else {
+                    $status.html('<span style="color: red;">Request failed: ' + error + '</span>');
+                }
+                $btn.prop('disabled', false).text('Process Episode');
             }
         });
     });
