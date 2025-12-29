@@ -1626,6 +1626,10 @@ class LendCity_Claude_Integration {
             wp_send_json_error('Permission denied');
         }
 
+        // Extend execution time for long transcripts (may need 2 Claude API calls)
+        @set_time_limit(300); // 5 minutes
+        @ignore_user_abort(true);
+
         $share_id = sanitize_text_field($_POST['share_id'] ?? '');
         $category = sanitize_text_field($_POST['category'] ?? 'Podcast');
 
