@@ -1408,18 +1408,12 @@ class LendCity_Claude_Integration {
      * Webhook URL: https://yoursite.com/wp-json/lendcity/v1/transistor-webhook?key=YOUR_SECRET
      */
     public function handle_transistor_webhook($request) {
-        // Verify webhook secret
+        // Verify webhook secret (uses backup-aware method to prevent secret regeneration issues)
         $provided_key = $request->get_param('key');
-        $stored_secret = get_option('lendcity_transistor_webhook_secret', '');
-
-        if (empty($stored_secret)) {
-            // Generate a secret if none exists
-            $stored_secret = wp_generate_password(32, false);
-            update_option('lendcity_transistor_webhook_secret', $stored_secret);
-        }
+        $stored_secret = $this->get_or_restore_webhook_secret();
 
         if ($provided_key !== $stored_secret) {
-            lendcity_log('Transistor Webhook: Invalid secret key');
+            lendcity_log('Transistor Webhook: Invalid secret key (provided: ' . substr($provided_key, 0, 8) . '..., expected: ' . substr($stored_secret, 0, 8) . '...)');
             return new WP_REST_Response(array('error' => 'Invalid key'), 403);
         }
 
@@ -1509,14 +1503,42 @@ class LendCity_Claude_Integration {
     }
 
     /**
+     * Get or restore the webhook secret with backup persistence
+     * This ensures the secret survives plugin deactivation/reactivation and database issues
+     */
+    private function get_or_restore_webhook_secret() {
+        $secret = get_option('lendcity_transistor_webhook_secret', '');
+        $backup = get_option('lendcity_transistor_webhook_secret_backup', '');
+
+        // If main secret exists, ensure backup is synced
+        if (!empty($secret)) {
+            if ($backup !== $secret) {
+                update_option('lendcity_transistor_webhook_secret_backup', $secret, false); // autoload=false for backup
+            }
+            return $secret;
+        }
+
+        // Main secret is empty - try to restore from backup
+        if (!empty($backup)) {
+            update_option('lendcity_transistor_webhook_secret', $backup);
+            lendcity_log('Transistor webhook secret restored from backup');
+            return $backup;
+        }
+
+        // Both empty - generate new secret (first time setup)
+        $secret = wp_generate_password(32, false);
+        update_option('lendcity_transistor_webhook_secret', $secret);
+        update_option('lendcity_transistor_webhook_secret_backup', $secret, false);
+        lendcity_log('Transistor webhook secret generated for first time');
+
+        return $secret;
+    }
+
+    /**
      * Get the webhook URL for display in admin
      */
     public function get_transistor_webhook_url() {
-        $secret = get_option('lendcity_transistor_webhook_secret', '');
-        if (empty($secret)) {
-            $secret = wp_generate_password(32, false);
-            update_option('lendcity_transistor_webhook_secret', $secret);
-        }
+        $secret = $this->get_or_restore_webhook_secret();
         return rest_url('lendcity/v1/transistor-webhook') . '?key=' . $secret;
     }
 
@@ -1531,11 +1553,12 @@ class LendCity_Claude_Integration {
 
         $new_secret = wp_generate_password(32, false);
         update_option('lendcity_transistor_webhook_secret', $new_secret);
+        update_option('lendcity_transistor_webhook_secret_backup', $new_secret, false); // Sync backup
 
-        lendcity_log('Transistor webhook secret regenerated');
+        lendcity_log('Transistor webhook secret regenerated (remember to update Transistor.fm!)');
 
         wp_send_json_success(array(
-            'message' => 'Webhook secret regenerated',
+            'message' => 'Webhook secret regenerated. IMPORTANT: Update the webhook URL in Transistor.fm!',
             'url' => rest_url('lendcity/v1/transistor-webhook') . '?key=' . $new_secret
         ));
     }
