@@ -276,7 +276,8 @@ class LendCity_Claude_Integration {
         
         // Smart Linker cron
         add_action('lendcity_process_link_queue', array($this, 'cron_process_link_queue'));
-        
+        add_action('lendcity_process_catalog_queue', array($this, 'cron_process_catalog_queue'));
+
         // Auto-schedule cron (maintains minimum scheduled posts)
         add_action('lendcity_auto_schedule_articles', array($this, 'cron_auto_schedule_articles'));
         add_action('init', array($this, 'setup_auto_schedule_cron'));
@@ -943,7 +944,12 @@ class LendCity_Claude_Integration {
         $smart_linker = new LendCity_Smart_Linker();
         $smart_linker->process_queue_batch();
     }
-    
+
+    public function cron_process_catalog_queue() {
+        $smart_linker = new LendCity_Smart_Linker();
+        $smart_linker->process_catalog_queue_batch();
+    }
+
     // ==================== SEO ENHANCEMENT AJAX ====================
     
     public function ajax_save_page_seo() {
