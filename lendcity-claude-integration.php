@@ -2243,19 +2243,25 @@ class LendCity_Claude_Integration {
         if (empty($response)) {
             return array('success' => false, 'error' => 'Empty response from Claude');
         }
-        
+
+        lendcity_log('Parsing Claude response for JSON...');
+
         // Parse JSON response - try to find JSON in the response
         preg_match('/\{[\s\S]*\}/', $response, $matches);
         if (empty($matches)) {
             // Log first 500 chars of response for debugging
             $preview = substr($response, 0, 500);
+            lendcity_log('No JSON found in Claude response. Preview: ' . $preview);
             return array('success' => false, 'error' => 'No JSON found in response. Preview: ' . $preview);
         }
-        
+
         $article_data = json_decode($matches[0], true);
         if (json_last_error() !== JSON_ERROR_NONE) {
+            lendcity_log('JSON parse error: ' . json_last_error_msg());
             return array('success' => false, 'error' => 'JSON parse error: ' . json_last_error_msg());
         }
+
+        lendcity_log('JSON parsed successfully. Title: ' . ($article_data['title'] ?? 'No title'));
         
         // Handle category - try by name first, then by slug
         $category_id = 1;
@@ -2301,6 +2307,8 @@ class LendCity_Claude_Integration {
         }
         
         // Create post
+        lendcity_log('Creating post with title: ' . ($article_data['title'] ?? 'Podcast Episode'));
+
         $post_data = array(
             'post_title' => $article_data['title'] ?? 'Podcast Episode',
             'post_content' => $final_content,
@@ -2308,12 +2316,15 @@ class LendCity_Claude_Integration {
             'post_category' => array($category_id),
             'post_author' => 1
         );
-        
+
         $post_id = wp_insert_post($post_data);
-        
+
         if (is_wp_error($post_id)) {
+            lendcity_log('Failed to create post: ' . $post_id->get_error_message());
             return array('success' => false, 'error' => $post_id->get_error_message());
         }
+
+        lendcity_log('Post created successfully with ID: ' . $post_id);
         
         // Save SEO metadata
         if (!empty($article_data['title'])) {
