@@ -374,12 +374,15 @@ class LendCity_Claude_Integration {
      */
     public function save_show_mappings() {
         // Only run on settings save (check for settings page and proper nonce)
-        if (!isset($_POST['option_page']) || $_POST['option_page'] !== 'lendcity_claude_settings') {
+        // Support both podcast settings page and main settings page
+        $option_page = $_POST['option_page'] ?? '';
+        if (!in_array($option_page, array('lendcity_podcast_settings', 'lendcity_claude_settings'))) {
             return;
         }
 
         // Verify the settings nonce (WordPress adds this automatically)
-        if (!isset($_POST['_wpnonce']) || !wp_verify_nonce($_POST['_wpnonce'], 'lendcity_claude_settings-options')) {
+        $nonce_action = $option_page . '-options';
+        if (!isset($_POST['_wpnonce']) || !wp_verify_nonce($_POST['_wpnonce'], $nonce_action)) {
             return;
         }
 
