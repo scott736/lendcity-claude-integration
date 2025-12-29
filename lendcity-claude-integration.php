@@ -2170,8 +2170,11 @@ class LendCity_Claude_Integration {
         if (strlen($transcript) < 500) {
             return array('success' => false, 'error' => 'Transcript too short (' . strlen($transcript) . ' chars)');
         }
-        
+
         // If transcript is very long, summarize it first to capture full meaning
+        // NOTE: Very long transcripts (40,000+ chars) may timeout on some hosts due to
+        // requiring two Claude API calls (summarize + generate). If this happens,
+        // process the episode manually or contact your host about timeout limits.
         $max_transcript_length = 15000;
         if (strlen($transcript) > $max_transcript_length) {
             $api = new LendCity_Claude_API();
