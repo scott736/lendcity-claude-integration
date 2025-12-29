@@ -13,6 +13,7 @@ $publish_frequency = get_option('lendcity_article_frequency', 3);
 $publish_time = get_option('lendcity_article_publish_time', '06:00');
 $default_category = get_option('lendcity_claude_default_category', 1);
 $min_scheduled_posts = get_option('lendcity_min_scheduled_posts', 20);
+$daily_processing_limit = get_option('lendcity_daily_processing_limit', 8);
 
 // Get timezone
 $timezone = get_option('timezone_string') ?: 'America/Toronto';
@@ -33,7 +34,8 @@ if (isset($_POST['save_scheduler_settings']) && wp_verify_nonce($_POST['settings
     $new_time = sanitize_text_field($_POST['publish_time']);
     $new_category = intval($_POST['default_category']);
     $new_min_scheduled = intval($_POST['min_scheduled_posts']);
-    
+    $new_daily_limit = intval($_POST['daily_processing_limit']);
+
     if ($new_frequency >= 1 && $new_frequency <= 30) {
         update_option('lendcity_article_frequency', $new_frequency);
         $publish_frequency = $new_frequency;
@@ -42,20 +44,25 @@ if (isset($_POST['save_scheduler_settings']) && wp_verify_nonce($_POST['settings
         wp_clear_scheduled_hook('lendcity_auto_schedule_articles');
         wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
     }
-    
+
     if (preg_match('/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/', $new_time)) {
         update_option('lendcity_article_publish_time', $new_time);
         $publish_time = $new_time;
     }
-    
+
     if ($new_min_scheduled >= 5 && $new_min_scheduled <= 100) {
         update_option('lendcity_min_scheduled_posts', $new_min_scheduled);
         $min_scheduled_posts = $new_min_scheduled;
     }
-    
+
+    if ($new_daily_limit >= 1 && $new_daily_limit <= 20) {
+        update_option('lendcity_daily_processing_limit', $new_daily_limit);
+        $daily_processing_limit = $new_daily_limit;
+    }
+
     update_option('lendcity_claude_default_category', $new_category);
     $default_category = $new_category;
-    
+
     $settings_message = '<div class="notice notice-success"><p>Settings saved!</p></div>';
 }
 
@@ -140,7 +147,7 @@ $nonce = wp_create_nonce('lendcity_claude_nonce');
     <?php echo $upload_message; ?>
     
     <!-- Stats Overview -->
-    <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin: 20px 0;">
+    <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 20px; margin: 20px 0;">
         <div style="background: white; border: 1px solid #c3c4c7; border-radius: 4px; padding: 20px; text-align: center;">
             <div style="font-size: 36px; font-weight: 600; color: #2271b1;"><?php echo $queue_count; ?></div>
             <div style="color: #666;">Queued Files</div>
@@ -148,6 +155,10 @@ $nonce = wp_create_nonce('lendcity_claude_nonce');
         <div style="background: white; border: 1px solid #c3c4c7; border-radius: 4px; padding: 20px; text-align: center;">
             <div style="font-size: 36px; font-weight: 600; color: #2e7d32;"><?php echo $scheduled_count; ?></div>
             <div style="color: #666;">Scheduled Posts</div>
+        </div>
+        <div style="background: white; border: 1px solid #c3c4c7; border-radius: 4px; padding: 20px; text-align: center;">
+            <div style="font-size: 36px; font-weight: 600; color: #e91e63;"><?php echo $daily_processing_limit; ?></div>
+            <div style="color: #666;">Articles/Day (AI)</div>
         </div>
         <div style="background: white; border: 1px solid #c3c4c7; border-radius: 4px; padding: 20px; text-align: center;">
             <div style="font-size: 36px; font-weight: 600; color: #9c27b0;"><?php echo $publish_frequency; ?></div>
@@ -185,14 +196,26 @@ $nonce = wp_create_nonce('lendcity_claude_nonce');
                     </td>
                 </tr>
                 <tr>
+                    <th>Daily Processing Limit</th>
+                    <td>
+                        <input type="number" name="daily_processing_limit" value="<?php echo esc_attr($daily_processing_limit); ?>" min="1" max="20" style="width: 80px;">
+                        <span class="description">Claude will process up to this many articles per day (runs at 2 AM)</span>
+                    </td>
+                </tr>
+                <tr>
                     <th>Minimum Scheduled Posts</th>
                     <td>
                         <input type="number" name="min_scheduled_posts" value="<?php echo esc_attr($min_scheduled_posts); ?>" min="5" max="100" style="width: 80px;">
-                        <span class="description">Auto-scheduler will maintain at least this many scheduled posts (buffer: <?php echo $min_scheduled_posts * $publish_frequency; ?> days)</span>
+                        <span class="description">Fallback: If daily processing is inactive, maintain at least this many scheduled posts</span>
                     </td>
                 </tr>
             </table>
-            <p class="description" style="margin: 10px 0;"><strong>Auto-Schedule:</strong> Every <?php echo $publish_frequency; ?> days, the system will automatically process articles from the queue to maintain <?php echo $min_scheduled_posts; ?> scheduled posts.</p>
+            <p class="description" style="margin: 10px 0; background: #e7f3ff; padding: 10px; border-radius: 4px;">
+                <strong>📅 Daily Processing:</strong> Every day at 2 AM, Claude will automatically process up to <?php echo $daily_processing_limit; ?> articles from your queue.
+                <?php if ($queue_count > 0): ?>
+                With <?php echo $queue_count; ?> files in queue, all articles will be processed in ~<?php echo ceil($queue_count / $daily_processing_limit); ?> days.
+                <?php endif; ?>
+            </p>
             <button type="submit" name="save_scheduler_settings" class="button button-primary">Save Settings</button>
         </form>
     </div>

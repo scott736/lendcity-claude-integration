@@ -1123,9 +1123,74 @@ class LendCity_Claude_Integration {
             wp_schedule_event(time(), 'lendcity_article_frequency', 'lendcity_auto_schedule_articles');
         }
     }
-    
+
     /**
-     * Auto-schedule articles to maintain minimum scheduled posts
+     * Setup the daily article processing cron
+     */
+    public function setup_daily_processing_cron() {
+        if (!wp_next_scheduled('lendcity_daily_article_processing')) {
+            // Schedule for 2 AM local time
+            $timezone = get_option('timezone_string') ?: 'America/Toronto';
+            try {
+                $next_run = new DateTime('tomorrow 02:00:00', new DateTimeZone($timezone));
+                wp_schedule_event($next_run->getTimestamp(), 'daily', 'lendcity_daily_article_processing');
+            } catch (Exception $e) {
+                // Fallback: schedule for next day at same time
+                wp_schedule_event(time() + DAY_IN_SECONDS, 'daily', 'lendcity_daily_article_processing');
+            }
+        }
+    }
+
+    /**
+     * Daily article processing - processes X articles per day from queue
+     * This runs regardless of how many scheduled posts exist (no cap)
+     */
+    public function cron_daily_article_processing() {
+        $daily_limit = get_option('lendcity_daily_processing_limit', 8);
+
+        // Get queued files
+        $queue_dir = wp_upload_dir()['basedir'] . '/lendcity-article-queue';
+        $queued_files = glob($queue_dir . '/*.docx');
+
+        if (empty($queued_files)) {
+            lendcity_log('Daily Processing: No queued files available');
+            return 0;
+        }
+
+        lendcity_log('Daily Processing: Starting - ' . count($queued_files) . ' files in queue, processing up to ' . $daily_limit);
+
+        // Shuffle for random selection
+        shuffle($queued_files);
+
+        // Process up to daily limit
+        $processed = 0;
+        $errors = 0;
+        foreach ($queued_files as $file_path) {
+            if ($processed >= $daily_limit) break;
+
+            $result = $this->process_article_file($file_path);
+            if ($result['success']) {
+                $processed++;
+                lendcity_log('Daily Processing: Processed ' . basename($file_path) . ' - Post ID: ' . $result['post_id']);
+            } else {
+                $errors++;
+                lendcity_log('Daily Processing: Failed to process ' . basename($file_path) . ' - ' . ($result['error'] ?? 'Unknown error'));
+                // Don't count errors toward limit - try more files
+            }
+
+            // Small delay between API calls to avoid rate limits
+            if ($processed < $daily_limit && !empty($queued_files)) {
+                sleep(2);
+            }
+        }
+
+        lendcity_log('Daily Processing: Completed - Processed ' . $processed . ' articles, ' . $errors . ' errors');
+
+        return $processed;
+    }
+
+    /**
+     * Auto-schedule articles to maintain minimum scheduled posts (legacy - kept for backward compatibility)
      */
     public function cron_auto_schedule_articles() {
         $min_scheduled = get_option('lendcity_min_scheduled_posts', 20);
