@@ -386,7 +386,8 @@ class LendCity_Claude_API {
         );
         
         error_log('LendCity: Sending article generation request to Claude API');
-        
+        error_log('LendCity: Prompt length: ' . strlen($prompt) . ' chars');
+
         $response = wp_remote_post($this->api_url, array(
             'headers' => array(
                 'Content-Type' => 'application/json',
@@ -396,9 +397,12 @@ class LendCity_Claude_API {
             'body' => json_encode($body),
             'timeout' => 300 // 5 minutes for long content generation
         ));
-        
+
+        error_log('LendCity: wp_remote_post completed');
+
         if (is_wp_error($response)) {
-            error_log('LendCity Claude API Error: ' . $response->get_error_message());
+            error_log('LendCity Claude API WP_Error: ' . $response->get_error_message());
+            error_log('LendCity Claude API Error Code: ' . $response->get_error_code());
             return $response;
         }
         
