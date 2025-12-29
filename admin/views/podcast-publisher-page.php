@@ -8,13 +8,27 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Get or generate webhook secret
-$webhook_secret = get_option('lendcity_transistor_webhook_secret', '');
-if (empty($webhook_secret)) {
-    $webhook_secret = wp_generate_password(32, false);
-    update_option('lendcity_transistor_webhook_secret', $webhook_secret);
+// Get webhook URL from plugin (uses backup-aware secret restoration)
+$plugin_instance = class_exists('LendCity_Claude_Integration') ? LendCity_Claude_Integration::get_instance() : null;
+if ($plugin_instance && method_exists($plugin_instance, 'get_transistor_webhook_url')) {
+    $webhook_url = $plugin_instance->get_transistor_webhook_url();
+} else {
+    // Fallback with backup-aware secret handling
+    $webhook_secret = get_option('lendcity_transistor_webhook_secret', '');
+    $backup_secret = get_option('lendcity_transistor_webhook_secret_backup', '');
+
+    if (empty($webhook_secret) && !empty($backup_secret)) {
+        // Restore from backup
+        $webhook_secret = $backup_secret;
+        update_option('lendcity_transistor_webhook_secret', $webhook_secret);
+    } elseif (empty($webhook_secret)) {
+        // First time - generate new secret and backup
+        $webhook_secret = wp_generate_password(32, false);
+        update_option('lendcity_transistor_webhook_secret', $webhook_secret);
+        update_option('lendcity_transistor_webhook_secret_backup', $webhook_secret, false);
+    }
+    $webhook_url = rest_url('lendcity/v1/transistor-webhook') . '?key=' . $webhook_secret;
 }
-$webhook_url = rest_url('lendcity/v1/transistor-webhook') . '?key=' . $webhook_secret;
 
 // Get Transistor API key
 $transistor_api_key = get_option('lendcity_transistor_api_key', '');
