@@ -1429,8 +1429,8 @@ class LendCity_Claude_Integration {
         lendcity_log('Transistor Webhook: Received - ' . json_encode($data));
 
         // Extract episode data from webhook
-        // Transistor webhook format: { "event": "episode_published", "data": { "id": "...", "attributes": {...} } }
-        $event = $data['event'] ?? '';
+        // Transistor webhook format: { "event_name": "episode_published", "data": { "id": "...", "attributes": {...} } }
+        $event = $data['event_name'] ?? $data['event'] ?? '';
         if ($event !== 'episode_published') {
             lendcity_log('Transistor Webhook: Ignoring event type: ' . $event);
             return new WP_REST_Response(array('message' => 'Event ignored'), 200);
