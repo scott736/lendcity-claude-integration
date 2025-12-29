@@ -40,13 +40,19 @@ class LendCity_Smart_Linker {
     private $keywords_meta_key = '_lendcity_target_keywords';
 
     // Database version for migrations
-    const DB_VERSION = '5.0';
+    const DB_VERSION = '5.1';
     const DB_VERSION_OPTION = 'lendcity_catalog_db_version';
 
     // v5.0 Semantic Enhancement Options
     private $anchor_usage_option = 'lendcity_anchor_usage_stats';
     private $keyword_frequency_option = 'lendcity_keyword_frequency';
     private $synonym_map_option = 'lendcity_synonym_map';
+
+    // v5.1 Keyword Ownership Sharding
+    // Instead of one giant option, we shard by first letter for better performance
+    private $keyword_ownership_meta_option = 'lendcity_keyword_ownership_meta';
+    private $keyword_ownership_shard_prefix = 'lendcity_keyword_ownership_';
+    private static $keyword_shards_cache = array(); // Static cache for loaded shards
 
     // Parallel processing settings
     private $parallel_batch_size = 5; // Posts per parallel request
@@ -210,6 +216,73 @@ class LendCity_Smart_Linker {
 
         if ($added > 0) {
             $this->log("Added {$added} new v4 columns to catalog table");
+        }
+
+        // v5.1: Add FULLTEXT index for semantic search (if not exists)
+        $this->maybe_add_fulltext_index();
+
+        // v5.1: Add postmeta index for smart links lookups (if not exists)
+        $this->maybe_add_postmeta_index();
+    }
+
+    /**
+     * Add FULLTEXT index for semantic search on summary and title
+     * v5.1 optimization for faster semantic matching
+     */
+    private function maybe_add_fulltext_index() {
+        global $wpdb;
+
+        // Check if FULLTEXT index already exists
+        $index_exists = $wpdb->get_var(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS
+             WHERE table_schema = DATABASE()
+             AND table_name = '{$this->table_name}'
+             AND index_name = 'ft_summary_title'"
+        );
+
+        if ($index_exists == 0) {
+            // Add FULLTEXT index on summary and title columns
+            $result = $wpdb->query(
+                "ALTER TABLE {$this->table_name} ADD FULLTEXT INDEX ft_summary_title (summary, title)"
+            );
+
+            if ($result !== false && !$wpdb->last_error) {
+                $this->log('Added FULLTEXT index ft_summary_title for semantic search');
+            } else if ($wpdb->last_error) {
+                // Log error but don't fail - FULLTEXT may not be supported on all MySQL versions
+                $this->debug_log('Could not add FULLTEXT index: ' . $wpdb->last_error);
+            }
+        }
+    }
+
+    /**
+     * Add index on postmeta for faster smart links lookups
+     * v5.1 optimization for get_all_site_links() queries
+     */
+    private function maybe_add_postmeta_index() {
+        global $wpdb;
+
+        // Check if index already exists on postmeta for our meta_key
+        $index_exists = $wpdb->get_var(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS
+             WHERE table_schema = DATABASE()
+             AND table_name = '{$wpdb->postmeta}'
+             AND index_name = 'idx_lendcity_smart_links'"
+        );
+
+        if ($index_exists == 0) {
+            // Add index for our specific meta_key lookups
+            // Using a partial index on meta_key prefix to speed up WHERE meta_key = '_lendcity_smart_links'
+            $result = $wpdb->query(
+                "ALTER TABLE {$wpdb->postmeta} ADD INDEX idx_lendcity_smart_links (meta_key(32), post_id)"
+            );
+
+            if ($result !== false && !$wpdb->last_error) {
+                $this->log('Added postmeta index idx_lendcity_smart_links for faster link lookups');
+            } else if ($wpdb->last_error) {
+                // Log error but don't fail - index may already exist with different name
+                $this->debug_log('Could not add postmeta index: ' . $wpdb->last_error);
+            }
         }
     }
 
@@ -722,6 +795,92 @@ class LendCity_Smart_Linker {
 
     private function log($message) {
         error_log('LendCity Smart Linker: ' . $message);
+    }
+
+    // =========================================================================
+    // CONTENT COMPRESSION HELPERS (v5.1)
+    // =========================================================================
+
+    /**
+     * Compress and store original content
+     * v5.1: Reduces postmeta storage by 60-80%
+     *
+     * @param int $post_id The post ID
+     * @param string $content The original content to store
+     * @return bool Success
+     */
+    private function store_original_content($post_id, $content) {
+        if (empty($content)) {
+            return false;
+        }
+
+        // Compress the content using gzip level 6 (good balance of speed/compression)
+        $compressed = gzcompress($content, 6);
+        if ($compressed === false) {
+            // Fallback to uncompressed if compression fails
+            $this->debug_log("Compression failed for post {$post_id}, storing uncompressed");
+            update_post_meta($post_id, $this->original_content_meta, $content);
+            return true;
+        }
+
+        // Store as base64 to avoid binary data issues in MySQL
+        $encoded = base64_encode($compressed);
+
+        // Add a prefix to identify compressed content
+        $stored_value = 'gz:' . $encoded;
+
+        update_post_meta($post_id, $this->original_content_meta, $stored_value);
+        return true;
+    }
+
+    /**
+     * Retrieve and decompress original content
+     * v5.1: Handles both compressed (new) and uncompressed (legacy) content
+     *
+     * @param int $post_id The post ID
+     * @return string|false The original content or false if not found
+     */
+    private function get_original_content($post_id) {
+        $stored = get_post_meta($post_id, $this->original_content_meta, true);
+
+        if (empty($stored)) {
+            return false;
+        }
+
+        // Check if this is compressed content (starts with 'gz:')
+        if (strpos($stored, 'gz:') === 0) {
+            // Remove the 'gz:' prefix
+            $encoded = substr($stored, 3);
+
+            // Decode and decompress
+            $compressed = base64_decode($encoded);
+            if ($compressed === false) {
+                $this->debug_log("Base64 decode failed for post {$post_id}");
+                return false;
+            }
+
+            $content = gzuncompress($compressed);
+            if ($content === false) {
+                $this->debug_log("Decompression failed for post {$post_id}");
+                return false;
+            }
+
+            return $content;
+        }
+
+        // Legacy uncompressed content - return as-is
+        return $stored;
+    }
+
+    /**
+     * Check if original content exists for a post
+     *
+     * @param int $post_id The post ID
+     * @return bool Whether original content exists
+     */
+    private function has_original_content($post_id) {
+        $stored = get_post_meta($post_id, $this->original_content_meta, true);
+        return !empty($stored);
     }
 
     // =========================================================================
@@ -2286,10 +2445,9 @@ class LendCity_Smart_Linker {
 
         $content = $post->post_content;
 
-        // Store original
-        $original = get_post_meta($post_id, $this->original_content_meta, true);
-        if (empty($original)) {
-            update_post_meta($post_id, $this->original_content_meta, $content);
+        // Store original (compressed in v5.1 for 60-80% storage reduction)
+        if (!$this->has_original_content($post_id)) {
+            $this->store_original_content($post_id, $content);
         }
 
         // Find anchor in content
@@ -4175,10 +4333,156 @@ class LendCity_Smart_Linker {
     // Scans all pages once, determines which page should "own" each keyword,
     // then uses this map for all linking decisions. Prevents duplicate anchors
     // by design since each keyword only links to one designated page.
+    //
+    // v5.1: Now uses sharded storage for better performance with large keyword sets.
+    // Keywords are stored in separate options by first letter (a-z, other).
+
+    /**
+     * Get the shard key for a keyword (a-z or 'other')
+     * v5.1: Used for sharded keyword storage
+     *
+     * @param string $normalized The normalized keyword
+     * @return string The shard key (a-z or 'other')
+     */
+    private function get_keyword_shard_key($normalized) {
+        if (empty($normalized)) {
+            return 'other';
+        }
+        $first_char = substr($normalized, 0, 1);
+        if (preg_match('/[a-z]/', $first_char)) {
+            return $first_char;
+        }
+        return 'other';
+    }
+
+    /**
+     * Load a keyword shard from options (with static caching)
+     * v5.1: Loads only the shard needed, not the entire map
+     *
+     * @param string $shard_key The shard key (a-z or 'other')
+     * @return array The keywords in this shard
+     */
+    private function load_keyword_shard($shard_key) {
+        // Check static cache first
+        if (isset(self::$keyword_shards_cache[$shard_key])) {
+            return self::$keyword_shards_cache[$shard_key];
+        }
+
+        $option_name = $this->keyword_ownership_shard_prefix . $shard_key;
+        $shard = get_option($option_name, array());
+
+        // Cache for this request
+        self::$keyword_shards_cache[$shard_key] = $shard;
+
+        return $shard;
+    }
+
+    /**
+     * Load all keyword shards (for operations that need full map)
+     * v5.1: Efficiently loads all shards into memory
+     *
+     * @return array Combined keyword map from all shards
+     */
+    private function load_all_keyword_shards() {
+        $all_keywords = array();
+
+        // Load all possible shards (a-z + other)
+        $shard_keys = array_merge(range('a', 'z'), array('other'));
+
+        foreach ($shard_keys as $shard_key) {
+            $shard = $this->load_keyword_shard($shard_key);
+            if (!empty($shard)) {
+                $all_keywords = array_merge($all_keywords, $shard);
+            }
+        }
+
+        return $all_keywords;
+    }
+
+    /**
+     * Clear the static keyword shards cache
+     * v5.1: Call this after modifying shards
+     */
+    private function clear_keyword_shards_cache() {
+        self::$keyword_shards_cache = array();
+    }
+
+    /**
+     * Check if sharded ownership map exists and is valid
+     * v5.1: Checks meta option for validity
+     *
+     * @return array|false Meta data if valid, false otherwise
+     */
+    private function get_ownership_meta() {
+        $meta = get_option($this->keyword_ownership_meta_option, array());
+
+        if (empty($meta) || empty($meta['built_at'])) {
+            return false;
+        }
+
+        return $meta;
+    }
+
+    /**
+     * Migrate from legacy single-option format to sharded format
+     * v5.1: Handles backward compatibility
+     *
+     * @return bool True if migration was performed
+     */
+    private function maybe_migrate_legacy_ownership() {
+        // Check if legacy format exists
+        $legacy = get_option($this->keyword_ownership_option, array());
+
+        if (empty($legacy) || empty($legacy['map'])) {
+            return false;
+        }
+
+        // Check if we already have sharded format
+        $meta = get_option($this->keyword_ownership_meta_option, array());
+        if (!empty($meta) && !empty($meta['built_at'])) {
+            // Already migrated - just delete legacy
+            delete_option($this->keyword_ownership_option);
+            return false;
+        }
+
+        $this->debug_log("Migrating legacy keyword ownership to sharded format...");
+
+        // Group keywords by first letter
+        $shards = array();
+        foreach ($legacy['map'] as $normalized => $data) {
+            $shard_key = $this->get_keyword_shard_key($normalized);
+            if (!isset($shards[$shard_key])) {
+                $shards[$shard_key] = array();
+            }
+            $shards[$shard_key][$normalized] = $data;
+        }
+
+        // Save each shard
+        foreach ($shards as $shard_key => $keywords) {
+            update_option($this->keyword_ownership_shard_prefix . $shard_key, $keywords, false);
+        }
+
+        // Save meta
+        $meta = array(
+            'built_at' => $legacy['built_at'] ?? current_time('mysql'),
+            'stats' => $legacy['stats'] ?? array(),
+            'shard_keys' => array_keys($shards)
+        );
+        update_option($this->keyword_ownership_meta_option, $meta, false);
+
+        // Delete legacy option
+        delete_option($this->keyword_ownership_option);
+
+        $this->log("Migrated " . count($legacy['map']) . " keywords to " . count($shards) . " shards");
+
+        return true;
+    }
 
     /**
      * Build the global keyword ownership map from catalog data
      * Uses existing good_anchor_phrases - no API calls needed
+     *
+     * v5.1: Now stores keywords in shards by first letter for better performance
      *
      * Scoring algorithm for ownership (PAGES GET PRIORITY):
      * - is_page: +100 points (PAGES WIN over posts)
@@ -4192,17 +4496,26 @@ class LendCity_Smart_Linker {
      * @return array Ownership map with stats
      */
     public function build_keyword_ownership_map($force_rebuild = false) {
-        $existing = get_option($this->keyword_ownership_option, array());
+        // v5.1: Check for legacy format and migrate if needed
+        $this->maybe_migrate_legacy_ownership();
 
-        if (!$force_rebuild && !empty($existing['map']) && !empty($existing['built_at'])) {
+        // v5.1: Check sharded meta for validity
+        $meta = $this->get_ownership_meta();
+
+        if (!$force_rebuild && $meta) {
             // Return existing if less than 24 hours old
-            $age = time() - strtotime($existing['built_at']);
+            $age = time() - strtotime($meta['built_at']);
             if ($age < 86400) {
-                return $existing;
+                // Return a compatible format with the map loaded from shards
+                return array(
+                    'map' => $this->load_all_keyword_shards(),
+                    'built_at' => $meta['built_at'],
+                    'stats' => $meta['stats'] ?? array()
+                );
             }
         }
 
-        $this->debug_log("Building global keyword ownership map...");
+        $this->debug_log("Building global keyword ownership map (sharded v5.1)...");
 
         // Get all catalog entries in batches to avoid memory issues
         global $wpdb;
@@ -4366,20 +4679,54 @@ class LendCity_Smart_Linker {
 
         } while (true);
 
-        // Store the map
-        $ownership_data = array(
-            'map' => $keyword_map,
+        // v5.1: Group keywords by first letter for sharded storage
+        $shards = array();
+        foreach ($keyword_map as $normalized => $data) {
+            $shard_key = $this->get_keyword_shard_key($normalized);
+            if (!isset($shards[$shard_key])) {
+                $shards[$shard_key] = array();
+            }
+            $shards[$shard_key][$normalized] = $data;
+        }
+
+        // v5.1: Clear old shards first (in case some letters no longer have keywords)
+        $all_shard_keys = array_merge(range('a', 'z'), array('other'));
+        foreach ($all_shard_keys as $shard_key) {
+            delete_option($this->keyword_ownership_shard_prefix . $shard_key);
+        }
+
+        // v5.1: Store each shard separately
+        foreach ($shards as $shard_key => $keywords) {
+            update_option($this->keyword_ownership_shard_prefix . $shard_key, $keywords, false);
+        }
+
+        // v5.1: Store metadata separately
+        $meta = array(
             'built_at' => current_time('mysql'),
             'stats' => array(
                 'total_keywords' => count($keyword_map),
                 'total_phrases_scanned' => $total_keywords,
-                'pages_processed' => $pages_processed
-            )
+                'pages_processed' => $pages_processed,
+                'shard_count' => count($shards)
+            ),
+            'shard_keys' => array_keys($shards)
         );
+        update_option($this->keyword_ownership_meta_option, $meta, false);
 
-        update_option($this->keyword_ownership_option, $ownership_data, false);
+        // v5.1: Clear static cache so next read gets fresh data
+        $this->clear_keyword_shards_cache();
 
-        $this->debug_log("Keyword ownership map built: " . count($keyword_map) . " unique keywords from {$pages_processed} pages");
+        // v5.1: Also delete legacy option if it exists (cleanup)
+        delete_option($this->keyword_ownership_option);
+
+        $this->debug_log("Keyword ownership map built: " . count($keyword_map) . " unique keywords in " . count($shards) . " shards from {$pages_processed} pages");
+
+        // Return compatible format
+        $ownership_data = array(
+            'map' => $keyword_map,
+            'built_at' => $meta['built_at'],
+            'stats' => $meta['stats']
+        );
 
         return $ownership_data;
     }
@@ -4388,19 +4735,30 @@ class LendCity_Smart_Linker {
      * Get the owner of a specific keyword/phrase
      * Returns null if no owner found
      *
+     * v5.1: Now loads only the relevant shard for better performance
+     *
      * @param string $keyword The keyword to look up
      * @return array|null Owner data or null
      */
     public function get_keyword_owner($keyword) {
-        $ownership = get_option($this->keyword_ownership_option, array());
-
-        if (empty($ownership['map'])) {
-            return null;
-        }
+        // v5.1: Migrate legacy if needed
+        $this->maybe_migrate_legacy_ownership();
 
         $normalized = strtolower(trim(preg_replace('/\s+/', ' ', $keyword)));
 
-        return $ownership['map'][$normalized] ?? null;
+        if (empty($normalized)) {
+            return null;
+        }
+
+        // v5.1: Only load the shard we need
+        $shard_key = $this->get_keyword_shard_key($normalized);
+        $shard = $this->load_keyword_shard($shard_key);
+
+        if (empty($shard)) {
+            return null;
+        }
+
+        return $shard[$normalized] ?? null;
     }
 
     /**
@@ -4482,15 +4840,21 @@ class LendCity_Smart_Linker {
      * Find matching keywords in text content with SEMANTIC/FUZZY matching
      * Returns keywords found in the text that have owners (excluding self)
      *
+     * v5.1: Now uses sharded storage for better performance
+     *
      * @param string $content The text to search
      * @param int $exclude_post_id Post ID to exclude (don't link to self)
      * @param int $limit Max keywords to return
      * @return array Matching keywords with their owners
      */
     public function find_owned_keywords_in_content($content, $exclude_post_id = 0, $limit = 8) {
-        $ownership = get_option($this->keyword_ownership_option, array());
+        // v5.1: Migrate legacy if needed
+        $this->maybe_migrate_legacy_ownership();
 
-        if (empty($ownership['map'])) {
+        // v5.1: Load all keywords from shards
+        $keywords = $this->load_all_keyword_shards();
+
+        if (empty($keywords)) {
             return array();
         }
 
@@ -4499,7 +4863,6 @@ class LendCity_Smart_Linker {
         $matched_urls = array(); // Prevent duplicate URLs
 
         // Sort keywords by length (longer first) to match longer phrases before shorter ones
-        $keywords = $ownership['map'];
         uksort($keywords, function($a, $b) {
             return strlen($b) - strlen($a);
         });
@@ -4550,12 +4913,18 @@ class LendCity_Smart_Linker {
     /**
      * Get keyword ownership statistics
      *
+     * v5.1: Now uses sharded meta for faster stats retrieval
+     *
      * @return array Stats about the ownership map
      */
     public function get_keyword_ownership_stats() {
-        $ownership = get_option($this->keyword_ownership_option, array());
+        // v5.1: Migrate legacy if needed
+        $this->maybe_migrate_legacy_ownership();
 
-        if (empty($ownership['map'])) {
+        // v5.1: Check meta option first (fast path)
+        $meta = $this->get_ownership_meta();
+
+        if (!$meta) {
             return array(
                 'has_map' => false,
                 'total_keywords' => 0,
@@ -4564,36 +4933,43 @@ class LendCity_Smart_Linker {
             );
         }
 
-        // Count unique pages that own keywords
+        // v5.1: Count unique pages from all shards
+        $keywords = $this->load_all_keyword_shards();
         $pages = array();
-        foreach ($ownership['map'] as $data) {
+        foreach ($keywords as $data) {
             $pages[$data['post_id']] = true;
         }
 
         return array(
             'has_map' => true,
-            'total_keywords' => count($ownership['map']),
+            'total_keywords' => count($keywords),
             'pages_with_keywords' => count($pages),
-            'built_at' => $ownership['built_at'] ?? null,
-            'stats' => $ownership['stats'] ?? array()
+            'built_at' => $meta['built_at'] ?? null,
+            'stats' => $meta['stats'] ?? array()
         );
     }
 
     /**
      * Get keywords owned by a specific post
      *
+     * v5.1: Now searches through all shards
+     *
      * @param int $post_id The post ID
      * @return array Keywords owned by this post
      */
     public function get_keywords_for_post($post_id) {
-        $ownership = get_option($this->keyword_ownership_option, array());
+        // v5.1: Migrate legacy if needed
+        $this->maybe_migrate_legacy_ownership();
 
-        if (empty($ownership['map'])) {
+        // v5.1: Load all keywords from shards
+        $keywords = $this->load_all_keyword_shards();
+
+        if (empty($keywords)) {
             return array();
         }
 
         $post_keywords = array();
-        foreach ($ownership['map'] as $normalized => $data) {
+        foreach ($keywords as $normalized => $data) {
             if ($data['post_id'] == $post_id) {
                 $post_keywords[] = array(
                     'keyword' => $normalized,
@@ -4613,14 +4989,32 @@ class LendCity_Smart_Linker {
 
     /**
      * Clear the keyword ownership map
+     *
+     * v5.1: Now clears all shards and meta
      */
     public function clear_keyword_ownership_map() {
+        // v5.1: Clear all shards (a-z + other)
+        $shard_keys = array_merge(range('a', 'z'), array('other'));
+        foreach ($shard_keys as $shard_key) {
+            delete_option($this->keyword_ownership_shard_prefix . $shard_key);
+        }
+
+        // v5.1: Clear meta
+        delete_option($this->keyword_ownership_meta_option);
+
+        // v5.1: Also clear legacy option if it exists
         delete_option($this->keyword_ownership_option);
-        $this->debug_log("Keyword ownership map cleared");
+
+        // v5.1: Clear static cache
+        $this->clear_keyword_shards_cache();
+
+        $this->debug_log("Keyword ownership map cleared (all shards)");
     }
 
     /**
      * Get paginated view of keyword ownership for admin UI
+     *
+     * v5.1: Now loads from shards
      *
      * @param int $page Page number (1-based)
      * @param int $per_page Items per page
@@ -4628,9 +5022,13 @@ class LendCity_Smart_Linker {
      * @return array Paginated data
      */
     public function get_keyword_ownership_paginated($page = 1, $per_page = 50, $search = '') {
-        $ownership = get_option($this->keyword_ownership_option, array());
+        // v5.1: Migrate legacy if needed
+        $this->maybe_migrate_legacy_ownership();
 
-        if (empty($ownership['map'])) {
+        // v5.1: Load all keywords from shards
+        $keywords = $this->load_all_keyword_shards();
+
+        if (empty($keywords)) {
             return array(
                 'items' => array(),
                 'total' => 0,
@@ -4641,7 +5039,7 @@ class LendCity_Smart_Linker {
         }
 
         $items = array();
-        foreach ($ownership['map'] as $normalized => $data) {
+        foreach ($keywords as $normalized => $data) {
             // Apply search filter
             if (!empty($search)) {
                 if (stripos($normalized, $search) === false && stripos($data['anchor'], $search) === false) {
