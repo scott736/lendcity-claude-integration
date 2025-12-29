@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 12.0.0
+ * Version: 12.2.5
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '12.0.0');
+define('LENDCITY_CLAUDE_VERSION', '12.2.2');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -169,8 +169,31 @@ class LendCity_Claude_Integration {
     
     private function __construct() {
         $this->init_hooks();
+        $this->cleanup_deprecated_options();
     }
-    
+
+    /**
+     * v12.2.3: Clean up deprecated ownership map data from database
+     * This runs once and removes any leftover ownership map options
+     */
+    private function cleanup_deprecated_options() {
+        // Check if cleanup already ran
+        if (get_option('lendcity_ownership_cleanup_done')) {
+            return;
+        }
+
+        // Delete ownership map options (removed in v12.2.3)
+        delete_option('lendcity_keyword_ownership');
+        delete_option('lendcity_ownership_queue');
+        delete_option('lendcity_ownership_queue_status');
+
+        // Clear any scheduled ownership cron jobs
+        wp_clear_scheduled_hook('lendcity_process_ownership_queue');
+
+        // Mark cleanup as complete
+        update_option('lendcity_ownership_cleanup_done', true);
+    }
+
     private function init_hooks() {
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_init', array($this, 'register_settings'));
@@ -223,15 +246,15 @@ class LendCity_Claude_Integration {
         add_action('wp_ajax_lendcity_get_meta_queue_status', array($this, 'ajax_get_meta_queue_status'));
         add_action('wp_ajax_lendcity_clear_meta_queue', array($this, 'ajax_clear_meta_queue'));
 
+        // v12.0 Background Queue AJAX (runs without browser open)
+        add_action('wp_ajax_lendcity_start_background_catalog', array($this, 'ajax_start_background_catalog'));
+        add_action('wp_ajax_lendcity_get_catalog_queue_status', array($this, 'ajax_get_catalog_queue_status'));
+        add_action('wp_ajax_lendcity_clear_catalog_queue', array($this, 'ajax_clear_catalog_queue'));
+        add_action('wp_ajax_lendcity_get_all_queue_statuses', array($this, 'ajax_get_all_queue_statuses'));
+
         // SEO Health Monitor AJAX
         add_action('wp_ajax_lendcity_get_seo_health_issues', array($this, 'ajax_get_seo_health_issues'));
         add_action('wp_ajax_lendcity_auto_fix_seo', array($this, 'ajax_auto_fix_seo'));
-
-        // Keyword Ownership AJAX
-        add_action('wp_ajax_lendcity_build_keyword_ownership', array($this, 'ajax_build_keyword_ownership'));
-        add_action('wp_ajax_lendcity_get_keyword_ownership_stats', array($this, 'ajax_get_keyword_ownership_stats'));
-        add_action('wp_ajax_lendcity_get_keyword_ownership_list', array($this, 'ajax_get_keyword_ownership_list'));
-        add_action('wp_ajax_lendcity_clear_keyword_ownership', array($this, 'ajax_clear_keyword_ownership'));
 
         // Article Scheduler AJAX
         add_action('wp_ajax_lendcity_process_article', array($this, 'ajax_process_article'));
@@ -2652,6 +2675,84 @@ class LendCity_Claude_Integration {
         wp_send_json_success($result);
     }
 
+    // ==================== v12.0 BACKGROUND QUEUE AJAX ====================
+    // These queues run via WP Cron - no need to keep browser open
+
+    /**
+     * Start background catalog build (runs without browser)
+     */
+    public function ajax_start_background_catalog() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+
+        // Clear existing catalog first
+        $smart_linker->clear_catalog();
+
+        // Initialize background queue
+        $result = $smart_linker->init_catalog_queue(array('post', 'page'));
+
+        if ($result['success']) {
+            wp_send_json_success(array(
+                'message' => 'Background catalog build started. You can close this window.',
+                'total' => $result['total']
+            ));
+        } else {
+            wp_send_json_error($result['message']);
+        }
+    }
+
+    /**
+     * Get catalog queue status
+     */
+    public function ajax_get_catalog_queue_status() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $status = $smart_linker->get_catalog_queue_status();
+
+        wp_send_json_success($status);
+    }
+
+    /**
+     * Clear/stop catalog queue
+     */
+    public function ajax_clear_catalog_queue() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $smart_linker->clear_catalog_queue();
+
+        wp_send_json_success(array('message' => 'Catalog queue stopped'));
+    }
+
+    /**
+     * Get all queue statuses at once (for dashboard)
+     */
+    public function ajax_get_all_queue_statuses() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+
+        wp_send_json_success(array(
+            'catalog' => $smart_linker->get_catalog_queue_status(),
+            'linking' => $smart_linker->get_queue_status(),
+            'metadata' => $smart_linker->get_meta_queue_status()
+        ));
+    }
+
     // ==================== SEO HEALTH MONITOR AJAX ====================
 
     /**
@@ -2693,78 +2794,6 @@ class LendCity_Claude_Integration {
         } else {
             wp_send_json_error($result['error']);
         }
-    }
-
-    // ==================== KEYWORD OWNERSHIP AJAX ====================
-
-    /**
-     * Build the keyword ownership map
-     */
-    public function ajax_build_keyword_ownership() {
-        check_ajax_referer('lendcity_claude_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) {
-            wp_send_json_error('Permission denied');
-        }
-
-        $force = isset($_POST['force']) && $_POST['force'] === 'true';
-
-        $smart_linker = new LendCity_Smart_Linker();
-        $result = $smart_linker->build_keyword_ownership_map($force);
-
-        wp_send_json_success(array(
-            'stats' => $result['stats'] ?? array(),
-            'built_at' => $result['built_at'] ?? null,
-            'total_keywords' => count($result['map'] ?? array())
-        ));
-    }
-
-    /**
-     * Get keyword ownership stats
-     */
-    public function ajax_get_keyword_ownership_stats() {
-        check_ajax_referer('lendcity_claude_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) {
-            wp_send_json_error('Permission denied');
-        }
-
-        $smart_linker = new LendCity_Smart_Linker();
-        $stats = $smart_linker->get_keyword_ownership_stats();
-
-        wp_send_json_success($stats);
-    }
-
-    /**
-     * Get paginated keyword ownership list
-     */
-    public function ajax_get_keyword_ownership_list() {
-        check_ajax_referer('lendcity_claude_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) {
-            wp_send_json_error('Permission denied');
-        }
-
-        $page = intval($_POST['page'] ?? 1);
-        $per_page = intval($_POST['per_page'] ?? 50);
-        $search = sanitize_text_field($_POST['search'] ?? '');
-
-        $smart_linker = new LendCity_Smart_Linker();
-        $result = $smart_linker->get_keyword_ownership_paginated($page, $per_page, $search);
-
-        wp_send_json_success($result);
-    }
-
-    /**
-     * Clear keyword ownership map
-     */
-    public function ajax_clear_keyword_ownership() {
-        check_ajax_referer('lendcity_claude_nonce', 'nonce');
-        if (!current_user_can('edit_posts')) {
-            wp_send_json_error('Permission denied');
-        }
-
-        $smart_linker = new LendCity_Smart_Linker();
-        $smart_linker->clear_keyword_ownership_map();
-
-        wp_send_json_success(array('message' => 'Keyword ownership map cleared'));
     }
 
     // ==================== ARTICLE SCHEDULER AJAX ====================

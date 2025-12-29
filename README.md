@@ -1,6 +1,6 @@
 # LendCity Tools Plugin
 
-**Version:** 12.0.0
+**Version:** 12.2.5
 **WordPress Plugin for AI-Powered Content Management**
 
 ## Overview
@@ -135,6 +135,50 @@ Main logic is in:
   - Enhanced linking prompt with summaries + anchor suggestions
   - Increased candidate pool (15 pages, 20 posts shown to Claude)
   - New `build_semantic_indexes()` method for catalog optimization
+- v12.1.0: **Background Processing** - All batch operations now run without keeping browser open:
+  - WP Cron-based background queues for Catalog, Auto-Linker, and SEO Metadata
+  - New "Background Queue Status" dashboard showing real-time progress
+  - "BUILD ALL (Background)" button starts all 3 processes via WP Cron
+  - Individual "Build (Background)" buttons for each step
+  - Auto-polling status updates every 5 seconds when queues are active
+  - "Stop All Queues" button to cancel all background processing
+  - Processes continue even after closing browser window
+- v12.2.0: **Full Catalog Intelligence** - Claude sees entire site architecture for strategic linking:
+  - Compact catalog table shows ALL pages and posts (not just top 15/20)
+  - Claude can make site-wide strategic decisions about link distribution
+  - Prioritizes orphan pages (low inbound link count) automatically
+  - Shows inbound link counts so Claude knows which pages need links
+  - Respects page priority settings (P1-P5) in linking decisions
+  - Better topic cluster integrity and funnel progression
+  - Truly holistic SEO linking strategy
+- v12.2.1: **No Limits Mode** - Claude now sees ALL pages AND posts with anchor suggestions:
+  - Removed 25 page / 30 post limit entirely
+  - Every single page and post includes anchor phrase suggestions
+  - Maximum information for optimal link selection
+  - Works with sites up to 1000+ posts (fits within 200k token context)
+- v12.2.2: **Target Keywords Priority** - Manually selected keywords are now top priority:
+  - TARGET KEYWORDS shown with ★ marker for each page
+  - Rule #1 tells Claude to use TARGET KEYWORDS as anchor text when found in content
+  - Set keywords in SEO Settings → Priority Pages & Keywords table
+- v12.2.3: **Ownership Map Removed** - Simplified architecture, all links through Claude API:
+  - Completely removed Keyword Ownership Map feature
+  - All linking decisions now made by Claude API (smarter, context-aware)
+  - Database cleanup on plugin load removes legacy ownership data
+  - Reduced complexity - only 3 steps: Catalog → Auto Linker → SEO Metadata
+  - Faster, cleaner, more reliable linking
+- v12.2.4: **Memory Optimization** - Fixed memory exhaustion crash on large sites:
+  - Compact catalog uses streaming DB queries (200 item limit)
+  - Detailed section limited to top 50 pages + 75 posts
+  - Batch size reduced to 2 posts per cron run
+  - Added garbage collection between batch items
+  - Works on 128MB PHP memory limit
+- v12.2.5: **Full Visibility + Memory Safe** - Best of both worlds:
+  - Claude sees ALL pages AND ALL posts (no limits!)
+  - Streaming DB queries with minimal columns (no JSON blobs loaded)
+  - Compact prompt format (single line per item)
+  - Batch size = 1 post per cron (fresh memory each run)
+  - Disabled catalog preloading (queries on demand)
+  - Recommended: 256MB PHP memory for large sites (500+ posts)
 
 ## Installation
 

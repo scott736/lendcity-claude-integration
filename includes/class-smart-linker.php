@@ -31,7 +31,9 @@ class LendCity_Smart_Linker {
     private $queue_status_option = 'lendcity_smart_linker_queue_status';
     private $meta_queue_option = 'lendcity_meta_queue';
     private $meta_queue_status_option = 'lendcity_meta_queue_status';
-    private $keyword_ownership_option = 'lendcity_keyword_ownership';
+    // v12.0 Background processing queues
+    private $catalog_queue_option = 'lendcity_catalog_queue';
+    private $catalog_queue_status_option = 'lendcity_catalog_queue_status';
     private $catalog_cache = null;
     private $links_cache = null; // In-memory cache for get_all_site_links
 
@@ -77,6 +79,9 @@ class LendCity_Smart_Linker {
         add_action('lendcity_process_queue_batch', array($this, 'process_queue_batch'));
         add_action('lendcity_auto_link_new_post', array($this, 'process_new_post_auto_link'));
         add_action('lendcity_process_meta_queue', array($this, 'process_meta_queue_batch'));
+
+        // v12.0 Background queue processing hooks (runs without browser)
+        add_action('lendcity_process_catalog_queue', array($this, 'process_catalog_queue_batch'));
 
         // Loopback processing (non-cron)
         add_action('wp_ajax_lendcity_background_process', array($this, 'ajax_background_process'));
@@ -893,8 +898,8 @@ class LendCity_Smart_Linker {
             $this->debug_log('Added post ' . $post_id . ' to catalog');
         }
 
-        // Create outgoing links using ownership map (faster, prevents duplicates)
-        $result = $this->create_links_using_ownership($post_id, true); // Falls back to API if needed
+        // v12.2.2: ALWAYS use Claude API for intelligent linking (ownership map removed)
+        $result = $this->create_links_from_source($post_id);
         $this->log('Auto-link result for post ' . $post_id . ' - ' .
             ($result['success'] ? 'Success: ' . ($result['links_created'] ?? 0) . ' links' : $result['message']));
 
@@ -926,6 +931,21 @@ class LendCity_Smart_Linker {
         }
 
         delete_transient($lock_key);
+    }
+
+    /**
+     * v12.0: Build and save a single catalog entry (for background processing)
+     * Returns success/failure for queue processing
+     */
+    public function build_single_catalog_entry($post_id) {
+        $entry = $this->build_single_post_catalog($post_id);
+
+        if ($entry && is_array($entry) && isset($entry['post_id'])) {
+            $this->insert_catalog_entry($post_id, $entry);
+            return array('success' => true, 'entry' => $entry);
+        }
+
+        return array('success' => false, 'message' => 'Failed to build catalog entry');
     }
 
     /**
@@ -1255,123 +1275,6 @@ class LendCity_Smart_Linker {
     // =========================================================================
     // INTELLIGENT LINKING (Uses Enriched Catalog Data)
     // =========================================================================
-
-    /**
-     * Create outgoing links using the Global Keyword Ownership map
-     * This is the preferred method - fast (no API calls) and prevents duplicates by design
-     *
-     * @param int $source_id The source post ID
-     * @param bool $fallback_to_api If true, falls back to Claude API if no owned keywords found
-     * @return array Result with links created
-     */
-    public function create_links_using_ownership($source_id, $fallback_to_api = true) {
-        $source = get_post($source_id);
-        if (!$source || $source->post_status !== 'publish') {
-            return array('success' => false, 'message' => 'Source post not found');
-        }
-
-        // Check if ownership map exists
-        $ownership_stats = $this->get_keyword_ownership_stats();
-        if (!$ownership_stats['has_map']) {
-            $this->debug_log("No ownership map - building first...");
-            $this->build_keyword_ownership_map();
-        }
-
-        // Get source content
-        $source_content = wp_strip_all_tags($source->post_content);
-
-        // Get existing links to avoid duplicates
-        $existing_links = get_post_meta($source_id, $this->link_meta_key, true) ?: array();
-        $used_anchors = array();
-        $linked_urls = array();
-
-        foreach ($existing_links as $link) {
-            $used_anchors[] = strtolower($link['anchor']);
-            $linked_urls[] = $link['url'];
-        }
-
-        // Dynamic link limits based on word count
-        $word_count = str_word_count($source_content);
-        if ($word_count < 800) {
-            $max_links = 4;
-        } elseif ($word_count < 1500) {
-            $max_links = 7;
-        } else {
-            $max_links = 10;
-        }
-
-        $available_slots = $max_links - count($existing_links);
-        if ($available_slots <= 0) {
-            return array('success' => false, 'message' => 'Max links reached');
-        }
-
-        // Find owned keywords in the source content
-        $matches = $this->find_owned_keywords_in_content($source_content, $source_id, $available_slots + 5);
-
-        if (empty($matches) && $fallback_to_api) {
-            $this->debug_log("No owned keywords found in post $source_id - falling back to API");
-            return $this->create_links_from_source($source_id);
-        }
-
-        if (empty($matches)) {
-            return array('success' => true, 'message' => 'No owned keywords found', 'links_created' => 0);
-        }
-
-        // Insert links for matched keywords
-        $links_created = array();
-        $errors = array();
-
-        foreach ($matches as $match) {
-            if (count($links_created) >= $available_slots) break;
-
-            // Use matched_text (actual text found) if available, otherwise use canonical anchor
-            $anchor = isset($match['matched_text']) ? $match['matched_text'] : $match['anchor'];
-            $anchor_lower = strtolower($anchor);
-
-            // Skip if anchor already used
-            if (in_array($anchor_lower, $used_anchors)) {
-                continue;
-            }
-
-            // Skip if URL already linked
-            if (in_array($match['target_url'], $linked_urls)) {
-                continue;
-            }
-
-            // Get target info
-            $target_entry = $this->get_catalog_entry($match['target_post_id']);
-            $is_page = $target_entry ? $target_entry['is_page'] : false;
-
-            $result = $this->insert_link_in_post(
-                $source_id,
-                $anchor,
-                $match['target_url'],
-                $match['target_post_id'],
-                $is_page
-            );
-
-            if ($result['success']) {
-                $links_created[] = array(
-                    'target_id' => $match['target_post_id'],
-                    'anchor' => $anchor,
-                    'url' => $match['target_url']
-                );
-                $used_anchors[] = $anchor_lower;
-                $linked_urls[] = $match['target_url'];
-                $this->debug_log("Created ownership-based link: '$anchor' -> {$match['target_url']}");
-            } else {
-                $errors[] = $result['message'];
-            }
-        }
-
-        return array(
-            'success' => true,
-            'message' => 'Created ' . count($links_created) . ' links using ownership map',
-            'links_created' => count($links_created),
-            'links' => $links_created,
-            'errors' => $errors
-        );
-    }
 
     /**
      * Create outgoing links FROM a source post using intelligent matching
@@ -2021,85 +1924,143 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Build the intelligent linking prompt - v5.0 Enhanced
-     * Now includes summaries, anchor phrases, and more context
+     * v12.2: Build compact catalog table for full site awareness
+     * Shows ALL pages/posts in a condensed format so Claude can make strategic decisions
+     * v12.2.5: Memory optimized - streaming queries with minimal columns, NO LIMITS
+     */
+    private function build_compact_catalog_table($source_id, $linked_urls = array()) {
+        global $wpdb;
+
+        $pages_table = "ID|Title|Inbound#|Pri\n";
+        $pages_table .= str_repeat("-", 45) . "\n";
+
+        $posts_table = "ID|Title|Inbound#\n";
+        $posts_table .= str_repeat("-", 40) . "\n";
+
+        $page_count = 0;
+        $post_count = 0;
+
+        // v12.2.5: Stream ALL items with minimal columns (no JSON fields = low memory)
+        $rows = $wpdb->get_results($wpdb->prepare(
+            "SELECT post_id, url, title, inbound_link_count, is_page
+             FROM {$this->table_name}
+             WHERE post_id != %d
+             ORDER BY is_page DESC, inbound_link_count ASC",
+            $source_id
+        ), ARRAY_A);
+
+        foreach ($rows as $row) {
+            $id = intval($row['post_id']);
+            $linked_marker = in_array($row['url'], $linked_urls) ? '[✓]' : '';
+
+            // Shorter title for compact view
+            $title = substr($row['title'], 0, 30);
+            if (strlen($row['title']) > 30) $title .= '..';
+
+            $inbound = $row['inbound_link_count'] ?? 0;
+
+            if ($row['is_page']) {
+                $priority = $this->get_page_priority($id);
+                $pages_table .= "{$id}|{$title}|{$inbound}|P{$priority}{$linked_marker}\n";
+                $page_count++;
+            } else {
+                $posts_table .= "{$id}|{$title}|{$inbound}{$linked_marker}\n";
+                $post_count++;
+            }
+        }
+
+        unset($rows); // Free memory immediately
+
+        return array(
+            'pages' => $pages_table,
+            'posts' => $posts_table,
+            'page_count' => $page_count,
+            'post_count' => $post_count
+        );
+    }
+
+    /**
+     * Build the intelligent linking prompt - v12.2 Full Catalog Intelligence
+     * Now includes full site catalog awareness + detailed candidates
      */
     private function build_linking_prompt($source, $source_entry, $source_content,
         $available_pages, $available_posts, $used_anchors, $page_slots, $post_slots) {
 
+        // v12.2: Get linked URLs to mark in catalog
+        $existing_links = get_post_meta($source->ID, $this->link_meta_key, true) ?: array();
+        $linked_urls = array_column($existing_links, 'url');
+
+        // v12.2: Build full catalog awareness
+        $compact_catalog = $this->build_compact_catalog_table($source->ID, $linked_urls);
+
         $prompt = "You are an expert SEO strategist creating semantically relevant internal links.\n\n";
-        $prompt .= "=== SOURCE POST ===\n";
+
+        // v12.2: FULL SITE CATALOG - Claude sees the entire site structure
+        $prompt .= "=== FULL SITE CATALOG ({$compact_catalog['page_count']} pages, {$compact_catalog['post_count']} posts) ===\n";
+        $prompt .= "Use this to understand site architecture. Items marked [LINKED] are already linked from this post.\n";
+        $prompt .= "PRIORITIZE: Low Inbound# pages need links! High Priority pages (P4, P5) are important.\n\n";
+
+        $prompt .= "SERVICE PAGES:\n";
+        $prompt .= $compact_catalog['pages'] . "\n";
+
+        $prompt .= "BLOG POSTS:\n";
+        $prompt .= $compact_catalog['posts'] . "\n";
+
+        // Source post info
+        $prompt .= "=== SOURCE POST (adding links TO this post) ===\n";
         $prompt .= "Title: " . $source->post_title . "\n";
         $prompt .= "Topic Cluster: " . ($source_entry['topic_cluster'] ?? 'general') . "\n";
         $prompt .= "Funnel Stage: " . ($source_entry['funnel_stage'] ?? 'awareness') . "\n";
-        $prompt .= "Difficulty: " . ($source_entry['difficulty_level'] ?? 'intermediate') . "\n";
         $prompt .= "Persona: " . ($source_entry['target_persona'] ?? 'general') . "\n";
         $prompt .= "Topics: " . implode(', ', $source_entry['main_topics'] ?? array()) . "\n";
-        $prompt .= "Entities: " . implode(', ', array_slice($source_entry['entities'] ?? array(), 0, 10)) . "\n";
         $prompt .= "Content:\n" . $source_content . "\n\n";
 
         if (!empty($used_anchors)) {
             $prompt .= "=== ALREADY USED ANCHORS (NEVER USE THESE) ===\n" . implode(', ', $used_anchors) . "\n\n";
         }
 
-        // Get site-wide anchor usage for diversity check
-        $anchor_usage = get_option($this->anchor_usage_option, array());
-
+        // v12.2: Show DETAILED info for candidates (for anchor selection)
         $links_requested = array();
 
+        // v12.2.5: Show ALL pages with anchor suggestions (no limits, memory-optimized)
         if ($page_slots > 0 && !empty($available_pages)) {
-            $prompt .= "=== AVAILABLE SERVICE PAGES (max " . $page_slots . " links) ===\n";
-            $count = 0;
+            $prompt .= "=== ALL SERVICE PAGES (" . count($available_pages) . " pages, select up to " . $page_slots . " links) ===\n";
+            $prompt .= "★ TARGET KEYWORDS are top priority - use these as anchors when found in content!\n\n";
             foreach ($available_pages as $id => $entry) {
-                if ($count >= 15) break; // Increased from 8 to 15
                 $priority = $this->get_page_priority($id);
-                $keywords = $this->get_page_keywords($id);
-                $prompt .= "\nID:" . $id . " | " . $entry['title'] . " | Priority:" . $priority;
-                $prompt .= " | Cluster:" . ($entry['topic_cluster'] ?? 'none');
-                $prompt .= " | Persona:" . ($entry['target_persona'] ?? 'general');
+                $inbound = $entry['inbound_link_count'] ?? 0;
+                $target_keywords = $this->get_page_keywords($id);
+                $prompt .= "ID:" . $id . "|" . $entry['title'] . "|P" . $priority . "|In:" . $inbound;
 
-                // v5.0: Add summary for context
-                if (!empty($entry['summary'])) {
-                    $prompt .= "\n  Summary: " . substr($entry['summary'], 0, 150) . "...";
+                // Show TARGET KEYWORDS (top priority)
+                if (!empty($target_keywords)) {
+                    $prompt .= " ★" . $target_keywords;
                 }
 
-                // v5.0: Add suggested anchor phrases
+                // Add top 3 anchor phrases
                 $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
                 if (!empty($anchor_phrases)) {
-                    $prompt .= "\n  Best Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 5));
-                }
-                if ($keywords) {
-                    $prompt .= "\n  Keywords: " . $keywords;
+                    $prompt .= " [" . implode(', ', array_slice($anchor_phrases, 0, 3)) . "]";
                 }
                 $prompt .= "\n";
-                $count++;
             }
             $prompt .= "\n";
             $links_requested[] = "Up to $page_slots page links";
         }
 
+        // v12.2.5: Show ALL posts with anchor suggestions (no limits, memory-optimized)
         if ($post_slots > 0 && !empty($available_posts)) {
-            $prompt .= "=== AVAILABLE BLOG POSTS (max " . $post_slots . " links) - SORTED BY RELEVANCE ===\n";
-            $count = 0;
+            $prompt .= "=== ALL BLOG POSTS (" . count($available_posts) . " posts, select up to " . $post_slots . " links) ===\n\n";
             foreach ($available_posts as $id => $entry) {
-                if ($count >= 20) break; // Increased from 12 to 20
-                $prompt .= "\nID:" . $id . " | " . $entry['title'];
-                $prompt .= " | Cluster:" . ($entry['topic_cluster'] ?? 'none');
-                $prompt .= " | Funnel:" . ($entry['funnel_stage'] ?? 'awareness');
-                $prompt .= " | Persona:" . ($entry['target_persona'] ?? 'general');
+                $inbound = $entry['inbound_link_count'] ?? 0;
+                $prompt .= "ID:" . $id . "|" . $entry['title'] . "|In:" . $inbound;
 
-                // v5.0: Add summary for semantic context
-                if (!empty($entry['summary'])) {
-                    $prompt .= "\n  Summary: " . substr($entry['summary'], 0, 120) . "...";
-                }
-
-                // v5.0: Add suggested anchor phrases
+                // Add top 3 anchor phrases
                 $anchor_phrases = $entry['good_anchor_phrases'] ?? array();
                 if (!empty($anchor_phrases)) {
-                    $prompt .= "\n  Best Anchors: " . implode(', ', array_slice($anchor_phrases, 0, 4));
+                    $prompt .= " [" . implode(', ', array_slice($anchor_phrases, 0, 3)) . "]";
                 }
                 $prompt .= "\n";
-                $count++;
             }
             $prompt .= "\n";
             $links_requested[] = "Up to $post_slots post links";
@@ -2108,22 +2069,22 @@ class LendCity_Smart_Linker {
         $prompt .= "=== TASK ===\n";
         $prompt .= "Find: " . implode(' + ', $links_requested) . "\n\n";
 
-        $prompt .= "=== v5.0 SEMANTIC LINKING RULES ===\n";
-        $prompt .= "1. SEMANTIC RELEVANCE: Only link when source paragraph ACTUALLY discusses the target topic\n";
-        $prompt .= "2. ANCHOR SELECTION: Use 2-4 word phrases that EXIST EXACTLY in the source content\n";
-        $prompt .= "3. PREFER SUGGESTED ANCHORS: Use 'Best Anchors' when they appear naturally in content\n";
-        $prompt .= "4. CLUSTER MATCHING: Prioritize same/related topic clusters for topical authority\n";
+        $prompt .= "=== LINKING RULES (v12.2.1) ===\n";
+        $prompt .= "1. ★ TARGET KEYWORDS ARE TOP PRIORITY: If a page has TARGET KEYWORDS, use those as anchor text when they appear in content!\n";
+        $prompt .= "2. PRIORITIZE ORPHANS: Pages with Inbound# < 5 NEED links - prioritize them\n";
+        $prompt .= "3. RESPECT PRIORITY: P5 pages are most important, P1 least important\n";
+        $prompt .= "4. CLUSTER INTEGRITY: Link within same/related topic clusters for topical authority\n";
         $prompt .= "5. PERSONA ALIGNMENT: Match reader personas (don't link investor→first-time-buyer)\n";
-        $prompt .= "6. FUNNEL PROGRESSION: Link to content that advances the reader journey\n";
-        $prompt .= "7. DISTRIBUTE EVENLY: Spread links throughout the ENTIRE article (not just intro)\n";
+        $prompt .= "6. FUNNEL PROGRESSION: Link awareness→consideration→decision naturally\n";
+        $prompt .= "7. DISTRIBUTE EVENLY: Spread links throughout the ENTIRE article\n";
         $prompt .= "8. MAX 1 LINK PER PARAGRAPH: Never add multiple links to same paragraph\n";
-        $prompt .= "9. ANCHOR DIVERSITY: Vary anchor text - don't use same phrase repeatedly\n";
-        $prompt .= "10. QUALITY OVER QUANTITY: Return fewer links if no good semantic matches exist\n\n";
+        $prompt .= "9. ANCHOR DIVERSITY: Vary anchor text across the site\n";
+        $prompt .= "10. QUALITY > QUANTITY: Fewer good links beats many weak links\n\n";
 
-        $prompt .= "CRITICAL: Anchor text MUST:\n";
-        $prompt .= "- Be an EXACT phrase from the source content (2-4 words ideal)\n";
-        $prompt .= "- Semantically describe what the target page is about\n";
-        $prompt .= "- Read naturally in the sentence context\n\n";
+        $prompt .= "ANCHOR TEXT RULES:\n";
+        $prompt .= "- MUST be an EXACT phrase from the source content (2-4 words ideal)\n";
+        $prompt .= "- Use 'Anchors' suggestions when they appear naturally in content\n";
+        $prompt .= "- Must read naturally in sentence context\n\n";
 
         $prompt .= "Respond with ONLY a JSON array:\n";
         $prompt .= '[{"target_id": 123, "anchor_text": "exact phrase from content", "is_page": true/false, "paragraph_hint": "first few words of paragraph"}, ...]\n';
@@ -2464,29 +2425,24 @@ class LendCity_Smart_Linker {
             'current_post' => '',
             'started_at' => current_time('mysql'),
             'last_activity' => current_time('mysql'),
-            'batch_size' => 15,  // Increased from 3 for faster processing
-            'fast_mode' => true  // Use keyword ownership matching (no API calls)
+            'batch_size' => 1,  // v12.2.5: Process 1 post at a time for memory safety
+            'fast_mode' => false  // v12.2.2: ALWAYS use Claude API (ownership map removed)
         );
         update_option($this->queue_status_option, $status, false);
 
-        // Pre-build keyword ownership map for fast linking (avoids building mid-process)
-        $ownership_stats = $this->get_keyword_ownership_stats();
-        if (!$ownership_stats['has_map']) {
-            $this->debug_log('Pre-building keyword ownership map before queue processing...');
-            $this->build_keyword_ownership_map();
-        }
+        // v12.2.2: No ownership map pre-building - all requests go through Claude API
 
         if (count($queue_ids) > 0 && !wp_next_scheduled('lendcity_process_link_queue')) {
             wp_schedule_event(time(), 'every_minute', 'lendcity_process_link_queue');
-            $this->debug_log('Scheduled queue cron for ' . count($queue_ids) . ' items (fast mode)');
+            $this->debug_log('Scheduled queue cron for ' . count($queue_ids) . ' items (API mode)');
         }
 
         return array('queued' => count($queue_ids), 'skipped' => $skipped);
     }
 
     /**
-     * Process queue batch - FAST MODE
-     * Uses keyword ownership matching instead of Claude API for 30x speed improvement
+     * Process queue batch - API MODE (v12.2.2)
+     * All link requests go through Claude API for intelligent linking
      */
     public function process_queue_batch() {
         $lock_key = 'lendcity_queue_processing';
@@ -2513,10 +2469,11 @@ class LendCity_Smart_Linker {
             return array('complete' => true);
         }
 
-        // Pre-load catalog into memory cache (avoids reloading for each post)
-        $this->preload_catalog_cache();
+        // v12.2.5: Skip catalog preload - use streaming queries instead to save memory
+        // Each post processes independently with fresh DB queries
+        $this->clear_catalog_cache(); // Ensure clean slate
 
-        $batch_size = isset($status['batch_size']) ? $status['batch_size'] : 15;
+        $batch_size = isset($status['batch_size']) ? $status['batch_size'] : 1;
         $fast_mode = isset($status['fast_mode']) ? $status['fast_mode'] : true;
         $processed = 0;
         $links = 0;
@@ -2530,26 +2487,10 @@ class LendCity_Smart_Linker {
             $status['last_activity'] = current_time('mysql');
             update_option($this->queue_status_option, $status, false);
 
-            // HYBRID MODE: Fast keyword matching first, API fallback if 0 links found
-            // This gives speed (most posts) + quality (posts without keyword matches)
-            if ($fast_mode) {
-                $result = $this->create_links_using_ownership($post_id, false);
-                $count = isset($result['links_created']) ? $result['links_created'] : 0;
-
-                // Fallback to API if fast mode found nothing
-                if ($count === 0 && $result['success']) {
-                    $this->log('Queue: No keyword matches for ' . $post_id . ' - trying API...');
-                    $result = $this->create_links_from_source($post_id);
-                    $count = isset($result['links_created']) ? $result['links_created'] : 0;
-                    $mode = 'api-fallback';
-                } else {
-                    $mode = 'fast';
-                }
-            } else {
-                $result = $this->create_links_from_source($post_id);
-                $count = isset($result['links_created']) ? $result['links_created'] : 0;
-                $mode = 'api';
-            }
+            // v12.2.2: ALWAYS use Claude API for intelligent linking
+            $result = $this->create_links_from_source($post_id);
+            $count = isset($result['links_created']) ? $result['links_created'] : 0;
+            $mode = 'api';
 
             $status['processed']++;
             $processed++;
@@ -2563,6 +2504,13 @@ class LendCity_Smart_Linker {
             }
 
             update_option($this->queue_status_option, $status, false);
+
+            // v12.2.3: Memory cleanup between posts to prevent exhaustion
+            unset($result);
+            if (function_exists('gc_collect_cycles')) {
+                gc_collect_cycles();
+            }
+            wp_cache_flush();
         }
 
         $this->clear_catalog_cache(); // Clean up memory
@@ -2704,6 +2652,171 @@ class LendCity_Smart_Linker {
         $this->clear_catalog_cache();
 
         $this->debug_log('Queue cleared completely');
+    }
+
+    // =========================================================================
+    // v12.0 BACKGROUND QUEUE PROCESSING (Runs without browser)
+    // =========================================================================
+
+    /**
+     * Initialize catalog build queue for background processing
+     */
+    public function init_catalog_queue($post_types = array('post', 'page')) {
+        // Get all published posts/pages
+        $args = array(
+            'post_type' => $post_types,
+            'post_status' => 'publish',
+            'posts_per_page' => -1,
+            'fields' => 'ids'
+        );
+        $posts = get_posts($args);
+
+        if (empty($posts)) {
+            return array('success' => false, 'message' => 'No posts found');
+        }
+
+        // Save queue
+        update_option($this->catalog_queue_option, $posts, false);
+
+        // Initialize status
+        $status = array(
+            'state' => 'running',
+            'total' => count($posts),
+            'processed' => 0,
+            'errors' => 0,
+            'started_at' => current_time('mysql'),
+            'last_activity' => current_time('mysql'),
+            'current_post' => ''
+        );
+        update_option($this->catalog_queue_status_option, $status, false);
+
+        // Schedule cron if not already scheduled
+        if (!wp_next_scheduled('lendcity_process_catalog_queue')) {
+            wp_schedule_event(time(), 'every_minute', 'lendcity_process_catalog_queue');
+        }
+
+        $this->debug_log('Catalog queue initialized: ' . count($posts) . ' posts');
+
+        return array('success' => true, 'total' => count($posts));
+    }
+
+    /**
+     * Process catalog queue batch - runs via WP Cron (no browser needed)
+     */
+    public function process_catalog_queue_batch() {
+        $lock_key = 'lendcity_catalog_queue_processing';
+        if (get_transient($lock_key)) {
+            return array('complete' => false, 'message' => 'Already processing');
+        }
+        set_transient($lock_key, true, 180); // 3 minute lock
+
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(300);
+        }
+
+        $queue = get_option($this->catalog_queue_option, array());
+        $status = get_option($this->catalog_queue_status_option, array());
+
+        if (empty($queue)) {
+            // Queue complete
+            if (isset($status['state']) && $status['state'] === 'running') {
+                $status['state'] = 'complete';
+                $status['completed_at'] = current_time('mysql');
+                update_option($this->catalog_queue_status_option, $status, false);
+
+                // Build semantic indexes after catalog complete
+                $this->build_semantic_indexes();
+            }
+            wp_clear_scheduled_hook('lendcity_process_catalog_queue');
+            delete_transient($lock_key);
+            $this->debug_log('Catalog queue complete');
+            return array('complete' => true);
+        }
+
+        // Process batch of 3 posts (balance speed vs API limits)
+        $batch_size = 3;
+        $processed = 0;
+
+        while ($processed < $batch_size && !empty($queue)) {
+            $post_id = array_shift($queue);
+            update_option($this->catalog_queue_option, $queue, false);
+
+            $post = get_post($post_id);
+            if (!$post) {
+                $status['errors']++;
+                continue;
+            }
+
+            $status['current_post'] = $post->post_title;
+            $status['last_activity'] = current_time('mysql');
+            update_option($this->catalog_queue_status_option, $status, false);
+
+            // Build catalog entry for this post
+            $result = $this->build_single_catalog_entry($post_id);
+
+            if ($result['success']) {
+                $status['processed']++;
+                $this->debug_log('Catalog: Added ' . $post->post_title);
+            } else {
+                $status['errors']++;
+                $this->debug_log('Catalog: Failed ' . $post->post_title . ' - ' . ($result['message'] ?? 'Unknown error'));
+            }
+
+            update_option($this->catalog_queue_status_option, $status, false);
+            $processed++;
+
+            // Small delay to avoid API rate limits
+            usleep(500000); // 0.5 second
+        }
+
+        delete_transient($lock_key);
+
+        if (empty($queue)) {
+            $status['state'] = 'complete';
+            $status['completed_at'] = current_time('mysql');
+            $status['current_post'] = '';
+            update_option($this->catalog_queue_status_option, $status, false);
+            wp_clear_scheduled_hook('lendcity_process_catalog_queue');
+
+            // Build semantic indexes
+            $this->build_semantic_indexes();
+
+            $this->debug_log('Catalog queue complete - ' . $status['processed'] . ' entries');
+            return array('complete' => true, 'processed' => $status['processed']);
+        }
+
+        return array('complete' => false, 'remaining' => count($queue), 'processed' => $processed);
+    }
+
+    /**
+     * Get catalog queue status
+     */
+    public function get_catalog_queue_status() {
+        $queue = get_option($this->catalog_queue_option, array());
+        $status = get_option($this->catalog_queue_status_option, array());
+
+        return array(
+            'state' => $status['state'] ?? 'idle',
+            'total' => $status['total'] ?? 0,
+            'processed' => $status['processed'] ?? 0,
+            'remaining' => is_array($queue) ? count($queue) : 0,
+            'errors' => $status['errors'] ?? 0,
+            'current_post' => $status['current_post'] ?? '',
+            'started_at' => $status['started_at'] ?? '',
+            'last_activity' => $status['last_activity'] ?? '',
+            'completed_at' => $status['completed_at'] ?? ''
+        );
+    }
+
+    /**
+     * Clear catalog queue
+     */
+    public function clear_catalog_queue() {
+        delete_option($this->catalog_queue_option);
+        delete_option($this->catalog_queue_status_option);
+        wp_clear_scheduled_hook('lendcity_process_catalog_queue');
+        delete_transient('lendcity_catalog_queue_processing');
+        $this->debug_log('Catalog queue cleared');
     }
 
     // =========================================================================
@@ -4169,510 +4282,4 @@ class LendCity_Smart_Linker {
         );
     }
 
-    // =========================================================================
-    // GLOBAL KEYWORD OWNERSHIP SYSTEM
-    // =========================================================================
-    // Scans all pages once, determines which page should "own" each keyword,
-    // then uses this map for all linking decisions. Prevents duplicate anchors
-    // by design since each keyword only links to one designated page.
-
-    /**
-     * Build the global keyword ownership map from catalog data
-     * Uses existing good_anchor_phrases - no API calls needed
-     *
-     * Scoring algorithm for ownership (PAGES GET PRIORITY):
-     * - is_page: +100 points (PAGES WIN over posts)
-     * - is_pillar_content: +30 points (pillar pages are authoritative)
-     * - content_quality_score: 0-100 points
-     * - monetization_value * 5: 0-50 points (high-value pages priority)
-     * - link_gap_priority: 0-100 points (pages needing links get priority)
-     * - has_cta or has_lead_form: +10 points (conversion pages)
-     *
-     * @param bool $force_rebuild Force rebuild even if map exists
-     * @return array Ownership map with stats
-     */
-    public function build_keyword_ownership_map($force_rebuild = false) {
-        $existing = get_option($this->keyword_ownership_option, array());
-
-        if (!$force_rebuild && !empty($existing['map']) && !empty($existing['built_at'])) {
-            // Return existing if less than 24 hours old
-            $age = time() - strtotime($existing['built_at']);
-            if ($age < 86400) {
-                return $existing;
-            }
-        }
-
-        $this->debug_log("Building global keyword ownership map...");
-
-        // Get all catalog entries in batches to avoid memory issues
-        global $wpdb;
-        $batch_size = 100;
-        $offset = 0;
-
-        // keyword_normalized => array('post_id' => X, 'url' => Y, 'score' => Z, 'anchor' => original)
-        $keyword_map = array();
-        $total_keywords = 0;
-        $pages_processed = 0;
-
-        do {
-            $rows = $wpdb->get_results($wpdb->prepare(
-                "SELECT post_id, url, title, good_anchor_phrases, main_topics, is_page, is_pillar_content,
-                        content_quality_score, monetization_value, link_gap_priority,
-                        has_cta, has_lead_form
-                 FROM {$this->table_name}
-                 ORDER BY post_id ASC
-                 LIMIT %d OFFSET %d",
-                $batch_size, $offset
-            ), ARRAY_A);
-
-            if (empty($rows)) {
-                break;
-            }
-
-            foreach ($rows as $row) {
-                $pages_processed++;
-                $post_id = intval($row['post_id']);
-                $url = $row['url'];
-                $title = $row['title'] ?? '';
-
-                // Calculate page authority score
-                // PAGES GET TOP PRIORITY (+100 bonus) so they win keyword ownership over posts
-                $score = 0;
-                $score += $row['is_page'] ? 100 : 0;  // Pages get major priority
-                $score += $row['is_pillar_content'] ? 30 : 0;
-                $score += intval($row['content_quality_score'] ?? 50);
-                $score += intval($row['monetization_value'] ?? 5) * 5;
-                $score += intval($row['link_gap_priority'] ?? 50);
-                $score += ($row['has_cta'] || $row['has_lead_form']) ? 10 : 0;
-
-                // Collect all potential keywords from multiple sources
-                $all_keywords = array();
-
-                // 1. good_anchor_phrases (primary source)
-                $anchors = json_decode($row['good_anchor_phrases'] ?? '[]', true) ?: array();
-                foreach ($anchors as $anchor) {
-                    if (!empty($anchor) && is_string($anchor)) {
-                        $all_keywords[] = $anchor;
-                    }
-                }
-
-                // 2. main_topics (additional keywords)
-                $topics = json_decode($row['main_topics'] ?? '[]', true) ?: array();
-                foreach ($topics as $topic) {
-                    if (!empty($topic) && is_string($topic)) {
-                        $all_keywords[] = $topic;
-                    }
-                }
-
-                // 3. Page title (clean it up - remove site name, pipes, dashes at end)
-                if (!empty($title)) {
-                    $clean_title = preg_replace('/\s*[\|\-–—]\s*[^|\-–—]+$/', '', $title);
-                    $clean_title = trim($clean_title);
-                    if (strlen($clean_title) > 10 && strlen($clean_title) < 80) {
-                        $all_keywords[] = $clean_title;
-                    }
-                }
-
-                // 4. Target keywords from post meta (user-defined, HIGHEST priority)
-                // These get a +1000 score bonus to ALWAYS win ownership
-                $target_keywords = get_post_meta($post_id, $this->keywords_meta_key, true);
-                $target_keyword_list = array();
-                if (!empty($target_keywords)) {
-                    // Target keywords can be comma-separated or newline-separated
-                    $tk_list = preg_split('/[,\n]+/', $target_keywords);
-                    foreach ($tk_list as $tk) {
-                        $tk = trim($tk);
-                        if (!empty($tk) && strlen($tk) >= 3) {
-                            $target_keyword_list[] = $tk;
-                        }
-                    }
-                }
-
-                // Process regular keywords (from catalog)
-                foreach ($all_keywords as $anchor) {
-                    // Normalize: lowercase, trim, single spaces
-                    $normalized = strtolower(trim(preg_replace('/\s+/', ' ', $anchor)));
-
-                    // Skip if too short (less than 2 words) or too long (more than 8 words)
-                    $word_count = str_word_count($normalized);
-                    if ($word_count < 2 || $word_count > 8) continue;
-
-                    // Skip common filler phrases
-                    if (in_array($normalized, array('read more', 'click here', 'learn more', 'find out', 'get started'))) continue;
-
-                    $total_keywords++;
-
-                    // Check if this keyword already has an owner
-                    if (isset($keyword_map[$normalized])) {
-                        // Higher score wins ownership
-                        if ($score > $keyword_map[$normalized]['score']) {
-                            $keyword_map[$normalized] = array(
-                                'post_id' => $post_id,
-                                'url' => $url,
-                                'score' => $score,
-                                'anchor' => $anchor // Original case preserved
-                            );
-                        }
-                    } else {
-                        $keyword_map[$normalized] = array(
-                            'post_id' => $post_id,
-                            'url' => $url,
-                            'score' => $score,
-                            'anchor' => $anchor
-                        );
-                    }
-                }
-
-                // Process TARGET keywords with MASSIVE score bonus (+1000)
-                // These ALWAYS override other ownership because user explicitly set them
-                foreach ($target_keyword_list as $anchor) {
-                    $normalized = strtolower(trim(preg_replace('/\s+/', ' ', $anchor)));
-
-                    // Allow single words for target keywords (user explicitly set them)
-                    if (strlen($normalized) < 2) continue;
-
-                    $target_score = $score + 1000; // Massive bonus to always win
-
-                    $total_keywords++;
-
-                    // Target keywords ALWAYS win (check score but they have +1000)
-                    if (isset($keyword_map[$normalized])) {
-                        if ($target_score > $keyword_map[$normalized]['score']) {
-                            $keyword_map[$normalized] = array(
-                                'post_id' => $post_id,
-                                'url' => $url,
-                                'score' => $target_score,
-                                'anchor' => $anchor,
-                                'is_target_keyword' => true
-                            );
-                        }
-                    } else {
-                        $keyword_map[$normalized] = array(
-                            'post_id' => $post_id,
-                            'url' => $url,
-                            'score' => $target_score,
-                            'anchor' => $anchor,
-                            'is_target_keyword' => true
-                        );
-                    }
-                }
-
-                // Memory cleanup
-                unset($anchors, $topics, $all_keywords, $target_keyword_list);
-            }
-
-            $offset += $batch_size;
-            unset($rows);
-
-        } while (true);
-
-        // Store the map
-        $ownership_data = array(
-            'map' => $keyword_map,
-            'built_at' => current_time('mysql'),
-            'stats' => array(
-                'total_keywords' => count($keyword_map),
-                'total_phrases_scanned' => $total_keywords,
-                'pages_processed' => $pages_processed
-            )
-        );
-
-        update_option($this->keyword_ownership_option, $ownership_data, false);
-
-        $this->debug_log("Keyword ownership map built: " . count($keyword_map) . " unique keywords from {$pages_processed} pages");
-
-        return $ownership_data;
-    }
-
-    /**
-     * Get the owner of a specific keyword/phrase
-     * Returns null if no owner found
-     *
-     * @param string $keyword The keyword to look up
-     * @return array|null Owner data or null
-     */
-    public function get_keyword_owner($keyword) {
-        $ownership = get_option($this->keyword_ownership_option, array());
-
-        if (empty($ownership['map'])) {
-            return null;
-        }
-
-        $normalized = strtolower(trim(preg_replace('/\s+/', ' ', $keyword)));
-
-        return $ownership['map'][$normalized] ?? null;
-    }
-
-    /**
-     * Generate semantic variations of a keyword for fuzzy matching
-     * Handles plurals, common suffixes, and word form variations
-     *
-     * @param string $keyword The keyword to generate variations for
-     * @return array Array of variations including the original
-     */
-    private function generate_keyword_variations($keyword) {
-        $variations = array($keyword);
-        $words = explode(' ', $keyword);
-        $last_word = end($words);
-
-        // Generate variations of the last word (most common for plurals)
-        $last_word_variations = array($last_word);
-
-        // Plural/singular variations
-        if (substr($last_word, -1) === 's' && strlen($last_word) > 3) {
-            // Remove 's' for singular
-            $last_word_variations[] = substr($last_word, 0, -1);
-            // Handle 'ies' -> 'y' (properties -> property)
-            if (substr($last_word, -3) === 'ies') {
-                $last_word_variations[] = substr($last_word, 0, -3) . 'y';
-            }
-            // Handle 'es' -> '' (taxes -> tax)
-            if (substr($last_word, -2) === 'es') {
-                $last_word_variations[] = substr($last_word, 0, -2);
-            }
-        } else {
-            // Add 's' for plural
-            $last_word_variations[] = $last_word . 's';
-            // Handle 'y' -> 'ies' (property -> properties)
-            if (substr($last_word, -1) === 'y' && strlen($last_word) > 2) {
-                $last_word_variations[] = substr($last_word, 0, -1) . 'ies';
-            }
-        }
-
-        // Common suffix variations
-        // -ing / -ment / -ion variations
-        if (substr($last_word, -3) === 'ing') {
-            $base = substr($last_word, 0, -3);
-            $last_word_variations[] = $base; // invest
-            $last_word_variations[] = $base . 'ment'; // investment
-            $last_word_variations[] = $base . 'or'; // investor
-            $last_word_variations[] = $base . 'er'; // invester
-        } elseif (substr($last_word, -4) === 'ment') {
-            $base = substr($last_word, 0, -4);
-            $last_word_variations[] = $base; // invest
-            $last_word_variations[] = $base . 'ing'; // investing
-            $last_word_variations[] = $base . 'or'; // investor
-        } elseif (substr($last_word, -2) === 'or' || substr($last_word, -2) === 'er') {
-            $base = substr($last_word, 0, -2);
-            $last_word_variations[] = $base; // invest
-            $last_word_variations[] = $base . 'ing'; // investing
-            $last_word_variations[] = $base . 'ment'; // investment
-        }
-
-        // -tion / -sion variations
-        if (substr($last_word, -4) === 'tion' || substr($last_word, -4) === 'sion') {
-            $base = substr($last_word, 0, -4);
-            $last_word_variations[] = $base . 'te'; // calculate
-            $last_word_variations[] = $base . 'ting'; // calculating
-        }
-
-        // Build full phrase variations
-        foreach ($last_word_variations as $variant) {
-            if ($variant !== $last_word) {
-                $words_copy = $words;
-                $words_copy[count($words_copy) - 1] = $variant;
-                $variations[] = implode(' ', $words_copy);
-            }
-        }
-
-        return array_unique($variations);
-    }
-
-    /**
-     * Find matching keywords in text content with SEMANTIC/FUZZY matching
-     * Returns keywords found in the text that have owners (excluding self)
-     *
-     * @param string $content The text to search
-     * @param int $exclude_post_id Post ID to exclude (don't link to self)
-     * @param int $limit Max keywords to return
-     * @return array Matching keywords with their owners
-     */
-    public function find_owned_keywords_in_content($content, $exclude_post_id = 0, $limit = 8) {
-        $ownership = get_option($this->keyword_ownership_option, array());
-
-        if (empty($ownership['map'])) {
-            return array();
-        }
-
-        $content_lower = strtolower($content);
-        $matches = array();
-        $matched_urls = array(); // Prevent duplicate URLs
-
-        // Sort keywords by length (longer first) to match longer phrases before shorter ones
-        $keywords = $ownership['map'];
-        uksort($keywords, function($a, $b) {
-            return strlen($b) - strlen($a);
-        });
-
-        foreach ($keywords as $normalized => $owner) {
-            // Skip if this keyword points to the current post
-            if ($owner['post_id'] == $exclude_post_id) {
-                continue;
-            }
-
-            // Skip if we already matched this URL (avoid duplicate links)
-            if (in_array($owner['url'], $matched_urls)) {
-                continue;
-            }
-
-            // Generate semantic variations of the keyword
-            $variations = $this->generate_keyword_variations($normalized);
-
-            // Check if any variation exists in content
-            $found_variation = null;
-            foreach ($variations as $variant) {
-                if (preg_match('/\b' . preg_quote($variant, '/') . '\b/i', $content_lower, $match)) {
-                    $found_variation = $match[0]; // Use the actual matched text
-                    break;
-                }
-            }
-
-            if ($found_variation !== null) {
-                $matches[] = array(
-                    'keyword' => $normalized,
-                    'anchor' => $owner['anchor'], // Use the canonical anchor from ownership
-                    'matched_text' => $found_variation, // What was actually found
-                    'target_url' => $owner['url'],
-                    'target_post_id' => $owner['post_id'],
-                    'score' => $owner['score']
-                );
-                $matched_urls[] = $owner['url'];
-
-                if (count($matches) >= $limit) {
-                    break;
-                }
-            }
-        }
-
-        return $matches;
-    }
-
-    /**
-     * Get keyword ownership statistics
-     *
-     * @return array Stats about the ownership map
-     */
-    public function get_keyword_ownership_stats() {
-        $ownership = get_option($this->keyword_ownership_option, array());
-
-        if (empty($ownership['map'])) {
-            return array(
-                'has_map' => false,
-                'total_keywords' => 0,
-                'pages_with_keywords' => 0,
-                'built_at' => null
-            );
-        }
-
-        // Count unique pages that own keywords
-        $pages = array();
-        foreach ($ownership['map'] as $data) {
-            $pages[$data['post_id']] = true;
-        }
-
-        return array(
-            'has_map' => true,
-            'total_keywords' => count($ownership['map']),
-            'pages_with_keywords' => count($pages),
-            'built_at' => $ownership['built_at'] ?? null,
-            'stats' => $ownership['stats'] ?? array()
-        );
-    }
-
-    /**
-     * Get keywords owned by a specific post
-     *
-     * @param int $post_id The post ID
-     * @return array Keywords owned by this post
-     */
-    public function get_keywords_for_post($post_id) {
-        $ownership = get_option($this->keyword_ownership_option, array());
-
-        if (empty($ownership['map'])) {
-            return array();
-        }
-
-        $post_keywords = array();
-        foreach ($ownership['map'] as $normalized => $data) {
-            if ($data['post_id'] == $post_id) {
-                $post_keywords[] = array(
-                    'keyword' => $normalized,
-                    'anchor' => $data['anchor'],
-                    'score' => $data['score']
-                );
-            }
-        }
-
-        // Sort by score descending
-        usort($post_keywords, function($a, $b) {
-            return $b['score'] - $a['score'];
-        });
-
-        return $post_keywords;
-    }
-
-    /**
-     * Clear the keyword ownership map
-     */
-    public function clear_keyword_ownership_map() {
-        delete_option($this->keyword_ownership_option);
-        $this->debug_log("Keyword ownership map cleared");
-    }
-
-    /**
-     * Get paginated view of keyword ownership for admin UI
-     *
-     * @param int $page Page number (1-based)
-     * @param int $per_page Items per page
-     * @param string $search Optional search term
-     * @return array Paginated data
-     */
-    public function get_keyword_ownership_paginated($page = 1, $per_page = 50, $search = '') {
-        $ownership = get_option($this->keyword_ownership_option, array());
-
-        if (empty($ownership['map'])) {
-            return array(
-                'items' => array(),
-                'total' => 0,
-                'page' => $page,
-                'per_page' => $per_page,
-                'total_pages' => 0
-            );
-        }
-
-        $items = array();
-        foreach ($ownership['map'] as $normalized => $data) {
-            // Apply search filter
-            if (!empty($search)) {
-                if (stripos($normalized, $search) === false && stripos($data['anchor'], $search) === false) {
-                    continue;
-                }
-            }
-
-            $items[] = array(
-                'keyword' => $normalized,
-                'anchor' => $data['anchor'],
-                'post_id' => $data['post_id'],
-                'url' => $data['url'],
-                'score' => $data['score']
-            );
-        }
-
-        // Sort by score descending
-        usort($items, function($a, $b) {
-            return $b['score'] - $a['score'];
-        });
-
-        $total = count($items);
-        $total_pages = ceil($total / $per_page);
-        $offset = ($page - 1) * $per_page;
-
-        return array(
-            'items' => array_slice($items, $offset, $per_page),
-            'total' => $total,
-            'page' => $page,
-            'per_page' => $per_page,
-            'total_pages' => $total_pages
-        );
-    }
 }
