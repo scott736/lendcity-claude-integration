@@ -29,10 +29,10 @@ if (!file_exists($queue_dir)) {
 // Handle settings update
 $settings_message = '';
 if (isset($_POST['save_scheduler_settings']) && wp_verify_nonce($_POST['settings_nonce'], 'lendcity_scheduler_settings')) {
-    $new_frequency = intval($_POST['publish_frequency']);
-    $new_time = sanitize_text_field($_POST['publish_time']);
-    $new_category = intval($_POST['default_category']);
-    $new_min_scheduled = intval($_POST['min_scheduled_posts']);
+    $new_frequency = intval($_POST['publish_frequency'] ?? $publish_frequency);
+    $new_time = sanitize_text_field($_POST['publish_time'] ?? $publish_time);
+    $new_category = intval($_POST['default_category'] ?? $default_category);
+    $new_min_scheduled = intval($_POST['min_scheduled_posts'] ?? $min_scheduled_posts);
     
     if ($new_frequency >= 1 && $new_frequency <= 30) {
         update_option('lendcity_article_frequency', $new_frequency);
