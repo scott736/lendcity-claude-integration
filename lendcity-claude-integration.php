@@ -1855,6 +1855,16 @@ class LendCity_Claude_Integration {
             return new WP_REST_Response(array('error' => 'No share_id found'), 400);
         }
 
+        // Acquire lock to prevent duplicate processing from concurrent webhook calls
+        // Transistor may retry webhooks, causing race conditions
+        $lock_key = 'lendcity_podcast_' . $share_id;
+        $lock_acquired = $this->acquire_processing_lock($lock_key);
+
+        if (!$lock_acquired) {
+            lendcity_log('Transistor Webhook: Episode already being processed (lock held) - ' . $episode_title);
+            return new WP_REST_Response(array('message' => 'Processing in progress'), 200);
+        }
+
         // Get category from show mapping
         $shows = $this->get_show_mappings();
         $category_name = $shows[$show_id] ?? 'Podcast';
@@ -1863,6 +1873,8 @@ class LendCity_Claude_Integration {
         $processed = get_option('lendcity_processed_podcast_episodes', array());
         foreach ($processed as $ep) {
             if (isset($ep['share_id']) && $ep['share_id'] === $share_id) {
+                // Release lock before returning
+                $this->release_processing_lock($lock_key);
                 lendcity_log('Transistor Webhook: Episode already processed - ' . $episode_title);
                 return new WP_REST_Response(array('message' => 'Already processed'), 200);
             }
@@ -1884,6 +1896,9 @@ class LendCity_Claude_Integration {
             );
             update_option('lendcity_processed_podcast_episodes', $processed);
 
+            // Release lock
+            $this->release_processing_lock($lock_key);
+
             lendcity_log('Transistor Webhook: Successfully created post #' . $result['post_id']);
 
             return new WP_REST_Response(array(
@@ -1892,11 +1907,57 @@ class LendCity_Claude_Integration {
                 'message' => 'Episode processed successfully'
             ), 200);
         } else {
+            // Release lock on failure too
+            $this->release_processing_lock($lock_key);
+
             lendcity_log('Transistor Webhook: Failed - ' . ($result['error'] ?? 'Unknown error'));
             return new WP_REST_Response(array(
                 'error' => $result['error'] ?? 'Processing failed'
             ), 500);
         }
+    }
+
+    /**
+     * Acquire a processing lock to prevent duplicate webhook handling
+     * Uses database-level locking for reliability
+     *
+     * @param string $lock_key Unique identifier for the lock
+     * @param int $timeout Seconds to wait for lock (0 = don't wait)
+     * @return bool True if lock acquired
+     */
+    private function acquire_processing_lock($lock_key, $timeout = 0) {
+        global $wpdb;
+
+        // Sanitize lock name (MySQL max 64 chars)
+        $lock_name = substr($lock_key, 0, 64);
+
+        // Try to get the lock
+        $result = $wpdb->get_var($wpdb->prepare(
+            "SELECT GET_LOCK(%s, %d)",
+            $lock_name,
+            $timeout
+        ));
+
+        return $result === '1';
+    }
+
+    /**
+     * Release a processing lock
+     *
+     * @param string $lock_key Lock identifier
+     * @return bool True if released
+     */
+    private function release_processing_lock($lock_key) {
+        global $wpdb;
+
+        $lock_name = substr($lock_key, 0, 64);
+
+        $result = $wpdb->get_var($wpdb->prepare(
+            "SELECT RELEASE_LOCK(%s)",
+            $lock_name
+        ));
+
+        return $result === '1';
     }
 
     /**
