@@ -13,8 +13,179 @@ class LendCity_Claude_API {
     private $max_retries = 3;
     private $retry_base_delay = 1; // seconds
 
+    // Cache configuration
+    private $cache_enabled = true;
+    private $cache_expiration = 604800; // 7 days in seconds
+
+    // Rate limiting configuration
+    private $rate_limit_enabled = true;
+    private $rate_limit_requests = 50;    // Max requests per window
+    private $rate_limit_window = 60;      // Window in seconds (1 minute)
+    private $rate_limit_key = 'lendcity_api_rate_limit';
+
     public function __construct() {
         $this->api_key = get_option('lendcity_claude_api_key');
+    }
+
+    /**
+     * Check if rate limit allows a new request
+     * Uses sliding window algorithm with transients
+     *
+     * @return bool True if request is allowed, false if rate limited
+     */
+    private function check_rate_limit() {
+        if (!$this->rate_limit_enabled) {
+            return true;
+        }
+
+        $now = time();
+        $window_start = $now - $this->rate_limit_window;
+
+        // Get current request log
+        $requests = get_transient($this->rate_limit_key);
+        if (!is_array($requests)) {
+            $requests = array();
+        }
+
+        // Remove requests outside the window
+        $requests = array_filter($requests, function($timestamp) use ($window_start) {
+            return $timestamp >= $window_start;
+        });
+
+        // Check if under limit
+        if (count($requests) >= $this->rate_limit_requests) {
+            error_log('LendCity Claude API: Rate limit exceeded (' . count($requests) . ' requests in window)');
+            return false;
+        }
+
+        // Add current request
+        $requests[] = $now;
+
+        // Save updated log (with buffer time)
+        set_transient($this->rate_limit_key, $requests, $this->rate_limit_window * 2);
+
+        return true;
+    }
+
+    /**
+     * Wait for rate limit to reset if necessary
+     * Returns immediately if not rate limited
+     *
+     * @param int $max_wait Maximum seconds to wait (default 30)
+     * @return bool True if can proceed, false if still limited after max wait
+     */
+    private function wait_for_rate_limit($max_wait = 30) {
+        $start = time();
+
+        while (!$this->check_rate_limit()) {
+            if ((time() - $start) >= $max_wait) {
+                return false;
+            }
+            sleep(2); // Wait 2 seconds between checks
+        }
+
+        return true;
+    }
+
+    /**
+     * Get current rate limit status
+     *
+     * @return array Rate limit info
+     */
+    public function get_rate_limit_status() {
+        $requests = get_transient($this->rate_limit_key);
+        if (!is_array($requests)) {
+            $requests = array();
+        }
+
+        $now = time();
+        $window_start = $now - $this->rate_limit_window;
+
+        // Count requests in current window
+        $current_count = count(array_filter($requests, function($timestamp) use ($window_start) {
+            return $timestamp >= $window_start;
+        }));
+
+        return array(
+            'current' => $current_count,
+            'limit' => $this->rate_limit_requests,
+            'remaining' => max(0, $this->rate_limit_requests - $current_count),
+            'window' => $this->rate_limit_window,
+            'enabled' => $this->rate_limit_enabled
+        );
+    }
+
+    /**
+     * Enable or disable rate limiting
+     *
+     * @param bool $enabled Whether to enable rate limiting
+     */
+    public function set_rate_limit_enabled($enabled) {
+        $this->rate_limit_enabled = (bool) $enabled;
+    }
+
+    /**
+     * Generate a cache key based on prompt content
+     *
+     * @param string $prompt The prompt to hash
+     * @param string $prefix Cache key prefix
+     * @return string Cache key
+     */
+    private function get_cache_key($prompt, $prefix = 'api') {
+        // Use md5 of prompt to create unique key (shorter than sha256)
+        $hash = md5($prompt . $this->model);
+        return 'lendcity_' . $prefix . '_' . $hash;
+    }
+
+    /**
+     * Get cached API response
+     *
+     * @param string $cache_key The cache key
+     * @return mixed|false Cached value or false if not found
+     */
+    private function get_cached_response($cache_key) {
+        if (!$this->cache_enabled) {
+            return false;
+        }
+        return get_transient($cache_key);
+    }
+
+    /**
+     * Cache an API response
+     *
+     * @param string $cache_key The cache key
+     * @param mixed $response The response to cache
+     * @return bool Success
+     */
+    private function cache_response($cache_key, $response) {
+        if (!$this->cache_enabled) {
+            return false;
+        }
+        return set_transient($cache_key, $response, $this->cache_expiration);
+    }
+
+    /**
+     * Enable or disable caching
+     *
+     * @param bool $enabled Whether to enable caching
+     */
+    public function set_cache_enabled($enabled) {
+        $this->cache_enabled = (bool) $enabled;
+    }
+
+    /**
+     * Clear all API response caches
+     *
+     * @return int Number of cache entries cleared
+     */
+    public function clear_cache() {
+        global $wpdb;
+        $result = $wpdb->query(
+            "DELETE FROM {$wpdb->options}
+             WHERE option_name LIKE '_transient_lendcity_api_%'
+             OR option_name LIKE '_transient_timeout_lendcity_api_%'"
+        );
+        return $result;
     }
 
     /**
@@ -26,6 +197,11 @@ class LendCity_Claude_API {
      * @return array|WP_Error Response or error
      */
     private function http_request_with_retry($args, $timeout = 60) {
+        // Check rate limit before making request
+        if (!$this->wait_for_rate_limit(60)) {
+            return new WP_Error('rate_limited', 'API rate limit exceeded. Please wait and try again.');
+        }
+
         $last_error = null;
 
         for ($attempt = 0; $attempt < $this->max_retries; $attempt++) {
@@ -86,18 +262,33 @@ class LendCity_Claude_API {
     
     /**
      * Simple completion for short prompts (metadata, titles, etc)
+     *
+     * @param string $prompt The prompt to send
+     * @param int $max_tokens Maximum tokens to generate
+     * @param bool $use_cache Whether to use caching (default true)
+     * @return string|false The response text or false on error
      */
-    public function simple_completion($prompt, $max_tokens = 300) {
+    public function simple_completion($prompt, $max_tokens = 300, $use_cache = true) {
         if (empty($this->api_key)) {
             error_log('LendCity Claude API Error: API key is empty or not set');
             return false;
         }
 
-        error_log('LendCity Claude API: Making request with model ' . $this->model);
-        
         // Sanitize prompt to ensure valid UTF-8
         $prompt = mb_convert_encoding($prompt, 'UTF-8', 'UTF-8');
         $prompt = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $prompt);
+
+        // Check cache first
+        if ($use_cache && $this->cache_enabled) {
+            $cache_key = $this->get_cache_key($prompt . $max_tokens, 'simple');
+            $cached = $this->get_cached_response($cache_key);
+            if ($cached !== false) {
+                error_log('LendCity Claude API: Cache hit for simple_completion');
+                return $cached;
+            }
+        }
+
+        error_log('LendCity Claude API: Making request with model ' . $this->model);
 
         $body = array(
             'model' => $this->model,
@@ -146,13 +337,21 @@ class LendCity_Claude_API {
         }
 
         if (isset($response_body['content'][0]['text'])) {
-            return $response_body['content'][0]['text'];
+            $result = $response_body['content'][0]['text'];
+
+            // Cache the successful response
+            if ($use_cache && $this->cache_enabled) {
+                $cache_key = $this->get_cache_key($prompt . $max_tokens, 'simple');
+                $this->cache_response($cache_key, $result);
+            }
+
+            return $result;
         }
 
         error_log('LendCity Claude API Error: Response missing content - ' . substr($raw_body, 0, 500));
         return false;
     }
-    
+
     /**
      * Test API connection
      */

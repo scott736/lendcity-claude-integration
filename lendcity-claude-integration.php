@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 12.3.0
+ * Version: 12.4.0
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '12.3.0');
+define('LENDCITY_CLAUDE_VERSION', '12.4.0');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -387,6 +387,7 @@ class LendCity_Claude_Integration {
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_init', array($this, 'register_settings'));
         add_action('admin_notices', array($this, 'show_upgrade_notice'));
+        add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_scripts'));
 
         // v12.3.0: Consolidated AJAX router - reduces 55 hooks to 1
         // All AJAX calls go through single router for faster initialization
@@ -510,6 +511,10 @@ class LendCity_Claude_Integration {
             'get_podcast_debug_log' => 'ajax_get_podcast_debug_log',
             'regenerate_webhook_secret' => 'ajax_regenerate_webhook_secret',
             'manual_process_episode' => 'ajax_manual_process_episode',
+
+            // Settings Export/Import
+            'export_settings' => 'ajax_export_settings',
+            'import_settings' => 'ajax_import_settings',
         );
 
         if (!isset($action_map[$sub_action])) {
@@ -736,7 +741,37 @@ class LendCity_Claude_Integration {
             array($this, 'settings_page')
         );
     }
-    
+
+    /**
+     * Enqueue admin scripts and styles
+     * Only loads on LendCity admin pages for performance
+     */
+    public function enqueue_admin_scripts($hook) {
+        // Only load on our plugin pages
+        if (strpos($hook, 'lendcity') === false) {
+            return;
+        }
+
+        // Register and enqueue common admin script
+        wp_register_script(
+            'lendcity-admin-common',
+            LENDCITY_CLAUDE_PLUGIN_URL . 'assets/js/admin-common.js',
+            array('jquery'),
+            LENDCITY_CLAUDE_VERSION,
+            true
+        );
+
+        // Localize script with data that all admin pages need
+        wp_localize_script('lendcity-admin-common', 'LendCity', array(
+            'nonce' => wp_create_nonce('lendcity_claude_nonce'),
+            'ajaxurl' => admin_url('admin-ajax.php'),
+            'homeUrl' => home_url(),
+            'version' => LENDCITY_CLAUDE_VERSION
+        ));
+
+        wp_enqueue_script('lendcity-admin-common');
+    }
+
     // ==================== PAGE RENDERS ====================
 
     public function smart_linker_page() {
@@ -1820,6 +1855,16 @@ class LendCity_Claude_Integration {
             return new WP_REST_Response(array('error' => 'No share_id found'), 400);
         }
 
+        // Acquire lock to prevent duplicate processing from concurrent webhook calls
+        // Transistor may retry webhooks, causing race conditions
+        $lock_key = 'lendcity_podcast_' . $share_id;
+        $lock_acquired = $this->acquire_processing_lock($lock_key);
+
+        if (!$lock_acquired) {
+            lendcity_log('Transistor Webhook: Episode already being processed (lock held) - ' . $episode_title);
+            return new WP_REST_Response(array('message' => 'Processing in progress'), 200);
+        }
+
         // Get category from show mapping
         $shows = $this->get_show_mappings();
         $category_name = $shows[$show_id] ?? 'Podcast';
@@ -1828,6 +1873,8 @@ class LendCity_Claude_Integration {
         $processed = get_option('lendcity_processed_podcast_episodes', array());
         foreach ($processed as $ep) {
             if (isset($ep['share_id']) && $ep['share_id'] === $share_id) {
+                // Release lock before returning
+                $this->release_processing_lock($lock_key);
                 lendcity_log('Transistor Webhook: Episode already processed - ' . $episode_title);
                 return new WP_REST_Response(array('message' => 'Already processed'), 200);
             }
@@ -1849,6 +1896,9 @@ class LendCity_Claude_Integration {
             );
             update_option('lendcity_processed_podcast_episodes', $processed);
 
+            // Release lock
+            $this->release_processing_lock($lock_key);
+
             lendcity_log('Transistor Webhook: Successfully created post #' . $result['post_id']);
 
             return new WP_REST_Response(array(
@@ -1857,11 +1907,57 @@ class LendCity_Claude_Integration {
                 'message' => 'Episode processed successfully'
             ), 200);
         } else {
+            // Release lock on failure too
+            $this->release_processing_lock($lock_key);
+
             lendcity_log('Transistor Webhook: Failed - ' . ($result['error'] ?? 'Unknown error'));
             return new WP_REST_Response(array(
                 'error' => $result['error'] ?? 'Processing failed'
             ), 500);
         }
+    }
+
+    /**
+     * Acquire a processing lock to prevent duplicate webhook handling
+     * Uses database-level locking for reliability
+     *
+     * @param string $lock_key Unique identifier for the lock
+     * @param int $timeout Seconds to wait for lock (0 = don't wait)
+     * @return bool True if lock acquired
+     */
+    private function acquire_processing_lock($lock_key, $timeout = 0) {
+        global $wpdb;
+
+        // Sanitize lock name (MySQL max 64 chars)
+        $lock_name = substr($lock_key, 0, 64);
+
+        // Try to get the lock
+        $result = $wpdb->get_var($wpdb->prepare(
+            "SELECT GET_LOCK(%s, %d)",
+            $lock_name,
+            $timeout
+        ));
+
+        return $result === '1';
+    }
+
+    /**
+     * Release a processing lock
+     *
+     * @param string $lock_key Lock identifier
+     * @return bool True if released
+     */
+    private function release_processing_lock($lock_key) {
+        global $wpdb;
+
+        $lock_name = substr($lock_key, 0, 64);
+
+        $result = $wpdb->get_var($wpdb->prepare(
+            "SELECT RELEASE_LOCK(%s)",
+            $lock_name
+        ));
+
+        return $result === '1';
     }
 
     /**
@@ -4065,7 +4161,120 @@ class LendCity_Claude_Integration {
             wp_send_json_error('Unexpected response: ' . $code);
         }
     }
-    
+
+    /**
+     * Export all plugin settings as JSON
+     */
+    public function ajax_export_settings() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $settings = $this->get_exportable_settings();
+
+        wp_send_json_success(array(
+            'settings' => $settings,
+            'exported_at' => current_time('mysql'),
+            'version' => LENDCITY_CLAUDE_VERSION,
+            'site_url' => home_url()
+        ));
+    }
+
+    /**
+     * Import settings from JSON
+     */
+    public function ajax_import_settings() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $json = isset($_POST['settings_json']) ? stripslashes($_POST['settings_json']) : '';
+        if (empty($json)) {
+            wp_send_json_error('No settings data provided');
+        }
+
+        $data = json_decode($json, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            wp_send_json_error('Invalid JSON: ' . json_last_error_msg());
+        }
+
+        if (!isset($data['settings']) || !is_array($data['settings'])) {
+            wp_send_json_error('Invalid settings format');
+        }
+
+        $imported = 0;
+        $skipped = 0;
+        $allowed_options = $this->get_allowed_import_options();
+
+        foreach ($data['settings'] as $key => $value) {
+            // Only import whitelisted options (security)
+            if (!in_array($key, $allowed_options)) {
+                $skipped++;
+                continue;
+            }
+
+            update_option($key, $value);
+            $imported++;
+        }
+
+        wp_send_json_success(array(
+            'imported' => $imported,
+            'skipped' => $skipped,
+            'message' => "Imported {$imported} settings successfully."
+        ));
+    }
+
+    /**
+     * Get all exportable settings
+     */
+    private function get_exportable_settings() {
+        $options = $this->get_allowed_import_options();
+        $settings = array();
+
+        foreach ($options as $key) {
+            $value = get_option($key);
+            if ($value !== false) {
+                // Don't export sensitive keys in plain text
+                if (strpos($key, 'api_key') !== false) {
+                    $settings[$key] = '***REDACTED***';
+                } else {
+                    $settings[$key] = $value;
+                }
+            }
+        }
+
+        return $settings;
+    }
+
+    /**
+     * Get list of options allowed for import (whitelist for security)
+     */
+    private function get_allowed_import_options() {
+        return array(
+            // Smart Linker settings
+            'lendcity_links_per_post',
+            'lendcity_max_links_per_target',
+            'lendcity_link_target',
+            'lendcity_smart_linker_enabled',
+
+            // Article scheduler settings
+            'lendcity_article_category',
+            'lendcity_article_author',
+            'lendcity_article_frequency',
+            'lendcity_auto_scheduler_enabled',
+
+            // Podcast settings
+            'lendcity_transistor_shows',
+            'lendcity_podcast_default_author',
+            'lendcity_podcast_default_category',
+
+            // Model selection (non-sensitive)
+            'lendcity_claude_model',
+        );
+    }
+
     /**
      * Ensure image is exactly the specified dimensions
      * Crops/resizes in place if needed
