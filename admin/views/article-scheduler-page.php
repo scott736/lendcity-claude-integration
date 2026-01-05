@@ -393,7 +393,7 @@ jQuery(document).ready(function($) {
                 type: 'POST',
                 timeout: 120000, // 2 minute timeout
                 data: {
-                    action: 'lendcity_run_auto_scheduler_single',
+                    action: 'lendcity_action', sub_action: 'run_auto_scheduler_single',
                     nonce: nonce,
                     offset: processed
                 },
@@ -470,7 +470,7 @@ jQuery(document).ready(function($) {
         $('#modal-status').text('Processing ' + fileName + '... (AI selecting category)');
         
         $.post(ajaxurl, {
-            action: 'lendcity_process_article',
+            action: 'lendcity_action', sub_action: 'process_article',
             nonce: nonce,
             file_name: fileName,
             publish_date: publishDate
@@ -499,7 +499,7 @@ jQuery(document).ready(function($) {
         var fileName = $btn.data('file');
         
         $.post(ajaxurl, {
-            action: 'lendcity_delete_queued_file',
+            action: 'lendcity_action', sub_action: 'delete_queued_file',
             nonce: nonce,
             file_name: fileName
         }, function(response) {
@@ -546,7 +546,7 @@ jQuery(document).ready(function($) {
             $status.text('Processing ' + processed + '/' + total + '...');
             
             $.post(ajaxurl, {
-                action: 'lendcity_process_article',
+                action: 'lendcity_action', sub_action: 'process_article',
                 nonce: nonce,
                 file_name: item.file,
                 publish_date: item.date
@@ -570,7 +570,7 @@ jQuery(document).ready(function($) {
         $btn.prop('disabled', true).text('Adding...');
         
         $.post(ajaxurl, {
-            action: 'lendcity_add_unsplash_image',
+            action: 'lendcity_action', sub_action: 'add_unsplash_image',
             nonce: nonce,
             post_id: postId
         }, function(response) {
@@ -602,7 +602,7 @@ jQuery(document).ready(function($) {
         $btn.prop('disabled', true).text('Replacing...');
         
         $.post(ajaxurl, {
-            action: 'lendcity_replace_unsplash_image',
+            action: 'lendcity_action', sub_action: 'replace_unsplash_image',
             nonce: nonce,
             post_id: postId
         }, function(response) {
@@ -678,7 +678,7 @@ jQuery(document).ready(function($) {
             $bar.css('width', (processed / total * 100) + '%');
             
             $.post(ajaxurl, {
-                action: 'lendcity_add_unsplash_image',
+                action: 'lendcity_action', sub_action: 'add_unsplash_image',
                 nonce: nonce,
                 post_id: postId
             }, function(response) {

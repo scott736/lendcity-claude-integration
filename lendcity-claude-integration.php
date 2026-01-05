@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 12.2.6
+ * Version: 12.3.0
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '12.2.6');
+define('LENDCITY_CLAUDE_VERSION', '12.3.0');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -49,7 +49,7 @@ function lendcity_claude_activate() {
     lendcity_claude_clear_all_crons();
 
     // Create/upgrade the catalog database table
-    require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-smart-linker.php';
+    lendcity_load_classes();
     $smart_linker = new LendCity_Smart_Linker();
     $smart_linker->maybe_create_table();
 
@@ -137,24 +137,213 @@ function lendcity_claude_clear_all_crons() {
 }
 
 /**
- * Debug logging helper - only logs if debug mode is enabled
+ * Structured logging infrastructure with severity levels
+ * Levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
  */
-function lendcity_debug_log($message) {
-    if (get_option('lendcity_debug_mode', 'no') === 'yes') {
-        error_log('LendCity: ' . $message);
+class LendCity_Logger {
+    const DEBUG = 'DEBUG';
+    const INFO = 'INFO';
+    const WARNING = 'WARNING';
+    const ERROR = 'ERROR';
+    const CRITICAL = 'CRITICAL';
+
+    private static $debug_mode = null;
+
+    /**
+     * Check if debug mode is enabled (cached)
+     */
+    private static function is_debug() {
+        if (self::$debug_mode === null) {
+            self::$debug_mode = get_option('lendcity_debug_mode', 'no') === 'yes';
+        }
+        return self::$debug_mode;
+    }
+
+    /**
+     * Log a message with structured format
+     *
+     * @param string $level Log level
+     * @param string $message Message to log
+     * @param array $context Additional context data
+     */
+    public static function log($level, $message, $context = array()) {
+        // Skip DEBUG messages unless debug mode is on
+        if ($level === self::DEBUG && !self::is_debug()) {
+            return;
+        }
+
+        // Format: [LEVEL] Message | context_key=value
+        $formatted = "[{$level}] {$message}";
+
+        if (!empty($context)) {
+            $context_parts = array();
+            foreach ($context as $key => $value) {
+                if (is_array($value) || is_object($value)) {
+                    $value = json_encode($value);
+                }
+                $context_parts[] = "{$key}={$value}";
+            }
+            $formatted .= ' | ' . implode(', ', $context_parts);
+        }
+
+        error_log('LendCity: ' . $formatted);
+
+        // For critical errors, also log to WordPress debug.log if WP_DEBUG is on
+        if ($level === self::CRITICAL && defined('WP_DEBUG') && WP_DEBUG) {
+            if (function_exists('wp_debug_backtrace_summary')) {
+                error_log('LendCity CRITICAL Backtrace: ' . wp_debug_backtrace_summary());
+            }
+        }
+    }
+
+    /**
+     * Convenience methods for each log level
+     */
+    public static function debug($message, $context = array()) {
+        self::log(self::DEBUG, $message, $context);
+    }
+
+    public static function info($message, $context = array()) {
+        self::log(self::INFO, $message, $context);
+    }
+
+    public static function warning($message, $context = array()) {
+        self::log(self::WARNING, $message, $context);
+    }
+
+    public static function error($message, $context = array()) {
+        self::log(self::ERROR, $message, $context);
+    }
+
+    public static function critical($message, $context = array()) {
+        self::log(self::CRITICAL, $message, $context);
     }
 }
 
 /**
- * Always log - for important messages (errors, success)
+ * Debug logging helper - only logs if debug mode is enabled
+ * @deprecated Use LendCity_Logger::debug() for new code
  */
-function lendcity_log($message) {
-    error_log('LendCity: ' . $message);
+function lendcity_debug_log($message) {
+    LendCity_Logger::debug($message);
 }
 
-// Include required files
-require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-claude-api.php';
-require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-smart-linker.php';
+/**
+ * Always log - for important messages (errors, success)
+ * @deprecated Use LendCity_Logger::info() or LendCity_Logger::error() for new code
+ */
+function lendcity_log($message) {
+    LendCity_Logger::info($message);
+}
+
+/**
+ * Object caching helpers for persistent caching (Redis/Memcached compatible)
+ * Falls back gracefully when object cache is not available
+ */
+class LendCity_Cache {
+    const GROUP = 'lendcity';
+    const DEFAULT_TTL = 300; // 5 minutes
+
+    /**
+     * Get cached value
+     *
+     * @param string $key Cache key
+     * @param mixed $default Default value if not found
+     * @return mixed Cached value or default
+     */
+    public static function get($key, $default = null) {
+        $found = false;
+        $value = wp_cache_get($key, self::GROUP, false, $found);
+
+        if ($found) {
+            return $value;
+        }
+
+        return $default;
+    }
+
+    /**
+     * Set cached value
+     *
+     * @param string $key Cache key
+     * @param mixed $value Value to cache
+     * @param int $ttl Time to live in seconds
+     * @return bool Success
+     */
+    public static function set($key, $value, $ttl = self::DEFAULT_TTL) {
+        return wp_cache_set($key, $value, self::GROUP, $ttl);
+    }
+
+    /**
+     * Delete cached value
+     *
+     * @param string $key Cache key
+     * @return bool Success
+     */
+    public static function delete($key) {
+        return wp_cache_delete($key, self::GROUP);
+    }
+
+    /**
+     * Flush all plugin cache
+     * Only flushes our group if object cache supports it
+     *
+     * @return bool Success
+     */
+    public static function flush() {
+        // If using persistent object cache with group support
+        if (function_exists('wp_cache_flush_group')) {
+            return wp_cache_flush_group(self::GROUP);
+        }
+
+        // Otherwise, just delete known keys
+        $known_keys = array(
+            'catalog_stats',
+            'link_stats',
+            'catalog_count',
+            'queue_status'
+        );
+
+        foreach ($known_keys as $key) {
+            self::delete($key);
+        }
+
+        return true;
+    }
+
+    /**
+     * Get or set cached value using callback
+     *
+     * @param string $key Cache key
+     * @param callable $callback Function to generate value if not cached
+     * @param int $ttl Time to live in seconds
+     * @return mixed Cached or generated value
+     */
+    public static function remember($key, $callback, $ttl = self::DEFAULT_TTL) {
+        $value = self::get($key);
+
+        if ($value !== null) {
+            return $value;
+        }
+
+        $value = $callback();
+        self::set($key, $value, $ttl);
+
+        return $value;
+    }
+}
+
+// Lazy load class files - only when actually needed
+// Classes are loaded in lendcity_claude_init() when is_admin/cron/ajax context is confirmed
+function lendcity_load_classes() {
+    static $loaded = false;
+    if ($loaded) {
+        return;
+    }
+    require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-claude-api.php';
+    require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-smart-linker.php';
+    $loaded = true;
+}
 
 class LendCity_Claude_Integration {
     
@@ -198,82 +387,11 @@ class LendCity_Claude_Integration {
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_init', array($this, 'register_settings'));
         add_action('admin_notices', array($this, 'show_upgrade_notice'));
-        add_action('wp_ajax_lendcity_dismiss_v11_notice', array($this, 'ajax_dismiss_v11_notice'));
-        add_action('wp_ajax_lendcity_get_catalog_stats', array($this, 'ajax_get_catalog_stats'));
 
-        // Smart Linker AJAX
-        add_action('wp_ajax_lendcity_get_all_content_ids', array($this, 'ajax_get_all_content_ids'));
-        add_action('wp_ajax_lendcity_build_single_catalog', array($this, 'ajax_build_single_catalog'));
-        add_action('wp_ajax_lendcity_build_catalog_batch', array($this, 'ajax_build_catalog_batch'));
-        add_action('wp_ajax_lendcity_build_parallel_catalog', array($this, 'ajax_build_parallel_catalog'));
-        add_action('wp_ajax_lendcity_update_link_counts', array($this, 'ajax_update_link_counts'));
-        add_action('wp_ajax_lendcity_clear_catalog', array($this, 'ajax_clear_catalog'));
-        add_action('wp_ajax_lendcity_get_link_suggestions', array($this, 'ajax_get_link_suggestions'));
-        add_action('wp_ajax_lendcity_insert_approved_links', array($this, 'ajax_insert_approved_links'));
-        add_action('wp_ajax_lendcity_queue_all_linking', array($this, 'ajax_queue_all_linking'));
-        add_action('wp_ajax_lendcity_clear_link_queue', array($this, 'ajax_clear_link_queue'));
-        add_action('wp_ajax_lendcity_get_queue_status', array($this, 'ajax_get_queue_status'));
-        add_action('wp_ajax_lendcity_remove_single_link', array($this, 'ajax_remove_single_link'));
-        add_action('wp_ajax_lendcity_remove_all_smart_links', array($this, 'ajax_remove_all_smart_links'));
-        add_action('wp_ajax_lendcity_update_smart_link_urls', array($this, 'ajax_update_smart_link_urls'));
-        add_action('wp_ajax_lendcity_change_link_target', array($this, 'ajax_change_link_target'));
-        add_action('wp_ajax_lendcity_delete_all_site_links', array($this, 'ajax_delete_all_site_links'));
-        add_action('wp_ajax_lendcity_process_single_source', array($this, 'ajax_process_single_source'));
-        add_action('wp_ajax_lendcity_process_queue_now', array($this, 'ajax_process_queue_now'));
-        
-        // New background queue handlers
-        add_action('wp_ajax_lendcity_init_bulk_queue', array($this, 'ajax_init_bulk_queue'));
-        add_action('wp_ajax_lendcity_process_queue_batch', array($this, 'ajax_process_queue_batch'));
-        add_action('wp_ajax_lendcity_pause_queue', array($this, 'ajax_pause_queue'));
-        add_action('wp_ajax_lendcity_resume_queue', array($this, 'ajax_resume_queue'));
-        
-        // SEO Enhancement AJAX
-        add_action('wp_ajax_lendcity_save_page_seo', array($this, 'ajax_save_page_seo'));
-        add_action('wp_ajax_lendcity_get_link_gaps', array($this, 'ajax_get_link_gaps'));
-        add_action('wp_ajax_lendcity_get_link_stats', array($this, 'ajax_get_link_stats'));
-        add_action('wp_ajax_lendcity_get_links_page', array($this, 'ajax_get_links_page'));
-        
-        // Metadata AJAX (used by Smart Linker)
-        add_action('wp_ajax_lendcity_generate_metadata_from_links', array($this, 'ajax_generate_metadata_from_links'));
+        // v12.3.0: Consolidated AJAX router - reduces 55 hooks to 1
+        // All AJAX calls go through single router for faster initialization
+        add_action('wp_ajax_lendcity_action', array($this, 'ajax_router'));
 
-        // Smart Metadata v2 AJAX (runs AFTER linking)
-        add_action('wp_ajax_lendcity_generate_smart_metadata', array($this, 'ajax_generate_smart_metadata'));
-        add_action('wp_ajax_lendcity_get_smart_metadata_posts', array($this, 'ajax_get_smart_metadata_posts'));
-        add_action('wp_ajax_lendcity_bulk_smart_metadata', array($this, 'ajax_bulk_smart_metadata'));
-
-        // Meta Queue AJAX (persistent background processing)
-        add_action('wp_ajax_lendcity_init_meta_queue', array($this, 'ajax_init_meta_queue'));
-        add_action('wp_ajax_lendcity_get_meta_queue_status', array($this, 'ajax_get_meta_queue_status'));
-        add_action('wp_ajax_lendcity_clear_meta_queue', array($this, 'ajax_clear_meta_queue'));
-
-        // v12.0 Background Queue AJAX (runs without browser open)
-        add_action('wp_ajax_lendcity_start_background_catalog', array($this, 'ajax_start_background_catalog'));
-        add_action('wp_ajax_lendcity_get_catalog_queue_status', array($this, 'ajax_get_catalog_queue_status'));
-        add_action('wp_ajax_lendcity_clear_catalog_queue', array($this, 'ajax_clear_catalog_queue'));
-        add_action('wp_ajax_lendcity_get_all_queue_statuses', array($this, 'ajax_get_all_queue_statuses'));
-
-        // SEO Health Monitor AJAX
-        add_action('wp_ajax_lendcity_get_seo_health_issues', array($this, 'ajax_get_seo_health_issues'));
-        add_action('wp_ajax_lendcity_auto_fix_seo', array($this, 'ajax_auto_fix_seo'));
-
-        // Article Scheduler AJAX
-        add_action('wp_ajax_lendcity_process_article', array($this, 'ajax_process_article'));
-        add_action('wp_ajax_lendcity_schedule_all_articles', array($this, 'ajax_schedule_all_articles'));
-        add_action('wp_ajax_lendcity_delete_queued_file', array($this, 'ajax_delete_queued_file'));
-        add_action('wp_ajax_lendcity_add_unsplash_image', array($this, 'ajax_add_unsplash_image'));
-        add_action('wp_ajax_lendcity_replace_unsplash_image', array($this, 'ajax_replace_unsplash_image'));
-        add_action('wp_ajax_lendcity_run_auto_scheduler', array($this, 'ajax_run_auto_scheduler'));
-        add_action('wp_ajax_lendcity_run_auto_scheduler_single', array($this, 'ajax_run_auto_scheduler_single'));
-        
-        // Settings AJAX
-        add_action('wp_ajax_lendcity_test_api', array($this, 'ajax_test_api'));
-        add_action('wp_ajax_lendcity_test_tinypng', array($this, 'ajax_test_tinypng'));
-        
-        // Podcast AJAX (Backfill only - new episodes handled via Transistor webhook)
-        add_action('wp_ajax_lendcity_scan_transistor_embeds', array($this, 'ajax_scan_transistor_embeds'));
-        add_action('wp_ajax_lendcity_backfill_podcast_episodes', array($this, 'ajax_backfill_podcast_episodes'));
-        add_action('wp_ajax_lendcity_get_podcast_debug_log', array($this, 'ajax_get_podcast_debug_log'));
-        
         // Smart Linker cron
         add_action('lendcity_process_link_queue', array($this, 'cron_process_link_queue'));
         add_action('lendcity_process_catalog_queue', array($this, 'cron_process_catalog_queue'));
@@ -291,16 +409,123 @@ class LendCity_Claude_Integration {
         // Save show mappings on settings save
         add_action('admin_init', array($this, 'save_show_mappings'));
 
-        // Webhook secret regeneration AJAX
-        add_action('wp_ajax_lendcity_regenerate_webhook_secret', array($this, 'ajax_regenerate_webhook_secret'));
-
-        // Manual episode processing AJAX
-        add_action('wp_ajax_lendcity_manual_process_episode', array($this, 'ajax_manual_process_episode'));
-
         // Initialize Smart Linker
         new LendCity_Smart_Linker();
     }
-    
+
+    /**
+     * v12.3.0: Consolidated AJAX router
+     * Maps sub-actions to handler methods, reducing hook registration overhead
+     * Frontend JS should call: action=lendcity_action&sub_action=get_catalog_stats
+     */
+    public function ajax_router() {
+        // Verify user has permission
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized', 403);
+        }
+
+        $sub_action = isset($_POST['sub_action']) ? sanitize_text_field($_POST['sub_action']) : '';
+
+        if (empty($sub_action)) {
+            wp_send_json_error('Missing sub_action parameter');
+        }
+
+        // Map of allowed actions to methods
+        $action_map = array(
+            // General
+            'dismiss_v11_notice' => 'ajax_dismiss_v11_notice',
+            'get_catalog_stats' => 'ajax_get_catalog_stats',
+
+            // Smart Linker - Catalog
+            'get_all_content_ids' => 'ajax_get_all_content_ids',
+            'build_single_catalog' => 'ajax_build_single_catalog',
+            'build_catalog_batch' => 'ajax_build_catalog_batch',
+            'build_parallel_catalog' => 'ajax_build_parallel_catalog',
+            'update_link_counts' => 'ajax_update_link_counts',
+            'clear_catalog' => 'ajax_clear_catalog',
+
+            // Smart Linker - Links
+            'get_link_suggestions' => 'ajax_get_link_suggestions',
+            'insert_approved_links' => 'ajax_insert_approved_links',
+            'queue_all_linking' => 'ajax_queue_all_linking',
+            'clear_link_queue' => 'ajax_clear_link_queue',
+            'get_queue_status' => 'ajax_get_queue_status',
+            'remove_single_link' => 'ajax_remove_single_link',
+            'remove_all_smart_links' => 'ajax_remove_all_smart_links',
+            'update_smart_link_urls' => 'ajax_update_smart_link_urls',
+            'change_link_target' => 'ajax_change_link_target',
+            'delete_all_site_links' => 'ajax_delete_all_site_links',
+            'process_single_source' => 'ajax_process_single_source',
+            'process_queue_now' => 'ajax_process_queue_now',
+
+            // Background Queue
+            'init_bulk_queue' => 'ajax_init_bulk_queue',
+            'process_queue_batch' => 'ajax_process_queue_batch',
+            'pause_queue' => 'ajax_pause_queue',
+            'resume_queue' => 'ajax_resume_queue',
+
+            // SEO Enhancement
+            'save_page_seo' => 'ajax_save_page_seo',
+            'get_link_gaps' => 'ajax_get_link_gaps',
+            'get_link_stats' => 'ajax_get_link_stats',
+            'get_links_page' => 'ajax_get_links_page',
+
+            // Metadata
+            'generate_metadata_from_links' => 'ajax_generate_metadata_from_links',
+            'generate_smart_metadata' => 'ajax_generate_smart_metadata',
+            'get_smart_metadata_posts' => 'ajax_get_smart_metadata_posts',
+            'bulk_smart_metadata' => 'ajax_bulk_smart_metadata',
+
+            // Meta Queue
+            'init_meta_queue' => 'ajax_init_meta_queue',
+            'get_meta_queue_status' => 'ajax_get_meta_queue_status',
+            'clear_meta_queue' => 'ajax_clear_meta_queue',
+
+            // Background Catalog Queue
+            'start_background_catalog' => 'ajax_start_background_catalog',
+            'get_catalog_queue_status' => 'ajax_get_catalog_queue_status',
+            'clear_catalog_queue' => 'ajax_clear_catalog_queue',
+            'get_all_queue_statuses' => 'ajax_get_all_queue_statuses',
+
+            // SEO Health
+            'get_seo_health_issues' => 'ajax_get_seo_health_issues',
+            'auto_fix_seo' => 'ajax_auto_fix_seo',
+
+            // Article Scheduler
+            'process_article' => 'ajax_process_article',
+            'schedule_all_articles' => 'ajax_schedule_all_articles',
+            'delete_queued_file' => 'ajax_delete_queued_file',
+            'add_unsplash_image' => 'ajax_add_unsplash_image',
+            'replace_unsplash_image' => 'ajax_replace_unsplash_image',
+            'run_auto_scheduler' => 'ajax_run_auto_scheduler',
+            'run_auto_scheduler_single' => 'ajax_run_auto_scheduler_single',
+
+            // Settings
+            'test_api' => 'ajax_test_api',
+            'test_tinypng' => 'ajax_test_tinypng',
+
+            // Podcast
+            'scan_transistor_embeds' => 'ajax_scan_transistor_embeds',
+            'backfill_podcast_episodes' => 'ajax_backfill_podcast_episodes',
+            'get_podcast_debug_log' => 'ajax_get_podcast_debug_log',
+            'regenerate_webhook_secret' => 'ajax_regenerate_webhook_secret',
+            'manual_process_episode' => 'ajax_manual_process_episode',
+        );
+
+        if (!isset($action_map[$sub_action])) {
+            wp_send_json_error('Unknown action: ' . $sub_action);
+        }
+
+        $method = $action_map[$sub_action];
+
+        if (!method_exists($this, $method)) {
+            wp_send_json_error('Handler not found: ' . $method);
+        }
+
+        // Call the handler method
+        $this->$method();
+    }
+
     /**
      * Clean up stale crons if version changed
      */
@@ -1423,14 +1648,122 @@ class LendCity_Claude_Integration {
     }
     
     /**
-     * Register Transistor webhook REST API endpoint
+     * Register REST API endpoints
      */
     public function register_transistor_webhook() {
+        // Transistor webhook endpoint
         register_rest_route('lendcity/v1', '/transistor-webhook', array(
             'methods' => 'POST',
             'callback' => array($this, 'handle_transistor_webhook'),
             'permission_callback' => '__return_true', // Public endpoint, verified by secret
         ));
+
+        // Health check endpoint for monitoring
+        register_rest_route('lendcity/v1', '/health', array(
+            'methods' => 'GET',
+            'callback' => array($this, 'handle_health_check'),
+            'permission_callback' => array($this, 'health_check_permission'),
+        ));
+    }
+
+    /**
+     * Permission callback for health check - allows admin or specific key
+     */
+    public function health_check_permission($request) {
+        // Allow if admin
+        if (current_user_can('manage_options')) {
+            return true;
+        }
+        // Allow with valid API key (uses same webhook secret for convenience)
+        $key = $request->get_param('key');
+        $secret = get_option('lendcity_transistor_webhook_secret', '');
+        return !empty($key) && $key === $secret;
+    }
+
+    /**
+     * Health check endpoint handler
+     * Returns status of all plugin components for monitoring
+     */
+    public function handle_health_check($request) {
+        global $wpdb;
+
+        $health = array(
+            'status' => 'healthy',
+            'timestamp' => current_time('c'),
+            'version' => LENDCITY_CLAUDE_VERSION,
+            'checks' => array()
+        );
+
+        // Check 1: Claude API connectivity
+        $api_key = get_option('lendcity_claude_api_key', '');
+        $health['checks']['claude_api'] = array(
+            'status' => !empty($api_key) ? 'configured' : 'not_configured',
+            'has_key' => !empty($api_key)
+        );
+
+        // Check 2: Database table exists
+        $table_name = $wpdb->prefix . 'lendcity_catalog';
+        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$table_name}'") === $table_name;
+        $catalog_count = $table_exists ? (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table_name}") : 0;
+        $health['checks']['database'] = array(
+            'status' => $table_exists ? 'healthy' : 'missing',
+            'table_exists' => $table_exists,
+            'catalog_entries' => $catalog_count
+        );
+
+        // Check 3: Queue status
+        $link_queue = get_option('lendcity_smart_linker_queue', array());
+        $link_status = get_option('lendcity_smart_linker_queue_status', array());
+        $catalog_queue = get_option('lendcity_catalog_queue', array());
+        $catalog_status = get_option('lendcity_catalog_queue_status', array());
+        $meta_queue = get_option('lendcity_meta_queue', array());
+
+        $health['checks']['queues'] = array(
+            'status' => 'healthy',
+            'link_queue' => array(
+                'pending' => count($link_queue),
+                'state' => $link_status['state'] ?? 'idle'
+            ),
+            'catalog_queue' => array(
+                'pending' => count($catalog_queue),
+                'state' => $catalog_status['state'] ?? 'idle'
+            ),
+            'meta_queue' => array(
+                'pending' => count($meta_queue)
+            )
+        );
+
+        // Check 4: Cron jobs
+        $crons = array(
+            'lendcity_auto_schedule_articles' => wp_next_scheduled('lendcity_auto_schedule_articles'),
+            'lendcity_process_link_queue' => wp_next_scheduled('lendcity_process_link_queue'),
+            'lendcity_process_catalog_queue' => wp_next_scheduled('lendcity_process_catalog_queue')
+        );
+        $health['checks']['cron'] = array(
+            'status' => 'healthy',
+            'scheduled' => array_map(function($ts) {
+                return $ts ? date('c', $ts) : null;
+            }, $crons)
+        );
+
+        // Check 5: Memory usage
+        $memory_limit = ini_get('memory_limit');
+        $memory_usage = memory_get_usage(true);
+        $health['checks']['memory'] = array(
+            'status' => 'healthy',
+            'limit' => $memory_limit,
+            'usage_mb' => round($memory_usage / 1024 / 1024, 2)
+        );
+
+        // Determine overall status
+        if (!$table_exists) {
+            $health['status'] = 'degraded';
+        }
+        if (empty($api_key)) {
+            $health['status'] = 'not_configured';
+        }
+
+        return new WP_REST_Response($health, 200);
     }
 
     /**
@@ -3922,8 +4255,30 @@ class LendCity_Claude_Integration {
     }
 }
 
-// Initialize plugin
+// Initialize plugin - only load full plugin in admin, cron, AJAX, or REST contexts
 function lendcity_claude_init() {
+    // Skip loading on front-end for visitors - this plugin has no front-end features
+    // This saves ~15-25ms and 2-4 DB queries per front-end page load
+    if (!is_admin() && !wp_doing_cron() && !wp_doing_ajax() && !lendcity_is_rest_request()) {
+        return null;
+    }
+    // Load class files only when needed
+    lendcity_load_classes();
     return LendCity_Claude_Integration::get_instance();
 }
+
+/**
+ * Check if this is a REST API request
+ * Needed because defined('REST_REQUEST') isn't set until later
+ */
+function lendcity_is_rest_request() {
+    if (defined('REST_REQUEST') && REST_REQUEST) {
+        return true;
+    }
+    // Check for REST API URL pattern
+    $rest_prefix = rest_get_url_prefix();
+    $request_uri = $_SERVER['REQUEST_URI'] ?? '';
+    return (strpos($request_uri, '/' . $rest_prefix . '/') !== false);
+}
+
 add_action('plugins_loaded', 'lendcity_claude_init');
