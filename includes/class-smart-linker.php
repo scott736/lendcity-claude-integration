@@ -566,6 +566,155 @@ class LendCity_Smart_Linker {
     }
 
     /**
+     * Bulk insert or update multiple catalog entries
+     * Uses INSERT ... ON DUPLICATE KEY UPDATE for efficiency
+     *
+     * @param array $entries Array of entries, each keyed by post_id
+     * @return array Result with 'inserted' and 'failed' counts
+     */
+    public function bulk_insert_catalog_entries($entries) {
+        global $wpdb;
+
+        if (empty($entries)) {
+            return array('inserted' => 0, 'failed' => 0);
+        }
+
+        $inserted = 0;
+        $failed = 0;
+
+        // Process in batches of 50 to avoid query size limits
+        $batches = array_chunk($entries, 50, true);
+
+        foreach ($batches as $batch) {
+            $values = array();
+            $placeholders = array();
+
+            foreach ($batch as $post_id => $entry) {
+                $post = get_post($post_id);
+                if (!$post) {
+                    $failed++;
+                    continue;
+                }
+
+                $last_modified = $post->post_modified;
+
+                $row = array(
+                    intval($post_id),
+                    isset($entry['type']) ? $entry['type'] : 'post',
+                    isset($entry['is_page']) ? (int)$entry['is_page'] : 0,
+                    isset($entry['title']) ? $entry['title'] : '',
+                    isset($entry['url']) ? $entry['url'] : '',
+                    isset($entry['summary']) ? $entry['summary'] : '',
+                    $this->safe_json_encode($entry['main_topics'] ?? array(), 'main_topics'),
+                    $this->safe_json_encode($entry['semantic_keywords'] ?? array(), 'semantic_keywords'),
+                    $this->safe_json_encode($entry['entities'] ?? array(), 'entities'),
+                    $this->safe_json_encode($entry['content_themes'] ?? array(), 'content_themes'),
+                    $this->safe_json_encode($entry['good_anchor_phrases'] ?? array(), 'good_anchor_phrases'),
+                    isset($entry['reader_intent']) ? $entry['reader_intent'] : 'educational',
+                    isset($entry['difficulty_level']) ? $entry['difficulty_level'] : 'intermediate',
+                    isset($entry['funnel_stage']) ? $entry['funnel_stage'] : 'awareness',
+                    isset($entry['topic_cluster']) ? $entry['topic_cluster'] : null,
+                    $this->safe_json_encode($entry['related_clusters'] ?? array(), 'related_clusters'),
+                    isset($entry['is_pillar_content']) ? (int)$entry['is_pillar_content'] : 0,
+                    isset($entry['word_count']) ? intval($entry['word_count']) : 0,
+                    isset($entry['content_quality_score']) ? intval($entry['content_quality_score']) : 50,
+                    isset($entry['content_lifespan']) ? $entry['content_lifespan'] : 'evergreen',
+                    isset($entry['publish_season']) ? $entry['publish_season'] : null,
+                    $this->safe_json_encode($entry['target_regions'] ?? array(), 'target_regions'),
+                    $this->safe_json_encode($entry['target_cities'] ?? array(), 'target_cities'),
+                    isset($entry['target_persona']) ? $entry['target_persona'] : 'general',
+                    date('Y-m-d', strtotime($last_modified)),
+                    $this->calculate_freshness_score($last_modified),
+                    isset($entry['inbound_link_count']) ? intval($entry['inbound_link_count']) : 0,
+                    isset($entry['outbound_link_count']) ? intval($entry['outbound_link_count']) : 0,
+                    isset($entry['link_gap_priority']) ? intval($entry['link_gap_priority']) : 50,
+                    isset($entry['has_cta']) ? (int)$entry['has_cta'] : 0,
+                    isset($entry['has_calculator']) ? (int)$entry['has_calculator'] : 0,
+                    isset($entry['has_lead_form']) ? (int)$entry['has_lead_form'] : 0,
+                    isset($entry['monetization_value']) ? intval($entry['monetization_value']) : 5,
+                    isset($entry['content_format']) ? $entry['content_format'] : 'other',
+                    $this->safe_json_encode($entry['must_link_to'] ?? array(), 'must_link_to'),
+                    $this->safe_json_encode($entry['never_link_to'] ?? array(), 'never_link_to'),
+                    $this->safe_json_encode($entry['preferred_anchors'] ?? array(), 'preferred_anchors'),
+                    isset($entry['updated_at']) ? $entry['updated_at'] : current_time('mysql')
+                );
+
+                $values = array_merge($values, $row);
+                $placeholders[] = "(%d, %s, %d, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %d, %d, %d, %s, %s, %s, %s, %s, %s, %d, %d, %d, %d, %d, %d, %d, %d, %s, %s, %s, %s, %s)";
+            }
+
+            if (empty($placeholders)) {
+                continue;
+            }
+
+            $sql = "INSERT INTO {$this->table_name}
+                (post_id, post_type, is_page, title, url, summary, main_topics, semantic_keywords,
+                 entities, content_themes, good_anchor_phrases, reader_intent, difficulty_level,
+                 funnel_stage, topic_cluster, related_clusters, is_pillar_content, word_count,
+                 content_quality_score, content_lifespan, publish_season, target_regions, target_cities,
+                 target_persona, content_last_updated, freshness_score, inbound_link_count,
+                 outbound_link_count, link_gap_priority, has_cta, has_calculator, has_lead_form,
+                 monetization_value, content_format, must_link_to, never_link_to, preferred_anchors, updated_at)
+                VALUES " . implode(', ', $placeholders) . "
+                ON DUPLICATE KEY UPDATE
+                    post_type = VALUES(post_type),
+                    is_page = VALUES(is_page),
+                    title = VALUES(title),
+                    url = VALUES(url),
+                    summary = VALUES(summary),
+                    main_topics = VALUES(main_topics),
+                    semantic_keywords = VALUES(semantic_keywords),
+                    entities = VALUES(entities),
+                    content_themes = VALUES(content_themes),
+                    good_anchor_phrases = VALUES(good_anchor_phrases),
+                    reader_intent = VALUES(reader_intent),
+                    difficulty_level = VALUES(difficulty_level),
+                    funnel_stage = VALUES(funnel_stage),
+                    topic_cluster = VALUES(topic_cluster),
+                    related_clusters = VALUES(related_clusters),
+                    is_pillar_content = VALUES(is_pillar_content),
+                    word_count = VALUES(word_count),
+                    content_quality_score = VALUES(content_quality_score),
+                    content_lifespan = VALUES(content_lifespan),
+                    publish_season = VALUES(publish_season),
+                    target_regions = VALUES(target_regions),
+                    target_cities = VALUES(target_cities),
+                    target_persona = VALUES(target_persona),
+                    content_last_updated = VALUES(content_last_updated),
+                    freshness_score = VALUES(freshness_score),
+                    inbound_link_count = VALUES(inbound_link_count),
+                    outbound_link_count = VALUES(outbound_link_count),
+                    link_gap_priority = VALUES(link_gap_priority),
+                    has_cta = VALUES(has_cta),
+                    has_calculator = VALUES(has_calculator),
+                    has_lead_form = VALUES(has_lead_form),
+                    monetization_value = VALUES(monetization_value),
+                    content_format = VALUES(content_format),
+                    must_link_to = VALUES(must_link_to),
+                    never_link_to = VALUES(never_link_to),
+                    preferred_anchors = VALUES(preferred_anchors),
+                    updated_at = VALUES(updated_at)";
+
+            $query = $wpdb->prepare($sql, $values);
+            $result = $wpdb->query($query);
+
+            if ($result !== false) {
+                $inserted += count($placeholders);
+            } else {
+                $failed += count($placeholders);
+                error_log('LendCity bulk insert error: ' . $wpdb->last_error);
+            }
+        }
+
+        $this->clear_catalog_cache();
+
+        return array(
+            'inserted' => $inserted,
+            'failed' => $failed
+        );
+    }
+
+    /**
      * Calculate freshness score based on last modified date (0-100)
      */
     private function calculate_freshness_score($last_modified) {

@@ -106,6 +106,29 @@ $nonce = wp_create_nonce('lendcity_claude_nonce');
             </td>
         </tr>
     </table>
+
+    <hr>
+
+    <h2>Settings Backup</h2>
+    <p>Export your plugin settings for backup or to migrate to another site. API keys are not included for security.</p>
+    <table class="form-table">
+        <tr>
+            <th>Export Settings</th>
+            <td>
+                <button type="button" class="button" id="export-settings-btn">Export Settings (JSON)</button>
+                <span id="export-result" style="margin-left: 10px;"></span>
+            </td>
+        </tr>
+        <tr>
+            <th>Import Settings</th>
+            <td>
+                <input type="file" id="import-file" accept=".json" style="display: none;">
+                <button type="button" class="button" id="import-settings-btn">Import Settings</button>
+                <span id="import-result" style="margin-left: 10px;"></span>
+                <p class="description">Select a JSON file exported from another LendCity Tools installation.</p>
+            </td>
+        </tr>
+    </table>
 </div>
 
 <script>
@@ -156,6 +179,95 @@ jQuery(document).ready(function($) {
             $result.html('<span style="color: red;">Connection failed</span>');
             $btn.prop('disabled', false).text('Test Connection');
         });
+    });
+
+    // Export Settings
+    $('#export-settings-btn').on('click', function() {
+        var $btn = $(this);
+        var $result = $('#export-result');
+
+        $btn.prop('disabled', true).text('Exporting...');
+        $result.html('');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_action', sub_action: 'export_settings',
+            nonce: nonce
+        }, function(response) {
+            if (response.success) {
+                // Create and download file
+                var dataStr = JSON.stringify(response.data, null, 2);
+                var blob = new Blob([dataStr], {type: 'application/json'});
+                var url = URL.createObjectURL(blob);
+                var a = document.createElement('a');
+                a.href = url;
+                a.download = 'lendcity-settings-' + new Date().toISOString().slice(0,10) + '.json';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                $result.html('<span style="color: green;">Settings exported!</span>');
+            } else {
+                $result.html('<span style="color: red;">Error: ' + response.data + '</span>');
+            }
+            $btn.prop('disabled', false).text('Export Settings (JSON)');
+        }).fail(function() {
+            $result.html('<span style="color: red;">Export failed</span>');
+            $btn.prop('disabled', false).text('Export Settings (JSON)');
+        });
+    });
+
+    // Import Settings
+    $('#import-settings-btn').on('click', function() {
+        $('#import-file').click();
+    });
+
+    $('#import-file').on('change', function(e) {
+        var file = e.target.files[0];
+        if (!file) return;
+
+        var $result = $('#import-result');
+        var $btn = $('#import-settings-btn');
+
+        var reader = new FileReader();
+        reader.onload = function(e) {
+            var content = e.target.result;
+
+            // Validate JSON
+            try {
+                JSON.parse(content);
+            } catch(err) {
+                $result.html('<span style="color: red;">Invalid JSON file</span>');
+                return;
+            }
+
+            if (!confirm('Import settings from ' + file.name + '? This will overwrite current settings.')) {
+                return;
+            }
+
+            $btn.prop('disabled', true).text('Importing...');
+            $result.html('');
+
+            $.post(ajaxurl, {
+                action: 'lendcity_action', sub_action: 'import_settings',
+                nonce: nonce,
+                settings_json: content
+            }, function(response) {
+                if (response.success) {
+                    $result.html('<span style="color: green;">' + response.data.message + '</span>');
+                    setTimeout(function() { location.reload(); }, 2000);
+                } else {
+                    $result.html('<span style="color: red;">Error: ' + response.data + '</span>');
+                }
+                $btn.prop('disabled', false).text('Import Settings');
+            }).fail(function() {
+                $result.html('<span style="color: red;">Import failed</span>');
+                $btn.prop('disabled', false).text('Import Settings');
+            });
+        };
+        reader.readAsText(file);
+
+        // Reset file input
+        $(this).val('');
     });
 });
 </script>
