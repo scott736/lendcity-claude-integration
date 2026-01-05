@@ -188,7 +188,7 @@ jQuery(document).ready(function($) {
             url: ajaxurl,
             type: 'POST',
             data: {
-                action: 'lendcity_regenerate_webhook_secret',
+                action: 'lendcity_action', sub_action: 'regenerate_webhook_secret',
                 nonce: nonce
             },
             success: function(response) {
@@ -234,7 +234,7 @@ jQuery(document).ready(function($) {
             url: ajaxurl,
             type: 'POST',
             data: {
-                action: 'lendcity_manual_process_episode',
+                action: 'lendcity_action', sub_action: 'manual_process_episode',
                 nonce: nonce,
                 share_id: shareId,
                 category: category

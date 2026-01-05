@@ -387,82 +387,11 @@ class LendCity_Claude_Integration {
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_init', array($this, 'register_settings'));
         add_action('admin_notices', array($this, 'show_upgrade_notice'));
-        add_action('wp_ajax_lendcity_dismiss_v11_notice', array($this, 'ajax_dismiss_v11_notice'));
-        add_action('wp_ajax_lendcity_get_catalog_stats', array($this, 'ajax_get_catalog_stats'));
 
-        // Smart Linker AJAX
-        add_action('wp_ajax_lendcity_get_all_content_ids', array($this, 'ajax_get_all_content_ids'));
-        add_action('wp_ajax_lendcity_build_single_catalog', array($this, 'ajax_build_single_catalog'));
-        add_action('wp_ajax_lendcity_build_catalog_batch', array($this, 'ajax_build_catalog_batch'));
-        add_action('wp_ajax_lendcity_build_parallel_catalog', array($this, 'ajax_build_parallel_catalog'));
-        add_action('wp_ajax_lendcity_update_link_counts', array($this, 'ajax_update_link_counts'));
-        add_action('wp_ajax_lendcity_clear_catalog', array($this, 'ajax_clear_catalog'));
-        add_action('wp_ajax_lendcity_get_link_suggestions', array($this, 'ajax_get_link_suggestions'));
-        add_action('wp_ajax_lendcity_insert_approved_links', array($this, 'ajax_insert_approved_links'));
-        add_action('wp_ajax_lendcity_queue_all_linking', array($this, 'ajax_queue_all_linking'));
-        add_action('wp_ajax_lendcity_clear_link_queue', array($this, 'ajax_clear_link_queue'));
-        add_action('wp_ajax_lendcity_get_queue_status', array($this, 'ajax_get_queue_status'));
-        add_action('wp_ajax_lendcity_remove_single_link', array($this, 'ajax_remove_single_link'));
-        add_action('wp_ajax_lendcity_remove_all_smart_links', array($this, 'ajax_remove_all_smart_links'));
-        add_action('wp_ajax_lendcity_update_smart_link_urls', array($this, 'ajax_update_smart_link_urls'));
-        add_action('wp_ajax_lendcity_change_link_target', array($this, 'ajax_change_link_target'));
-        add_action('wp_ajax_lendcity_delete_all_site_links', array($this, 'ajax_delete_all_site_links'));
-        add_action('wp_ajax_lendcity_process_single_source', array($this, 'ajax_process_single_source'));
-        add_action('wp_ajax_lendcity_process_queue_now', array($this, 'ajax_process_queue_now'));
-        
-        // New background queue handlers
-        add_action('wp_ajax_lendcity_init_bulk_queue', array($this, 'ajax_init_bulk_queue'));
-        add_action('wp_ajax_lendcity_process_queue_batch', array($this, 'ajax_process_queue_batch'));
-        add_action('wp_ajax_lendcity_pause_queue', array($this, 'ajax_pause_queue'));
-        add_action('wp_ajax_lendcity_resume_queue', array($this, 'ajax_resume_queue'));
-        
-        // SEO Enhancement AJAX
-        add_action('wp_ajax_lendcity_save_page_seo', array($this, 'ajax_save_page_seo'));
-        add_action('wp_ajax_lendcity_get_link_gaps', array($this, 'ajax_get_link_gaps'));
-        add_action('wp_ajax_lendcity_get_link_stats', array($this, 'ajax_get_link_stats'));
-        add_action('wp_ajax_lendcity_get_links_page', array($this, 'ajax_get_links_page'));
-        
-        // Metadata AJAX (used by Smart Linker)
-        add_action('wp_ajax_lendcity_generate_metadata_from_links', array($this, 'ajax_generate_metadata_from_links'));
+        // v12.3.0: Consolidated AJAX router - reduces 55 hooks to 1
+        // All AJAX calls go through single router for faster initialization
+        add_action('wp_ajax_lendcity_action', array($this, 'ajax_router'));
 
-        // Smart Metadata v2 AJAX (runs AFTER linking)
-        add_action('wp_ajax_lendcity_generate_smart_metadata', array($this, 'ajax_generate_smart_metadata'));
-        add_action('wp_ajax_lendcity_get_smart_metadata_posts', array($this, 'ajax_get_smart_metadata_posts'));
-        add_action('wp_ajax_lendcity_bulk_smart_metadata', array($this, 'ajax_bulk_smart_metadata'));
-
-        // Meta Queue AJAX (persistent background processing)
-        add_action('wp_ajax_lendcity_init_meta_queue', array($this, 'ajax_init_meta_queue'));
-        add_action('wp_ajax_lendcity_get_meta_queue_status', array($this, 'ajax_get_meta_queue_status'));
-        add_action('wp_ajax_lendcity_clear_meta_queue', array($this, 'ajax_clear_meta_queue'));
-
-        // v12.0 Background Queue AJAX (runs without browser open)
-        add_action('wp_ajax_lendcity_start_background_catalog', array($this, 'ajax_start_background_catalog'));
-        add_action('wp_ajax_lendcity_get_catalog_queue_status', array($this, 'ajax_get_catalog_queue_status'));
-        add_action('wp_ajax_lendcity_clear_catalog_queue', array($this, 'ajax_clear_catalog_queue'));
-        add_action('wp_ajax_lendcity_get_all_queue_statuses', array($this, 'ajax_get_all_queue_statuses'));
-
-        // SEO Health Monitor AJAX
-        add_action('wp_ajax_lendcity_get_seo_health_issues', array($this, 'ajax_get_seo_health_issues'));
-        add_action('wp_ajax_lendcity_auto_fix_seo', array($this, 'ajax_auto_fix_seo'));
-
-        // Article Scheduler AJAX
-        add_action('wp_ajax_lendcity_process_article', array($this, 'ajax_process_article'));
-        add_action('wp_ajax_lendcity_schedule_all_articles', array($this, 'ajax_schedule_all_articles'));
-        add_action('wp_ajax_lendcity_delete_queued_file', array($this, 'ajax_delete_queued_file'));
-        add_action('wp_ajax_lendcity_add_unsplash_image', array($this, 'ajax_add_unsplash_image'));
-        add_action('wp_ajax_lendcity_replace_unsplash_image', array($this, 'ajax_replace_unsplash_image'));
-        add_action('wp_ajax_lendcity_run_auto_scheduler', array($this, 'ajax_run_auto_scheduler'));
-        add_action('wp_ajax_lendcity_run_auto_scheduler_single', array($this, 'ajax_run_auto_scheduler_single'));
-        
-        // Settings AJAX
-        add_action('wp_ajax_lendcity_test_api', array($this, 'ajax_test_api'));
-        add_action('wp_ajax_lendcity_test_tinypng', array($this, 'ajax_test_tinypng'));
-        
-        // Podcast AJAX (Backfill only - new episodes handled via Transistor webhook)
-        add_action('wp_ajax_lendcity_scan_transistor_embeds', array($this, 'ajax_scan_transistor_embeds'));
-        add_action('wp_ajax_lendcity_backfill_podcast_episodes', array($this, 'ajax_backfill_podcast_episodes'));
-        add_action('wp_ajax_lendcity_get_podcast_debug_log', array($this, 'ajax_get_podcast_debug_log'));
-        
         // Smart Linker cron
         add_action('lendcity_process_link_queue', array($this, 'cron_process_link_queue'));
         add_action('lendcity_process_catalog_queue', array($this, 'cron_process_catalog_queue'));
@@ -480,16 +409,123 @@ class LendCity_Claude_Integration {
         // Save show mappings on settings save
         add_action('admin_init', array($this, 'save_show_mappings'));
 
-        // Webhook secret regeneration AJAX
-        add_action('wp_ajax_lendcity_regenerate_webhook_secret', array($this, 'ajax_regenerate_webhook_secret'));
-
-        // Manual episode processing AJAX
-        add_action('wp_ajax_lendcity_manual_process_episode', array($this, 'ajax_manual_process_episode'));
-
         // Initialize Smart Linker
         new LendCity_Smart_Linker();
     }
-    
+
+    /**
+     * v12.3.0: Consolidated AJAX router
+     * Maps sub-actions to handler methods, reducing hook registration overhead
+     * Frontend JS should call: action=lendcity_action&sub_action=get_catalog_stats
+     */
+    public function ajax_router() {
+        // Verify user has permission
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Unauthorized', 403);
+        }
+
+        $sub_action = isset($_POST['sub_action']) ? sanitize_text_field($_POST['sub_action']) : '';
+
+        if (empty($sub_action)) {
+            wp_send_json_error('Missing sub_action parameter');
+        }
+
+        // Map of allowed actions to methods
+        $action_map = array(
+            // General
+            'dismiss_v11_notice' => 'ajax_dismiss_v11_notice',
+            'get_catalog_stats' => 'ajax_get_catalog_stats',
+
+            // Smart Linker - Catalog
+            'get_all_content_ids' => 'ajax_get_all_content_ids',
+            'build_single_catalog' => 'ajax_build_single_catalog',
+            'build_catalog_batch' => 'ajax_build_catalog_batch',
+            'build_parallel_catalog' => 'ajax_build_parallel_catalog',
+            'update_link_counts' => 'ajax_update_link_counts',
+            'clear_catalog' => 'ajax_clear_catalog',
+
+            // Smart Linker - Links
+            'get_link_suggestions' => 'ajax_get_link_suggestions',
+            'insert_approved_links' => 'ajax_insert_approved_links',
+            'queue_all_linking' => 'ajax_queue_all_linking',
+            'clear_link_queue' => 'ajax_clear_link_queue',
+            'get_queue_status' => 'ajax_get_queue_status',
+            'remove_single_link' => 'ajax_remove_single_link',
+            'remove_all_smart_links' => 'ajax_remove_all_smart_links',
+            'update_smart_link_urls' => 'ajax_update_smart_link_urls',
+            'change_link_target' => 'ajax_change_link_target',
+            'delete_all_site_links' => 'ajax_delete_all_site_links',
+            'process_single_source' => 'ajax_process_single_source',
+            'process_queue_now' => 'ajax_process_queue_now',
+
+            // Background Queue
+            'init_bulk_queue' => 'ajax_init_bulk_queue',
+            'process_queue_batch' => 'ajax_process_queue_batch',
+            'pause_queue' => 'ajax_pause_queue',
+            'resume_queue' => 'ajax_resume_queue',
+
+            // SEO Enhancement
+            'save_page_seo' => 'ajax_save_page_seo',
+            'get_link_gaps' => 'ajax_get_link_gaps',
+            'get_link_stats' => 'ajax_get_link_stats',
+            'get_links_page' => 'ajax_get_links_page',
+
+            // Metadata
+            'generate_metadata_from_links' => 'ajax_generate_metadata_from_links',
+            'generate_smart_metadata' => 'ajax_generate_smart_metadata',
+            'get_smart_metadata_posts' => 'ajax_get_smart_metadata_posts',
+            'bulk_smart_metadata' => 'ajax_bulk_smart_metadata',
+
+            // Meta Queue
+            'init_meta_queue' => 'ajax_init_meta_queue',
+            'get_meta_queue_status' => 'ajax_get_meta_queue_status',
+            'clear_meta_queue' => 'ajax_clear_meta_queue',
+
+            // Background Catalog Queue
+            'start_background_catalog' => 'ajax_start_background_catalog',
+            'get_catalog_queue_status' => 'ajax_get_catalog_queue_status',
+            'clear_catalog_queue' => 'ajax_clear_catalog_queue',
+            'get_all_queue_statuses' => 'ajax_get_all_queue_statuses',
+
+            // SEO Health
+            'get_seo_health_issues' => 'ajax_get_seo_health_issues',
+            'auto_fix_seo' => 'ajax_auto_fix_seo',
+
+            // Article Scheduler
+            'process_article' => 'ajax_process_article',
+            'schedule_all_articles' => 'ajax_schedule_all_articles',
+            'delete_queued_file' => 'ajax_delete_queued_file',
+            'add_unsplash_image' => 'ajax_add_unsplash_image',
+            'replace_unsplash_image' => 'ajax_replace_unsplash_image',
+            'run_auto_scheduler' => 'ajax_run_auto_scheduler',
+            'run_auto_scheduler_single' => 'ajax_run_auto_scheduler_single',
+
+            // Settings
+            'test_api' => 'ajax_test_api',
+            'test_tinypng' => 'ajax_test_tinypng',
+
+            // Podcast
+            'scan_transistor_embeds' => 'ajax_scan_transistor_embeds',
+            'backfill_podcast_episodes' => 'ajax_backfill_podcast_episodes',
+            'get_podcast_debug_log' => 'ajax_get_podcast_debug_log',
+            'regenerate_webhook_secret' => 'ajax_regenerate_webhook_secret',
+            'manual_process_episode' => 'ajax_manual_process_episode',
+        );
+
+        if (!isset($action_map[$sub_action])) {
+            wp_send_json_error('Unknown action: ' . $sub_action);
+        }
+
+        $method = $action_map[$sub_action];
+
+        if (!method_exists($this, $method)) {
+            wp_send_json_error('Handler not found: ' . $method);
+        }
+
+        // Call the handler method
+        $this->$method();
+    }
+
     /**
      * Clean up stale crons if version changed
      */

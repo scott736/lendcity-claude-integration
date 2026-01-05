@@ -686,7 +686,7 @@ jQuery(document).ready(function($) {
         $('#links-tbody').css('opacity', '0.5');
         
         $.post(ajaxurl, {
-            action: 'lendcity_get_links_page',
+            action: 'lendcity_action', sub_action: 'get_links_page',
             nonce: nonce,
             offset: offset,
             limit: linksPerPage,
@@ -740,7 +740,7 @@ jQuery(document).ready(function($) {
         $btn.prop('disabled', true).text('...');
         
         $.post(ajaxurl, {
-            action: 'lendcity_remove_single_link',
+            action: 'lendcity_action', sub_action: 'remove_single_link',
             nonce: nonce,
             post_id: sourceId,
             link_id: linkId
@@ -761,7 +761,7 @@ jQuery(document).ready(function($) {
         $('#catalog-progress').show();
         $('#catalog-status').text('Fetching content list...');
         
-        $.post(ajaxurl, {action: 'lendcity_get_all_content_ids', nonce: nonce}, function(r) {
+        $.post(ajaxurl, {action: 'lendcity_action', sub_action: 'get_all_content_ids', nonce: nonce}, function(r) {
             if (!r.success) { 
                 alert('Error getting content: ' + (r.data || 'Unknown error')); 
                 $btn.prop('disabled', false).text('Build Catalog'); 
@@ -788,7 +788,7 @@ jQuery(document).ready(function($) {
                 $('#catalog-status').text('Processing ' + (current+1) + '-' + batchEnd + ' of ' + total + '...');
                 
                 $.post(ajaxurl, {
-                    action: 'lendcity_build_catalog_batch', 
+                    action: 'lendcity_action', sub_action: 'build_catalog_batch', 
                     nonce: nonce, 
                     post_ids: batchIds
                 }, function(resp) {
@@ -815,7 +815,7 @@ jQuery(document).ready(function($) {
         if (!confirm('Clear the entire catalog? You will need to rebuild it before using Smart Linker.')) return;
         var $btn = $(this).prop('disabled', true).text('Clearing...');
         
-        $.post(ajaxurl, {action: 'lendcity_clear_catalog', nonce: nonce}, function(r) {
+        $.post(ajaxurl, {action: 'lendcity_action', sub_action: 'clear_catalog', nonce: nonce}, function(r) {
             if (r.success) {
                 alert('Catalog cleared!');
                 location.reload();
@@ -834,7 +834,7 @@ jQuery(document).ready(function($) {
         if (!confirm('Queue ALL items for background linking? Links will be auto-inserted.')) return;
         var $btn = $(this).prop('disabled', true).text('Queuing...');
         
-        $.post(ajaxurl, {action: 'lendcity_queue_all_linking', nonce: nonce}, function(r) {
+        $.post(ajaxurl, {action: 'lendcity_action', sub_action: 'queue_all_linking', nonce: nonce}, function(r) {
             if (r.success) {
                 alert('Queued ' + r.data.queued + ' items! Processing will run in background.');
                 location.reload();
@@ -892,7 +892,7 @@ jQuery(document).ready(function($) {
         $('#review-approve-all').prop('disabled', true);
         
         $.post(ajaxurl, {
-            action: 'lendcity_get_link_suggestions',
+            action: 'lendcity_action', sub_action: 'get_link_suggestions',
             nonce: nonce,
             target_id: item.id
         }, function(r) {
@@ -947,7 +947,7 @@ jQuery(document).ready(function($) {
         var $btn = $(this).prop('disabled', true).text('Inserting...');
         
         $.post(ajaxurl, {
-            action: 'lendcity_insert_approved_links',
+            action: 'lendcity_action', sub_action: 'insert_approved_links',
             nonce: nonce,
             target_id: item.id,
             links: JSON.stringify(selected)
@@ -986,7 +986,7 @@ jQuery(document).ready(function($) {
         
         // Initialize the queue
         $.post(ajaxurl, {
-            action: 'lendcity_init_bulk_queue',
+            action: 'lendcity_action', sub_action: 'init_bulk_queue',
             nonce: nonce,
             skip_with_links: skipWithLinks
         }, function(r) {
@@ -1028,7 +1028,7 @@ jQuery(document).ready(function($) {
         clearInterval(refreshInterval);
         
         $.post(ajaxurl, {
-            action: 'lendcity_pause_queue',
+            action: 'lendcity_action', sub_action: 'pause_queue',
             nonce: nonce
         }, function() {
             $('#queue-state-label').text('Paused');
@@ -1045,7 +1045,7 @@ jQuery(document).ready(function($) {
         clearInterval(refreshInterval);
         
         $.post(ajaxurl, {
-            action: 'lendcity_clear_link_queue',
+            action: 'lendcity_action', sub_action: 'clear_link_queue',
             nonce: nonce
         }, function() {
             location.reload();
@@ -1065,7 +1065,7 @@ jQuery(document).ready(function($) {
         if (!queueProcessing) return;
         
         $.post(ajaxurl, {
-            action: 'lendcity_process_queue_batch',
+            action: 'lendcity_action', sub_action: 'process_queue_batch',
             nonce: nonce
         }, function(r) {
             if (r.success) {
@@ -1100,7 +1100,7 @@ jQuery(document).ready(function($) {
     
     function refreshQueueStatus() {
         $.post(ajaxurl, {
-            action: 'lendcity_get_queue_status',
+            action: 'lendcity_action', sub_action: 'get_queue_status',
             nonce: nonce
         }, function(r) {
             if (r.success) {
@@ -1156,7 +1156,7 @@ jQuery(document).ready(function($) {
     // Clear Queue
     $('#clear-queue-btn').on('click', function() {
         if (!confirm('Clear the queue?')) return;
-        $.post(ajaxurl, {action: 'lendcity_clear_link_queue', nonce: nonce}, function() { location.reload(); });
+        $.post(ajaxurl, {action: 'lendcity_action', sub_action: 'clear_link_queue', nonce: nonce}, function() { location.reload(); });
     });
     
     // Update URLs
@@ -1164,7 +1164,7 @@ jQuery(document).ready(function($) {
         var oldUrl = $('#old-url').val(), newUrl = $('#new-url').val();
         if (!oldUrl || !newUrl) { alert('Enter both URLs'); return; }
         
-        $.post(ajaxurl, {action: 'lendcity_update_smart_link_urls', nonce: nonce, old_url: oldUrl, new_url: newUrl}, function(r) {
+        $.post(ajaxurl, {action: 'lendcity_action', sub_action: 'update_smart_link_urls', nonce: nonce, old_url: oldUrl, new_url: newUrl}, function(r) {
             alert(r.success ? 'Updated ' + r.data.updated_count + ' posts' : 'Error');
         });
     });
@@ -1175,7 +1175,7 @@ jQuery(document).ready(function($) {
         if (!postId) { alert('Select a post'); return; }
         if (!confirm('Remove all Claude links from this post?')) return;
         
-        $.post(ajaxurl, {action: 'lendcity_remove_all_smart_links', nonce: nonce, post_id: postId}, function() {
+        $.post(ajaxurl, {action: 'lendcity_action', sub_action: 'remove_all_smart_links', nonce: nonce, post_id: postId}, function() {
             alert('Links removed');
             location.reload();
         });
@@ -1252,7 +1252,7 @@ jQuery(document).ready(function($) {
         $btn.prop('disabled', true).text('Saving...');
         
         $.post(ajaxurl, {
-            action: 'lendcity_change_link_target',
+            action: 'lendcity_action', sub_action: 'change_link_target',
             nonce: nonce,
             source_id: sourceId,
             link_id: linkId,
@@ -1284,7 +1284,7 @@ jQuery(document).ready(function($) {
         var $btn = $(this).prop('disabled', true).text('Deleting...');
         
         $.post(ajaxurl, {
-            action: 'lendcity_delete_all_site_links',
+            action: 'lendcity_action', sub_action: 'delete_all_site_links',
             nonce: nonce
         }, function(r) {
             if (r.success) {
@@ -1308,7 +1308,7 @@ jQuery(document).ready(function($) {
         $btn.prop('disabled', true).text('...');
         
         $.post(ajaxurl, {
-            action: 'lendcity_save_page_seo',
+            action: 'lendcity_action', sub_action: 'save_page_seo',
             nonce: nonce,
             page_id: pageId,
             priority: priority,
@@ -1343,7 +1343,7 @@ jQuery(document).ready(function($) {
         $('#smart-metadata-result').hide();
 
         $.post(ajaxurl, {
-            action: 'lendcity_generate_smart_metadata',
+            action: 'lendcity_action', sub_action: 'generate_smart_metadata',
             nonce: nonce,
             post_id: postId
         }, function(r) {
@@ -1412,7 +1412,7 @@ jQuery(document).ready(function($) {
 
         // Get list of posts to process
         $.post(ajaxurl, {
-            action: 'lendcity_get_smart_metadata_posts',
+            action: 'lendcity_action', sub_action: 'get_smart_metadata_posts',
             nonce: nonce,
             only_linked: true,
             skip_existing: skipExisting
@@ -1459,7 +1459,7 @@ jQuery(document).ready(function($) {
                 $('#smart-metadata-bulk-status').text('Processing ' + (current + 1) + ' of ' + total + ': ' + item.title);
 
                 $.post(ajaxurl, {
-                    action: 'lendcity_generate_smart_metadata',
+                    action: 'lendcity_action', sub_action: 'generate_smart_metadata',
                     nonce: nonce,
                     post_id: item.id
                 }, function(resp) {
@@ -1530,7 +1530,7 @@ jQuery(document).ready(function($) {
 
     function pollMetaQueueStatus() {
         $.post(ajaxurl, {
-            action: 'lendcity_get_meta_queue_status',
+            action: 'lendcity_action', sub_action: 'get_meta_queue_status',
             nonce: nonce
         }, function(response) {
             if (response.success) {
@@ -1545,7 +1545,7 @@ jQuery(document).ready(function($) {
         $btn.prop('disabled', true).text('Starting...');
 
         $.post(ajaxurl, {
-            action: 'lendcity_init_meta_queue',
+            action: 'lendcity_action', sub_action: 'init_meta_queue',
             nonce: nonce,
             skip_existing: $('#meta-queue-skip-existing').is(':checked') ? 'true' : 'false',
             only_linked: $('#meta-queue-only-linked').is(':checked') ? 'true' : 'false'
@@ -1574,7 +1574,7 @@ jQuery(document).ready(function($) {
         if (!confirm('Clear the metadata queue?')) return;
 
         $.post(ajaxurl, {
-            action: 'lendcity_clear_meta_queue',
+            action: 'lendcity_action', sub_action: 'clear_meta_queue',
             nonce: nonce
         }, function(response) {
             if (response.success) {
@@ -1597,7 +1597,7 @@ jQuery(document).ready(function($) {
     // ========== SEO HEALTH MONITOR (Paginated) ==========
     function runSeoHealthScan(reset) {
         $.post(ajaxurl, {
-            action: 'lendcity_get_seo_health_issues',
+            action: 'lendcity_action', sub_action: 'get_seo_health_issues',
             nonce: nonce,
             reset: reset ? 'true' : 'false'
         }, function(response) {
@@ -1677,7 +1677,7 @@ jQuery(document).ready(function($) {
         $btn.prop('disabled', true).text('Fixing...');
 
         $.post(ajaxurl, {
-            action: 'lendcity_auto_fix_seo',
+            action: 'lendcity_action', sub_action: 'auto_fix_seo',
             nonce: nonce,
             post_id: postId
         }, function(response) {
@@ -1760,7 +1760,7 @@ jQuery(document).ready(function($) {
 
     function pollBackgroundQueues() {
         $.post(ajaxurl, {
-            action: 'lendcity_get_all_queue_statuses',
+            action: 'lendcity_action', sub_action: 'get_all_queue_statuses',
             nonce: nonce
         }, function(r) {
             if (r.success) {
@@ -1783,7 +1783,7 @@ jQuery(document).ready(function($) {
         var $btn = $(this).prop('disabled', true).text('Starting...');
 
         $.post(ajaxurl, {
-            action: 'lendcity_start_background_catalog',
+            action: 'lendcity_action', sub_action: 'start_background_catalog',
             nonce: nonce
         }, function(r) {
             $btn.prop('disabled', false).text('🚀 Build (Background)');
@@ -1806,9 +1806,9 @@ jQuery(document).ready(function($) {
 
         // Stop all queues in parallel
         $.when(
-            $.post(ajaxurl, { action: 'lendcity_clear_catalog_queue', nonce: nonce }),
-            $.post(ajaxurl, { action: 'lendcity_clear_link_queue', nonce: nonce }),
-            $.post(ajaxurl, { action: 'lendcity_clear_meta_queue', nonce: nonce })
+            $.post(ajaxurl, { action: 'lendcity_action', sub_action: 'clear_catalog_queue', nonce: nonce }),
+            $.post(ajaxurl, { action: 'lendcity_action', sub_action: 'clear_link_queue', nonce: nonce }),
+            $.post(ajaxurl, { action: 'lendcity_action', sub_action: 'clear_meta_queue', nonce: nonce })
         ).then(function() {
             $btn.prop('disabled', false).text('Stop All Queues');
             alert('All queues stopped.');
@@ -1831,7 +1831,7 @@ jQuery(document).ready(function($) {
 
         // Start catalog first (others depend on it)
         $.post(ajaxurl, {
-            action: 'lendcity_start_background_catalog',
+            action: 'lendcity_action', sub_action: 'start_background_catalog',
             nonce: nonce
         }, function(r1) {
             $('#build-all-bar').css('width', '66%');
@@ -1839,7 +1839,7 @@ jQuery(document).ready(function($) {
 
             // Start linker queue
             $.post(ajaxurl, {
-                action: 'lendcity_init_bulk_queue',
+                action: 'lendcity_action', sub_action: 'init_bulk_queue',
                 nonce: nonce,
                 skip_existing: true
             }, function(r2) {
@@ -1848,7 +1848,7 @@ jQuery(document).ready(function($) {
 
                 // Start meta queue
                 $.post(ajaxurl, {
-                    action: 'lendcity_bulk_smart_metadata',
+                    action: 'lendcity_action', sub_action: 'bulk_smart_metadata',
                     nonce: nonce,
                     skip_existing: true
                 }, function(r3) {

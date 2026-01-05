@@ -120,7 +120,7 @@ jQuery(document).ready(function($) {
         $result.html('');
         
         $.post(ajaxurl, {
-            action: 'lendcity_test_api',
+            action: 'lendcity_action', sub_action: 'test_api',
             nonce: nonce
         }, function(response) {
             if (response.success) {
@@ -143,7 +143,7 @@ jQuery(document).ready(function($) {
         $result.html('');
         
         $.post(ajaxurl, {
-            action: 'lendcity_test_tinypng',
+            action: 'lendcity_action', sub_action: 'test_tinypng',
             nonce: nonce
         }, function(response) {
             if (response.success) {
