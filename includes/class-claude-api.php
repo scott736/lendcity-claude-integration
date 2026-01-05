@@ -4,13 +4,84 @@
  */
 
 class LendCity_Claude_API {
-    
+
     private $api_key;
     private $api_url = 'https://api.anthropic.com/v1/messages';
     private $model = 'claude-opus-4-5-20251101';
-    
+
+    // Retry configuration
+    private $max_retries = 3;
+    private $retry_base_delay = 1; // seconds
+
     public function __construct() {
         $this->api_key = get_option('lendcity_claude_api_key');
+    }
+
+    /**
+     * Make HTTP request with exponential backoff retry logic
+     * Retries on transient network errors and 5xx server errors
+     *
+     * @param array $args Arguments for wp_remote_post
+     * @param int $timeout Request timeout in seconds
+     * @return array|WP_Error Response or error
+     */
+    private function http_request_with_retry($args, $timeout = 60) {
+        $last_error = null;
+
+        for ($attempt = 0; $attempt < $this->max_retries; $attempt++) {
+            if ($attempt > 0) {
+                // Exponential backoff: 1s, 2s, 4s
+                $delay = $this->retry_base_delay * pow(2, $attempt - 1);
+                lendcity_debug_log("API retry attempt {$attempt} after {$delay}s delay");
+                sleep($delay);
+            }
+
+            $args['timeout'] = $timeout;
+            $response = wp_remote_post($this->api_url, $args);
+
+            // If successful response, return it
+            if (!is_wp_error($response)) {
+                $response_code = wp_remote_retrieve_response_code($response);
+
+                // Success - return response
+                if ($response_code >= 200 && $response_code < 300) {
+                    return $response;
+                }
+
+                // Client error (4xx) - don't retry, return immediately
+                if ($response_code >= 400 && $response_code < 500) {
+                    return $response;
+                }
+
+                // Server error (5xx) - retry
+                $last_error = new WP_Error('server_error', 'Server error: HTTP ' . $response_code);
+                lendcity_debug_log("API server error (HTTP {$response_code}), will retry");
+                continue;
+            }
+
+            // Network error - check if retryable
+            $error_code = $response->get_error_code();
+            $retryable_errors = array(
+                'http_request_failed',
+                'http_failure',
+                'operation_timedout',
+                'connect_error',
+                'curl_error'
+            );
+
+            if (in_array($error_code, $retryable_errors) || strpos($error_code, 'curl') !== false) {
+                $last_error = $response;
+                lendcity_debug_log("API network error ({$error_code}), will retry: " . $response->get_error_message());
+                continue;
+            }
+
+            // Non-retryable error - return immediately
+            return $response;
+        }
+
+        // All retries exhausted
+        lendcity_log("API request failed after {$this->max_retries} attempts");
+        return $last_error;
     }
     
     /**
@@ -45,16 +116,15 @@ class LendCity_Claude_API {
             return false;
         }
 
-        $response = wp_remote_post($this->api_url, array(
+        $response = $this->http_request_with_retry(array(
             'headers' => array(
                 'Content-Type' => 'application/json',
                 'x-api-key' => $this->api_key,
                 'anthropic-version' => '2023-06-01'
             ),
-            'body' => $json_body,
-            'timeout' => 60
-        ));
-        
+            'body' => $json_body
+        ), 60);
+
         if (is_wp_error($response)) {
             error_log('LendCity Claude API Error: ' . $response->get_error_message());
             return false;
@@ -249,7 +319,7 @@ class LendCity_Claude_API {
     }
     
     /**
-     * Make API request to Claude
+     * Make API request to Claude with retry logic
      */
     private function make_api_request($prompt) {
         $body = array(
@@ -262,33 +332,32 @@ class LendCity_Claude_API {
                 )
             )
         );
-        
-        $response = wp_remote_post($this->api_url, array(
+
+        $response = $this->http_request_with_retry(array(
             'headers' => array(
                 'Content-Type' => 'application/json',
                 'x-api-key' => $this->api_key,
                 'anthropic-version' => '2023-06-01'
             ),
-            'body' => json_encode($body),
-            'timeout' => 60
-        ));
-        
+            'body' => json_encode($body)
+        ), 60);
+
         if (is_wp_error($response)) {
             return array(
                 'success' => false,
                 'message' => $response->get_error_message()
             );
         }
-        
+
         $body = json_decode(wp_remote_retrieve_body($response), true);
-        
+
         if (isset($body['error'])) {
             return array(
                 'success' => false,
                 'message' => $body['error']['message']
             );
         }
-        
+
         return array(
             'success' => true,
             'data' => $body
@@ -388,15 +457,14 @@ class LendCity_Claude_API {
         error_log('LendCity: Sending article generation request to Claude API');
         error_log('LendCity: Prompt length: ' . strlen($prompt) . ' chars');
 
-        $response = wp_remote_post($this->api_url, array(
+        $response = $this->http_request_with_retry(array(
             'headers' => array(
                 'Content-Type' => 'application/json',
                 'x-api-key' => $this->api_key,
                 'anthropic-version' => '2023-06-01'
             ),
-            'body' => json_encode($body),
-            'timeout' => 300 // 5 minutes for long content generation
-        ));
+            'body' => json_encode($body)
+        ), 300); // 5 minutes for long content generation
 
         error_log('LendCity: wp_remote_post completed');
 

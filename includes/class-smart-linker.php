@@ -89,6 +89,157 @@ class LendCity_Smart_Linker {
     }
 
     // =========================================================================
+    // DATABASE-LEVEL LOCKING (more reliable than transients)
+    // =========================================================================
+
+    /**
+     * Acquire a database-level lock using MySQL GET_LOCK
+     * More reliable than transients for preventing race conditions
+     *
+     * @param string $lock_name Name of the lock (will be prefixed)
+     * @param int $timeout Seconds to wait for lock (0 = don't wait)
+     * @return bool True if lock acquired, false otherwise
+     */
+    private function acquire_lock($lock_name, $timeout = 0) {
+        global $wpdb;
+        $full_lock_name = 'lendcity_' . $lock_name;
+        // MySQL lock names are limited to 64 chars
+        $full_lock_name = substr($full_lock_name, 0, 64);
+
+        $result = $wpdb->get_var($wpdb->prepare(
+            "SELECT GET_LOCK(%s, %d)",
+            $full_lock_name,
+            $timeout
+        ));
+
+        return $result === '1';
+    }
+
+    /**
+     * Release a database-level lock
+     *
+     * @param string $lock_name Name of the lock (will be prefixed)
+     * @return bool True if lock released, false otherwise
+     */
+    private function release_lock($lock_name) {
+        global $wpdb;
+        $full_lock_name = 'lendcity_' . $lock_name;
+        $full_lock_name = substr($full_lock_name, 0, 64);
+
+        $result = $wpdb->get_var($wpdb->prepare(
+            "SELECT RELEASE_LOCK(%s)",
+            $full_lock_name
+        ));
+
+        return $result === '1';
+    }
+
+    /**
+     * Check if a lock is currently held (by any connection)
+     *
+     * @param string $lock_name Name of the lock
+     * @return bool True if lock is free, false if held
+     */
+    private function is_lock_free($lock_name) {
+        global $wpdb;
+        $full_lock_name = 'lendcity_' . $lock_name;
+        $full_lock_name = substr($full_lock_name, 0, 64);
+
+        $result = $wpdb->get_var($wpdb->prepare(
+            "SELECT IS_FREE_LOCK(%s)",
+            $full_lock_name
+        ));
+
+        return $result === '1';
+    }
+
+    // =========================================================================
+    // JSON VALIDATION HELPERS
+    // =========================================================================
+
+    /**
+     * Safely encode data to JSON with validation and error handling
+     * Returns empty array JSON '[]' on failure to prevent data corruption
+     *
+     * @param mixed $data Data to encode
+     * @param string $context Context for error logging
+     * @return string Valid JSON string
+     */
+    private function safe_json_encode($data, $context = '') {
+        // If already a string, validate it's valid JSON
+        if (is_string($data)) {
+            $decoded = json_decode($data);
+            if (json_last_error() === JSON_ERROR_NONE) {
+                return $data; // Already valid JSON
+            }
+            // Invalid JSON string - wrap as array
+            $data = array($data);
+        }
+
+        // Ensure data is encodable (remove non-UTF8 characters)
+        if (is_array($data)) {
+            $data = $this->sanitize_array_for_json($data);
+        }
+
+        $json = wp_json_encode($data);
+
+        if ($json === false) {
+            $error = json_last_error_msg();
+            $this->debug_log("JSON encode failed ({$context}): {$error}");
+            return '[]';
+        }
+
+        return $json;
+    }
+
+    /**
+     * Recursively sanitize array values for JSON encoding
+     * Removes or fixes values that can't be properly encoded
+     *
+     * @param array $data Array to sanitize
+     * @return array Sanitized array
+     */
+    private function sanitize_array_for_json($data) {
+        $result = array();
+        foreach ($data as $key => $value) {
+            if (is_array($value)) {
+                $result[$key] = $this->sanitize_array_for_json($value);
+            } elseif (is_string($value)) {
+                // Ensure valid UTF-8
+                $result[$key] = mb_convert_encoding($value, 'UTF-8', 'UTF-8');
+                // Remove control characters except newline/tab
+                $result[$key] = preg_replace('/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/u', '', $result[$key]);
+            } elseif (is_numeric($value) || is_bool($value) || is_null($value)) {
+                $result[$key] = $value;
+            }
+            // Skip other types that can't be JSON encoded
+        }
+        return $result;
+    }
+
+    /**
+     * Safely decode JSON with validation
+     *
+     * @param string $json JSON string to decode
+     * @param mixed $default Default value if decode fails
+     * @return mixed Decoded value or default
+     */
+    private function safe_json_decode($json, $default = array()) {
+        if (empty($json) || $json === '[]' || $json === 'null') {
+            return $default;
+        }
+
+        $decoded = json_decode($json, true);
+
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            $this->debug_log("JSON decode failed: " . json_last_error_msg());
+            return $default;
+        }
+
+        return $decoded;
+    }
+
+    // =========================================================================
     // DATABASE TABLE MANAGEMENT
     // =========================================================================
 
@@ -222,6 +373,47 @@ class LendCity_Smart_Linker {
 
         // v12.2.6: Add postmeta index for smart links lookups (if not exists)
         $this->maybe_add_postmeta_index();
+
+        // v12.3.0: Add performance indexes for sorting/filtering
+        $this->maybe_add_performance_indexes();
+    }
+
+    /**
+     * Add performance indexes for frequently sorted/filtered columns
+     * v12.3.0 optimization for catalog queries
+     */
+    private function maybe_add_performance_indexes() {
+        global $wpdb;
+
+        // Indexes to add for query optimization
+        $indexes = array(
+            'idx_quality_score' => 'content_quality_score',
+            'idx_freshness_score' => 'freshness_score',
+            'idx_funnel_stage' => 'funnel_stage',
+            'idx_post_type' => 'post_type',
+            'idx_link_priority' => 'link_gap_priority'
+        );
+
+        foreach ($indexes as $index_name => $column) {
+            $index_exists = $wpdb->get_var($wpdb->prepare(
+                "SELECT COUNT(*) FROM information_schema.STATISTICS
+                 WHERE table_schema = DATABASE()
+                 AND table_name = %s
+                 AND index_name = %s",
+                $this->table_name,
+                $index_name
+            ));
+
+            if ($index_exists == 0) {
+                $result = $wpdb->query(
+                    "ALTER TABLE {$this->table_name} ADD INDEX {$index_name} ({$column})"
+                );
+
+                if ($result !== false && !$wpdb->last_error) {
+                    $this->debug_log("Added index {$index_name} on {$column}");
+                }
+            }
+        }
     }
 
     /**
@@ -303,18 +495,19 @@ class LendCity_Smart_Linker {
             'title' => isset($entry['title']) ? $entry['title'] : '',
             'url' => isset($entry['url']) ? $entry['url'] : '',
             'summary' => isset($entry['summary']) ? $entry['summary'] : '',
-            'main_topics' => isset($entry['main_topics']) ? wp_json_encode($entry['main_topics']) : '[]',
-            'semantic_keywords' => isset($entry['semantic_keywords']) ? wp_json_encode($entry['semantic_keywords']) : '[]',
-            'entities' => isset($entry['entities']) ? wp_json_encode($entry['entities']) : '[]',
-            'content_themes' => isset($entry['content_themes']) ? wp_json_encode($entry['content_themes']) : '[]',
-            'good_anchor_phrases' => isset($entry['good_anchor_phrases']) ? wp_json_encode($entry['good_anchor_phrases']) : '[]',
+            // Use safe JSON encoding to prevent data corruption
+            'main_topics' => $this->safe_json_encode($entry['main_topics'] ?? array(), 'main_topics'),
+            'semantic_keywords' => $this->safe_json_encode($entry['semantic_keywords'] ?? array(), 'semantic_keywords'),
+            'entities' => $this->safe_json_encode($entry['entities'] ?? array(), 'entities'),
+            'content_themes' => $this->safe_json_encode($entry['content_themes'] ?? array(), 'content_themes'),
+            'good_anchor_phrases' => $this->safe_json_encode($entry['good_anchor_phrases'] ?? array(), 'good_anchor_phrases'),
 
             // v3.0 Intelligence fields
             'reader_intent' => isset($entry['reader_intent']) ? $entry['reader_intent'] : 'educational',
             'difficulty_level' => isset($entry['difficulty_level']) ? $entry['difficulty_level'] : 'intermediate',
             'funnel_stage' => isset($entry['funnel_stage']) ? $entry['funnel_stage'] : 'awareness',
             'topic_cluster' => isset($entry['topic_cluster']) ? $entry['topic_cluster'] : null,
-            'related_clusters' => isset($entry['related_clusters']) ? wp_json_encode($entry['related_clusters']) : '[]',
+            'related_clusters' => $this->safe_json_encode($entry['related_clusters'] ?? array(), 'related_clusters'),
             'is_pillar_content' => isset($entry['is_pillar_content']) ? (int)$entry['is_pillar_content'] : 0,
             'word_count' => isset($entry['word_count']) ? intval($entry['word_count']) : 0,
             'content_quality_score' => isset($entry['content_quality_score']) ? intval($entry['content_quality_score']) : 50,
@@ -324,8 +517,8 @@ class LendCity_Smart_Linker {
             'publish_season' => isset($entry['publish_season']) ? $entry['publish_season'] : null,
 
             // v4.0 Geographic
-            'target_regions' => isset($entry['target_regions']) ? wp_json_encode($entry['target_regions']) : '[]',
-            'target_cities' => isset($entry['target_cities']) ? wp_json_encode($entry['target_cities']) : '[]',
+            'target_regions' => $this->safe_json_encode($entry['target_regions'] ?? array(), 'target_regions'),
+            'target_cities' => $this->safe_json_encode($entry['target_cities'] ?? array(), 'target_cities'),
 
             // v4.0 Persona
             'target_persona' => isset($entry['target_persona']) ? $entry['target_persona'] : 'general',
@@ -349,9 +542,9 @@ class LendCity_Smart_Linker {
             'content_format' => isset($entry['content_format']) ? $entry['content_format'] : 'other',
 
             // v4.0 Admin Overrides
-            'must_link_to' => isset($entry['must_link_to']) ? wp_json_encode($entry['must_link_to']) : '[]',
-            'never_link_to' => isset($entry['never_link_to']) ? wp_json_encode($entry['never_link_to']) : '[]',
-            'preferred_anchors' => isset($entry['preferred_anchors']) ? wp_json_encode($entry['preferred_anchors']) : '[]',
+            'must_link_to' => $this->safe_json_encode($entry['must_link_to'] ?? array(), 'must_link_to'),
+            'never_link_to' => $this->safe_json_encode($entry['never_link_to'] ?? array(), 'never_link_to'),
+            'preferred_anchors' => $this->safe_json_encode($entry['preferred_anchors'] ?? array(), 'preferred_anchors'),
 
             'updated_at' => isset($entry['updated_at']) ? $entry['updated_at'] : current_time('mysql')
         );
@@ -1024,23 +1217,23 @@ class LendCity_Smart_Linker {
      * Background task: Catalog and link a newly published post
      */
     public function process_new_post_auto_link($post_id) {
-        $lock_key = 'lendcity_processing_' . $post_id;
-        if (get_transient($lock_key)) {
+        // Use database-level lock for this specific post
+        $lock_name = 'processing_' . $post_id;
+        if (!$this->acquire_lock($lock_name, 0)) {
             $this->debug_log('Post ' . $post_id . ' already being processed - skipping');
             return;
         }
-        set_transient($lock_key, true, 300);
 
         clean_post_cache($post_id);
         $post = get_post($post_id);
         if (!$post || $post->post_status !== 'publish') {
-            delete_transient($lock_key);
+            $this->release_lock($lock_name);
             return;
         }
 
         $existing_links = get_post_meta($post_id, $this->link_meta_key, true);
         if (!empty($existing_links) && is_array($existing_links) && count($existing_links) > 0) {
-            delete_transient($lock_key);
+            $this->release_lock($lock_name);
             return;
         }
 
@@ -1083,7 +1276,7 @@ class LendCity_Smart_Linker {
             }
         }
 
-        delete_transient($lock_key);
+        $this->release_lock($lock_name);
     }
 
     /**
@@ -2597,11 +2790,10 @@ class LendCity_Smart_Linker {
      * All link requests go through Claude API for intelligent linking
      */
     public function process_queue_batch() {
-        $lock_key = 'lendcity_queue_processing';
-        if (get_transient($lock_key)) {
+        // Use database-level lock for reliable concurrency control
+        if (!$this->acquire_lock('queue_processing', 0)) {
             return array('complete' => false, 'message' => 'Already processing');
         }
-        set_transient($lock_key, true, 120);
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(300);
@@ -2617,7 +2809,7 @@ class LendCity_Smart_Linker {
                 update_option($this->queue_status_option, $status, false);
             }
             $this->clear_catalog_cache(); // Clean up
-            delete_transient($lock_key);
+            $this->release_lock('queue_processing');
             return array('complete' => true);
         }
 
@@ -2666,7 +2858,7 @@ class LendCity_Smart_Linker {
         }
 
         $this->clear_catalog_cache(); // Clean up memory
-        delete_transient($lock_key);
+        $this->release_lock('queue_processing');
 
         if (empty($queue)) {
             $status['state'] = 'complete';
@@ -2763,8 +2955,8 @@ class LendCity_Smart_Linker {
         wp_clear_scheduled_hook('lendcity_process_link_queue');
         wp_clear_scheduled_hook('lendcity_process_queue_batch');
 
-        // Clear processing lock
-        delete_transient('lendcity_queue_processing');
+        // Try to release processing lock (may fail if held by different connection, which is OK)
+        $this->release_lock('queue_processing');
 
         $this->debug_log('Queue paused - cron cleared');
     }
@@ -2797,8 +2989,8 @@ class LendCity_Smart_Linker {
         wp_clear_scheduled_hook('lendcity_process_link_queue');
         wp_clear_scheduled_hook('lendcity_process_queue_batch');
 
-        // Clear processing lock
-        delete_transient('lendcity_queue_processing');
+        // Try to release processing lock (may fail if held by different connection, which is OK)
+        $this->release_lock('queue_processing');
 
         // Clear catalog cache
         $this->clear_catalog_cache();
@@ -2856,11 +3048,10 @@ class LendCity_Smart_Linker {
      * Process catalog queue batch - runs via WP Cron (no browser needed)
      */
     public function process_catalog_queue_batch() {
-        $lock_key = 'lendcity_catalog_queue_processing';
-        if (get_transient($lock_key)) {
+        // Use database-level lock for reliable concurrency control
+        if (!$this->acquire_lock('catalog_queue_processing', 0)) {
             return array('complete' => false, 'message' => 'Already processing');
         }
-        set_transient($lock_key, true, 180); // 3 minute lock
 
         if (function_exists('set_time_limit')) {
             @set_time_limit(300);
@@ -2880,7 +3071,7 @@ class LendCity_Smart_Linker {
                 $this->build_semantic_indexes();
             }
             wp_clear_scheduled_hook('lendcity_process_catalog_queue');
-            delete_transient($lock_key);
+            $this->release_lock('catalog_queue_processing');
             $this->debug_log('Catalog queue complete');
             return array('complete' => true);
         }
@@ -2921,7 +3112,7 @@ class LendCity_Smart_Linker {
             usleep(500000); // 0.5 second
         }
 
-        delete_transient($lock_key);
+        $this->release_lock('catalog_queue_processing');
 
         if (empty($queue)) {
             $status['state'] = 'complete';
@@ -2967,7 +3158,8 @@ class LendCity_Smart_Linker {
         delete_option($this->catalog_queue_option);
         delete_option($this->catalog_queue_status_option);
         wp_clear_scheduled_hook('lendcity_process_catalog_queue');
-        delete_transient('lendcity_catalog_queue_processing');
+        // Try to release processing lock (may fail if held by different connection, which is OK)
+        $this->release_lock('catalog_queue_processing');
         $this->debug_log('Catalog queue cleared');
     }
 
