@@ -1832,6 +1832,1580 @@ export default async function ArticlePage({ params }) {
 
 ---
 
+## Ultimate Intelligence Features
+
+These features push the system beyond "smart" into "intelligent" territory:
+
+### 23. Knowledge Graph / Entity Linking
+
+Build a domain-specific knowledge graph where links follow **entity relationships**, not just similarity.
+
+```javascript
+// Define entity relationships for mortgage/real estate domain
+const KNOWLEDGE_GRAPH = {
+  entities: {
+    'BRRRR': {
+      type: 'strategy',
+      requires: ['refinancing', 'renovation', 'rental-analysis'],
+      relatedTo: ['investment-properties', 'cash-flow'],
+      mustLinkTo: ['brrrr-strategy-guide']  // Pillar page
+    },
+    'refinancing': {
+      type: 'process',
+      requires: ['home-equity', 'credit-score'],
+      enables: ['BRRRR', 'debt-consolidation', 'HELOC'],
+      relatedTo: ['mortgage-rates']
+    },
+    'HELOC': {
+      type: 'product',
+      requires: ['home-equity', 'refinancing'],
+      usedFor: ['BRRRR', 'renovation', 'investment'],
+      relatedTo: ['line-of-credit', 'home-equity-loan']
+    },
+    'first-time-buyer': {
+      type: 'persona',
+      needs: ['pre-approval', 'down-payment', 'mortgage-types'],
+      journey: ['awareness', 'consideration', 'decision'],
+      conflictsWith: ['investor-advanced']
+    },
+    'Smith-Maneuver': {
+      type: 'strategy',
+      requires: ['HELOC', 'investment-loan', 'tax-deduction'],
+      relatedTo: ['debt-conversion', 'wealth-building']
+    }
+  },
+
+  relationships: [
+    { from: 'BRRRR', relation: 'REQUIRES', to: 'refinancing', strength: 1.0 },
+    { from: 'BRRRR', relation: 'USES', to: 'HELOC', strength: 0.8 },
+    { from: 'refinancing', relation: 'NEEDS', to: 'home-equity', strength: 0.9 },
+    { from: 'first-time-buyer', relation: 'STARTS_WITH', to: 'pre-approval', strength: 1.0 },
+    { from: 'investor', relation: 'LEARNS', to: 'BRRRR', strength: 0.7 }
+  ]
+};
+
+// Score based on knowledge graph relationships
+function getKnowledgeGraphScore(source, target) {
+  let score = 0;
+
+  // Extract entities mentioned in source content
+  const sourceEntities = extractEntities(source.content);
+
+  // Check if any source entity has a relationship to target's topic
+  for (const entity of sourceEntities) {
+    const entityDef = KNOWLEDGE_GRAPH.entities[entity];
+    if (!entityDef) continue;
+
+    // Direct requirement relationship (strongest)
+    if (entityDef.requires?.includes(target.topicCluster)) {
+      score += 40;  // "If you mention BRRRR, you MUST explain refinancing"
+    }
+
+    // Enables relationship
+    if (entityDef.enables?.includes(target.topicCluster)) {
+      score += 30;  // "Refinancing enables BRRRR"
+    }
+
+    // Related relationship
+    if (entityDef.relatedTo?.includes(target.topicCluster)) {
+      score += 20;
+    }
+
+    // Must-link rules (pillar enforcement)
+    if (entityDef.mustLinkTo?.includes(target.slug)) {
+      score += 50;  // Force link to pillar
+    }
+  }
+
+  return score;
+}
+
+// Entity extraction using embeddings + patterns
+async function extractEntities(content) {
+  const entities = [];
+
+  // Pattern matching for known entities
+  for (const [entity, def] of Object.entries(KNOWLEDGE_GRAPH.entities)) {
+    const patterns = getEntityPatterns(entity);
+    if (patterns.some(p => content.toLowerCase().includes(p.toLowerCase()))) {
+      entities.push(entity);
+    }
+  }
+
+  // Could also use NER model for unknown entities
+  return entities;
+}
+```
+
+**Why It's Powerful:**
+- "BRRRR" article MUST link to refinancing (it's required knowledge)
+- Creates logical, educational link paths
+- Enforces pillar page linking automatically
+- Domain expertise encoded in the system
+
+**NOTES:**
+<!-- Add your thoughts on knowledge graph -->
+
+
+### 24. SERP-Aware Linking (SEO Power Move)
+
+Query search rankings and boost links to pages that are **close to ranking** (positions 11-20).
+
+```javascript
+// Integration with Google Search Console or rank tracking API
+async function getSERPAwareLinkBoost(targetArticle) {
+  // Get current rankings for this article's target keywords
+  const rankings = await getRankings(targetArticle.id);
+
+  let boost = 0;
+
+  for (const ranking of rankings) {
+    // Page is on page 2 (positions 11-20) - needs link juice!
+    if (ranking.position >= 11 && ranking.position <= 20) {
+      boost += 35;  // High priority - push to page 1
+      console.log(`Boosting "${targetArticle.title}" - position ${ranking.position} for "${ranking.keyword}"`);
+    }
+    // Page is bottom of page 1 (positions 6-10) - could use help
+    else if (ranking.position >= 6 && ranking.position <= 10) {
+      boost += 20;  // Medium priority - strengthen position
+    }
+    // Page is top 5 - already ranking well
+    else if (ranking.position <= 5) {
+      boost -= 10;  // Lower priority - already winning
+    }
+  }
+
+  return boost;
+}
+
+// Integrate with Google Search Console API
+async function getRankings(articleId) {
+  const article = await getArticle(articleId);
+
+  // Query Search Console for this URL
+  const response = await searchConsole.searchanalytics.query({
+    siteUrl: 'https://lendcity.ca',
+    requestBody: {
+      startDate: getDateDaysAgo(28),
+      endDate: getDateDaysAgo(1),
+      dimensions: ['query'],
+      dimensionFilterGroups: [{
+        filters: [{
+          dimension: 'page',
+          expression: article.url
+        }]
+      }],
+      rowLimit: 20
+    }
+  });
+
+  return response.data.rows?.map(row => ({
+    keyword: row.keys[0],
+    position: row.position,
+    clicks: row.clicks,
+    impressions: row.impressions
+  })) || [];
+}
+
+// Use in scoring
+function calculateScoreWithSERP(source, target) {
+  let score = calculateHybridScore(source, target);
+
+  // Add SERP awareness
+  const serpBoost = await getSERPAwareLinkBoost(target);
+  score += serpBoost;
+
+  return score;
+}
+```
+
+**Why It's Powerful:**
+- Directly impacts SEO rankings
+- Focuses link equity where it matters most
+- Data-driven link distribution
+- Can move pages from page 2 to page 1
+
+**NOTES:**
+<!-- Add your thoughts on SERP-aware linking -->
+
+
+### 25. Click Depth Optimization
+
+Ensure important pages are within **3 clicks from homepage**.
+
+```javascript
+// Calculate click depth for all pages
+async function calculateClickDepths() {
+  const articles = await getAllArticles();
+  const links = await getAllLinks();
+
+  // Build adjacency graph
+  const graph = {};
+  for (const article of articles) {
+    graph[article.id] = [];
+  }
+  for (const link of links) {
+    if (graph[link.sourceId]) {
+      graph[link.sourceId].push(link.targetId);
+    }
+  }
+
+  // BFS from homepage
+  const homepage = articles.find(a => a.url === '/' || a.isHomepage);
+  const depths = {};
+  const queue = [[homepage.id, 0]];
+  const visited = new Set();
+
+  while (queue.length > 0) {
+    const [current, depth] = queue.shift();
+    if (visited.has(current)) continue;
+    visited.add(current);
+    depths[current] = depth;
+
+    for (const neighbor of (graph[current] || [])) {
+      if (!visited.has(neighbor)) {
+        queue.push([neighbor, depth + 1]);
+      }
+    }
+  }
+
+  // Find unreachable or deep pages
+  const issues = [];
+  for (const article of articles) {
+    const depth = depths[article.id];
+
+    if (depth === undefined) {
+      issues.push({
+        article,
+        issue: 'unreachable',
+        severity: 'critical',
+        recommendation: 'Add links from well-connected pages'
+      });
+    } else if (depth > 3 && article.isPillar) {
+      issues.push({
+        article,
+        depth,
+        issue: 'pillar_too_deep',
+        severity: 'high',
+        recommendation: `Pillar content at depth ${depth} - should be ≤3`
+      });
+    } else if (depth > 4) {
+      issues.push({
+        article,
+        depth,
+        issue: 'too_deep',
+        severity: 'medium',
+        recommendation: `Page at depth ${depth} - consider adding shortcuts`
+      });
+    }
+  }
+
+  return { depths, issues };
+}
+
+// Boost targets that would reduce click depth
+function getClickDepthBoost(source, target, depthData) {
+  const sourceDepth = depthData.depths[source.id] || 0;
+  const targetDepth = depthData.depths[target.id];
+
+  // Target is unreachable - high priority!
+  if (targetDepth === undefined) {
+    return 40;
+  }
+
+  // Target is too deep and this link would create a shortcut
+  if (targetDepth > 3 && sourceDepth < targetDepth - 1) {
+    return 25;
+  }
+
+  return 0;
+}
+```
+
+**Why It's Powerful:**
+- Improves crawlability
+- Better user navigation
+- Ensures pillar content is accessible
+- Finds orphaned/isolated content
+
+**NOTES:**
+<!-- Add your thoughts on click depth -->
+
+
+### 26. Content Creation Suggestions
+
+When no good link target exists, suggest **new content to create**.
+
+```javascript
+// Detect content gaps during link generation
+async function detectContentGaps(sourceArticle, paragraphs) {
+  const gaps = [];
+
+  for (const paragraph of paragraphs) {
+    // Generate embedding for paragraph
+    const embedding = await generateEmbedding(paragraph.text);
+
+    // Search for matches
+    const candidates = await queryVectors({
+      vector: embedding,
+      topK: 5
+    });
+
+    // Check if best match is good enough
+    const bestMatch = candidates[0];
+    const isGoodMatch = bestMatch && bestMatch.score > 0.75;
+
+    if (!isGoodMatch) {
+      // Extract what this paragraph is about
+      const topic = await extractParagraphTopic(paragraph.text);
+
+      gaps.push({
+        paragraphIndex: paragraph.index,
+        paragraphPreview: paragraph.text.slice(0, 100) + '...',
+        detectedTopic: topic,
+        bestExistingMatch: bestMatch ? {
+          title: bestMatch.metadata.title,
+          similarity: bestMatch.score
+        } : null,
+        suggestion: generateContentSuggestion(topic, sourceArticle)
+      });
+    }
+  }
+
+  return gaps;
+}
+
+// Generate content suggestions
+function generateContentSuggestion(topic, sourceArticle) {
+  return {
+    suggestedTitle: `${topic} - Complete Guide for ${sourceArticle.targetPersona}`,
+    suggestedCluster: sourceArticle.topicCluster,
+    suggestedPersona: sourceArticle.targetPersona,
+    suggestedFunnel: getNextFunnelStage(sourceArticle.funnelStage),
+    rationale: `"${topic}" mentioned in "${sourceArticle.title}" but no existing content covers it well`,
+    priority: calculateContentPriority(topic, sourceArticle)
+  };
+}
+
+// API endpoint for content strategy
+export async function GET(request) {
+  const articles = await getAllArticles();
+  const allGaps = [];
+
+  for (const article of articles) {
+    const paragraphs = await getParagraphs(article.id);
+    const gaps = await detectContentGaps(article, paragraphs);
+    allGaps.push(...gaps.map(g => ({ ...g, sourceArticle: article.title })));
+  }
+
+  // Deduplicate and rank by frequency
+  const topicFrequency = {};
+  for (const gap of allGaps) {
+    const topic = gap.detectedTopic.toLowerCase();
+    if (!topicFrequency[topic]) {
+      topicFrequency[topic] = { count: 0, sources: [], suggestion: gap.suggestion };
+    }
+    topicFrequency[topic].count++;
+    topicFrequency[topic].sources.push(gap.sourceArticle);
+  }
+
+  // Return prioritized content suggestions
+  return Response.json({
+    contentGaps: Object.entries(topicFrequency)
+      .sort((a, b) => b[1].count - a[1].count)
+      .slice(0, 20)
+      .map(([topic, data]) => ({
+        topic,
+        mentionedIn: data.count,
+        sourceArticles: data.sources.slice(0, 5),
+        suggestion: data.suggestion
+      }))
+  });
+}
+```
+
+**Example Output:**
+```json
+{
+  "contentGaps": [
+    {
+      "topic": "Smith Maneuver",
+      "mentionedIn": 8,
+      "sourceArticles": ["BRRRR Guide", "Tax Strategies", "HELOC Guide"],
+      "suggestion": {
+        "suggestedTitle": "Smith Maneuver - Complete Guide for Investors",
+        "rationale": "Mentioned in 8 articles but no dedicated content exists"
+      }
+    }
+  ]
+}
+```
+
+**Why It's Powerful:**
+- Turns link gaps into content strategy
+- Data-driven topic prioritization
+- Shows which topics are referenced but not covered
+- Continuous content roadmap
+
+**NOTES:**
+<!-- Add your thoughts on content suggestions -->
+
+
+### 27. Conversion Path Optimization
+
+Track which internal link sequences lead to conversions, then boost winning paths.
+
+```javascript
+// Track conversion paths
+async function trackConversionPath(userId, conversionEvent) {
+  // Get user's page view history leading to conversion
+  const pageViews = await getUserPageViews(userId, {
+    before: conversionEvent.timestamp,
+    limit: 10
+  });
+
+  // Record the path
+  await saveConversionPath({
+    userId,
+    conversionType: conversionEvent.type,  // 'contact_form', 'calculator_use', 'phone_call'
+    conversionValue: conversionEvent.value,
+    path: pageViews.map(pv => ({
+      articleId: pv.articleId,
+      timestamp: pv.timestamp,
+      timeOnPage: pv.timeOnPage
+    })),
+    entryPage: pageViews[0]?.articleId,
+    exitPage: pageViews[pageViews.length - 1]?.articleId
+  });
+}
+
+// Analyze winning paths
+async function analyzeConversionPaths() {
+  const paths = await getAllConversionPaths();
+
+  // Find common sequences
+  const sequences = {};
+  for (const path of paths) {
+    for (let i = 0; i < path.path.length - 1; i++) {
+      const from = path.path[i].articleId;
+      const to = path.path[i + 1].articleId;
+      const key = `${from}->${to}`;
+
+      if (!sequences[key]) {
+        sequences[key] = {
+          from,
+          to,
+          conversions: 0,
+          totalValue: 0,
+          conversionTypes: {}
+        };
+      }
+      sequences[key].conversions++;
+      sequences[key].totalValue += path.conversionValue || 0;
+      sequences[key].conversionTypes[path.conversionType] =
+        (sequences[key].conversionTypes[path.conversionType] || 0) + 1;
+    }
+  }
+
+  // Rank by conversion impact
+  return Object.values(sequences)
+    .sort((a, b) => b.conversions - a.conversions)
+    .slice(0, 50);
+}
+
+// Boost links that are part of winning paths
+function getConversionPathBoost(source, target, conversionData) {
+  const key = `${source.id}->${target.id}`;
+  const pathData = conversionData[key];
+
+  if (!pathData) return 0;
+
+  // Scale boost by conversion frequency
+  if (pathData.conversions >= 10) return 30;
+  if (pathData.conversions >= 5) return 20;
+  if (pathData.conversions >= 2) return 10;
+
+  return 5;
+}
+```
+
+**Why It's Powerful:**
+- Optimizes for actual business results
+- Learns which content paths convert
+- Data-driven link prioritization
+- Directly impacts revenue
+
+**NOTES:**
+<!-- Add your thoughts on conversion paths -->
+
+
+### 28. Semantic Silos Enforcement
+
+Ensure topic clusters form proper **silos** with strategic cross-linking.
+
+```javascript
+// Define silo structure
+const SILO_STRUCTURE = {
+  silos: {
+    'brrrr-investing': {
+      pillar: 'brrrr-strategy-guide',
+      topics: ['brrrr-strategy', 'rental-investing', 'investment-properties'],
+      allowedCrossLinks: ['refinancing', 'financing']  // Strategic connections only
+    },
+    'first-time-buying': {
+      pillar: 'first-time-buyer-guide',
+      topics: ['first-time-buyers', 'pre-approval', 'down-payment', 'mortgage-types'],
+      allowedCrossLinks: ['credit-repair']
+    },
+    'refinancing': {
+      pillar: 'refinancing-guide',
+      topics: ['refinancing', 'heloc', 'home-equity'],
+      allowedCrossLinks: ['brrrr-investing', 'first-time-buying']
+    }
+  }
+};
+
+// Check if link respects silo structure
+function getSiloScore(source, target) {
+  const sourceSilo = findSilo(source.topicCluster);
+  const targetSilo = findSilo(target.topicCluster);
+
+  // Same silo = great
+  if (sourceSilo === targetSilo) {
+    return 25;
+  }
+
+  // Cross-silo but allowed
+  const siloConfig = SILO_STRUCTURE.silos[sourceSilo];
+  if (siloConfig?.allowedCrossLinks?.includes(targetSilo)) {
+    // Only allow pillar-to-pillar cross-links
+    if (target.isPillar) {
+      return 10;
+    }
+    return -10;  // Non-pillar cross-silo = penalty
+  }
+
+  // Unauthorized cross-silo link
+  return -30;  // Strong penalty for silo leaks
+}
+
+// Detect silo violations
+async function auditSiloIntegrity() {
+  const links = await getAllLinks();
+  const violations = [];
+
+  for (const link of links) {
+    const source = await getArticle(link.sourceId);
+    const target = await getArticle(link.targetId);
+
+    const siloScore = getSiloScore(source, target);
+    if (siloScore < 0) {
+      violations.push({
+        link,
+        source: source.title,
+        target: target.title,
+        sourceSilo: findSilo(source.topicCluster),
+        targetSilo: findSilo(target.topicCluster),
+        severity: siloScore < -20 ? 'high' : 'medium',
+        recommendation: 'Consider removing or replacing with pillar link'
+      });
+    }
+  }
+
+  return violations;
+}
+```
+
+**Why It's Powerful:**
+- Builds topical authority
+- Prevents dilution of silo strength
+- Strategic cross-linking only
+- Better crawl efficiency
+
+**NOTES:**
+<!-- Add your thoughts on semantic silos -->
+
+
+### 29. Seasonal Link Boosting
+
+Automatically boost seasonal content during relevant periods.
+
+```javascript
+// Define seasonal content calendar
+const SEASONAL_CALENDAR = {
+  'tax-season': {
+    months: [1, 2, 3, 4],  // Jan-Apr
+    boost: 30,
+    clusters: ['tax-strategies', 'rrsp-mortgages', 'first-time-buyers']
+  },
+  'spring-market': {
+    months: [3, 4, 5],  // Mar-May
+    boost: 25,
+    clusters: ['market-analysis', 'first-time-buyers', 'home-buying-process']
+  },
+  'rate-announcement': {
+    // Dynamic - triggered by events
+    boost: 40,
+    clusters: ['mortgage-rates', 'refinancing', 'variable-vs-fixed']
+  },
+  'year-end': {
+    months: [10, 11, 12],  // Oct-Dec
+    boost: 20,
+    clusters: ['tax-strategies', 'investment-properties', 'year-end-planning']
+  },
+  'renewal-season': {
+    months: [1, 2, 6, 7],  // Common renewal periods
+    boost: 25,
+    clusters: ['refinancing', 'mortgage-renewal', 'rate-comparison']
+  }
+};
+
+// Get seasonal boost for target article
+function getSeasonalBoost(target) {
+  const currentMonth = new Date().getMonth() + 1;
+  let totalBoost = 0;
+
+  for (const [season, config] of Object.entries(SEASONAL_CALENDAR)) {
+    if (config.months?.includes(currentMonth)) {
+      if (config.clusters.includes(target.topicCluster)) {
+        totalBoost += config.boost;
+      }
+    }
+  }
+
+  // Also check article's own seasonal metadata
+  if (target.publishSeason) {
+    const seasonConfig = SEASONAL_CALENDAR[target.publishSeason];
+    if (seasonConfig?.months?.includes(currentMonth)) {
+      totalBoost += 15;
+    }
+  }
+
+  return totalBoost;
+}
+
+// Event-triggered seasonal boost (e.g., Bank of Canada rate announcement)
+async function triggerSeasonalEvent(eventType) {
+  if (eventType === 'rate-announcement') {
+    // Temporarily boost rate-related content
+    await setTemporaryBoost({
+      clusters: SEASONAL_CALENDAR['rate-announcement'].clusters,
+      boost: SEASONAL_CALENDAR['rate-announcement'].boost,
+      expiresIn: '7 days'
+    });
+
+    // Optionally: Regenerate links for affected articles
+    await queueLinkRegeneration({
+      clusters: ['mortgage-rates', 'refinancing']
+    });
+  }
+}
+```
+
+**Why It's Powerful:**
+- Timely content gets more visibility
+- Automatic seasonal optimization
+- Can respond to market events
+- Better user experience (relevant content)
+
+**NOTES:**
+<!-- Add your thoughts on seasonal boosting -->
+
+
+### 30. Competitor Link Intelligence
+
+Analyze competitor sites to find linking opportunities you're missing.
+
+```javascript
+// Analyze competitor internal linking patterns
+async function analyzeCompetitorLinks(competitorUrl) {
+  // Crawl competitor site (or use SEO tool API)
+  const competitorData = await crawlSite(competitorUrl, {
+    maxPages: 500,
+    extractInternalLinks: true
+  });
+
+  // Build their topic clusters
+  const competitorClusters = await clusterCompetitorContent(competitorData.pages);
+
+  // Analyze their linking patterns
+  const patterns = {
+    avgLinksPerPage: 0,
+    clusterLinkDensity: {},
+    topLinkedTopics: [],
+    crossClusterPatterns: []
+  };
+
+  // Calculate metrics
+  let totalLinks = 0;
+  for (const page of competitorData.pages) {
+    totalLinks += page.internalLinks.length;
+
+    // Track which clusters they connect
+    const sourceCluster = page.detectedCluster;
+    for (const link of page.internalLinks) {
+      const targetCluster = findClusterForUrl(link.url, competitorData);
+      if (sourceCluster && targetCluster) {
+        const key = `${sourceCluster}->${targetCluster}`;
+        patterns.crossClusterPatterns[key] =
+          (patterns.crossClusterPatterns[key] || 0) + 1;
+      }
+    }
+  }
+
+  patterns.avgLinksPerPage = totalLinks / competitorData.pages.length;
+
+  return patterns;
+}
+
+// Find opportunities based on competitor analysis
+async function findCompetitorOpportunities() {
+  const competitors = ['competitor1.ca', 'competitor2.ca'];
+  const opportunities = [];
+
+  for (const competitor of competitors) {
+    const theirPatterns = await analyzeCompetitorLinks(competitor);
+    const ourPatterns = await analyzeOurLinks();
+
+    // Find cluster connections they make that we don't
+    for (const [connection, count] of Object.entries(theirPatterns.crossClusterPatterns)) {
+      const ourCount = ourPatterns.crossClusterPatterns[connection] || 0;
+
+      if (count > 5 && ourCount < 2) {
+        opportunities.push({
+          type: 'missing_cluster_connection',
+          connection,
+          competitorCount: count,
+          ourCount,
+          recommendation: `Competitors link ${connection} ${count} times, we only do ${ourCount}`
+        });
+      }
+    }
+
+    // Find topics they cover heavily that we don't link to much
+    for (const topic of theirPatterns.topLinkedTopics) {
+      const ourTopicLinks = await countLinksToCluster(topic.cluster);
+      if (topic.linkCount > ourTopicLinks * 2) {
+        opportunities.push({
+          type: 'underlinked_topic',
+          topic: topic.cluster,
+          competitorLinks: topic.linkCount,
+          ourLinks: ourTopicLinks,
+          recommendation: `Competitors heavily link to "${topic.cluster}" content`
+        });
+      }
+    }
+  }
+
+  return opportunities;
+}
+```
+
+**Why It's Powerful:**
+- Learn from competitor strategies
+- Find gaps in your linking
+- Competitive intelligence
+- Data-driven improvements
+
+**NOTES:**
+<!-- Add your thoughts on competitor intelligence -->
+
+
+### 31. Link Attribution Analytics
+
+Track which specific links drive results.
+
+```javascript
+// Enhanced link tracking with attribution
+async function trackLinkWithAttribution(linkId, event) {
+  const link = await getLink(linkId);
+
+  await analytics.track('link_interaction', {
+    linkId,
+    sourceArticle: link.sourceId,
+    targetArticle: link.targetId,
+    anchorText: link.anchorText,
+    event: event.type,  // 'click', 'hover', 'scroll_past'
+
+    // Attribution data
+    userSegment: event.userSegment,
+    sessionDepth: event.sessionDepth,
+    referralSource: event.referralSource,
+    deviceType: event.deviceType,
+
+    // Outcome tracking (added later)
+    ledToConversion: null,
+    conversionValue: null
+  });
+}
+
+// Calculate link-level metrics
+async function calculateLinkMetrics() {
+  const links = await getAllLinks();
+  const metrics = [];
+
+  for (const link of links) {
+    const events = await analytics.query({
+      event: 'link_interaction',
+      linkId: link.id,
+      timeRange: '30d'
+    });
+
+    const clicks = events.filter(e => e.event === 'click').length;
+    const impressions = events.length;
+    const conversions = events.filter(e => e.ledToConversion).length;
+
+    metrics.push({
+      linkId: link.id,
+      sourceTitle: link.sourceTitle,
+      targetTitle: link.targetTitle,
+      anchorText: link.anchorText,
+      impressions,
+      clicks,
+      ctr: clicks / Math.max(impressions, 1),
+      conversions,
+      conversionRate: conversions / Math.max(clicks, 1),
+      score: calculateLinkScore(clicks, conversions, impressions)
+    });
+  }
+
+  return metrics.sort((a, b) => b.score - a.score);
+}
+
+// Identify underperforming links
+async function findUnderperformingLinks() {
+  const metrics = await calculateLinkMetrics();
+  const avgCTR = metrics.reduce((sum, m) => sum + m.ctr, 0) / metrics.length;
+
+  return metrics
+    .filter(m => m.impressions > 100 && m.ctr < avgCTR * 0.5)
+    .map(m => ({
+      ...m,
+      recommendation: m.ctr < 0.01
+        ? 'Consider removing - very low engagement'
+        : 'Consider changing anchor text or position'
+    }));
+}
+```
+
+**Why It's Powerful:**
+- Know exactly which links perform
+- Remove/improve underperformers
+- Optimize anchor text based on data
+- ROI visibility on linking efforts
+
+**NOTES:**
+<!-- Add your thoughts on link attribution -->
+
+
+### 32. Readability-Aware Linking
+
+Don't add links to complex paragraphs where they'd be distracting.
+
+```javascript
+// Calculate paragraph readability
+function calculateReadability(text) {
+  const sentences = text.split(/[.!?]+/).filter(s => s.trim());
+  const words = text.split(/\s+/).filter(w => w.trim());
+  const syllables = words.reduce((sum, word) => sum + countSyllables(word), 0);
+
+  // Flesch-Kincaid Grade Level
+  const avgSentenceLength = words.length / Math.max(sentences.length, 1);
+  const avgSyllablesPerWord = syllables / Math.max(words.length, 1);
+
+  const gradeLevel = 0.39 * avgSentenceLength + 11.8 * avgSyllablesPerWord - 15.59;
+
+  return {
+    gradeLevel,
+    avgSentenceLength,
+    avgSyllablesPerWord,
+    isComplex: gradeLevel > 12 || avgSentenceLength > 25
+  };
+}
+
+// Check if paragraph is suitable for links
+function isLinkableParagraph(paragraph) {
+  const readability = calculateReadability(paragraph.text);
+
+  // Don't add links to:
+  // 1. Very complex paragraphs (reader needs to focus)
+  if (readability.isComplex) {
+    return { linkable: false, reason: 'paragraph_too_complex' };
+  }
+
+  // 2. Very short paragraphs (might be headers/transitions)
+  if (paragraph.wordCount < 20) {
+    return { linkable: false, reason: 'paragraph_too_short' };
+  }
+
+  // 3. Paragraphs with lots of numbers/data (reader is processing data)
+  const numberDensity = (paragraph.text.match(/\d+/g) || []).length / paragraph.wordCount;
+  if (numberDensity > 0.15) {
+    return { linkable: false, reason: 'high_number_density' };
+  }
+
+  // 4. Paragraphs that already have external links
+  const existingLinks = (paragraph.text.match(/<a\s/gi) || []).length;
+  if (existingLinks >= 2) {
+    return { linkable: false, reason: 'already_has_links' };
+  }
+
+  return { linkable: true };
+}
+
+// Use in link generation
+async function generateSmartLinksWithReadability(article, paragraphs) {
+  const linkableParagraphs = paragraphs.filter(p => {
+    const result = isLinkableParagraph(p);
+    if (!result.linkable) {
+      console.log(`Skipping paragraph ${p.index}: ${result.reason}`);
+    }
+    return result.linkable;
+  });
+
+  // Continue with only linkable paragraphs
+  return generateLinks(article, linkableParagraphs);
+}
+```
+
+**Why It's Powerful:**
+- Better user experience
+- Links don't interrupt important content
+- Respects reader's cognitive load
+- More intentional link placement
+
+**NOTES:**
+<!-- Add your thoughts on readability-aware linking -->
+
+
+### 33. Voice Search Optimization
+
+Ensure anchor texts work as spoken queries.
+
+```javascript
+// Optimize anchors for voice search
+function optimizeForVoiceSearch(anchor, targetArticle) {
+  const voicePatterns = {
+    // Question forms
+    questionPrefixes: ['how to', 'what is', 'when should', 'why do', 'where can'],
+
+    // Natural language patterns
+    naturalPhrases: ['best way to', 'guide to', 'tips for', 'steps to'],
+
+    // Local intent
+    localPatterns: ['near me', 'in canada', 'in ontario', 'canadian']
+  };
+
+  // Check if anchor is voice-search friendly
+  const anchorLower = anchor.toLowerCase();
+
+  const isQuestion = voicePatterns.questionPrefixes.some(p => anchorLower.startsWith(p));
+  const isNatural = voicePatterns.naturalPhrases.some(p => anchorLower.includes(p));
+  const hasLocalIntent = voicePatterns.localPatterns.some(p => anchorLower.includes(p));
+
+  // Generate voice-optimized alternatives
+  const alternatives = [];
+
+  if (!isQuestion && targetArticle.contentFormat === 'how-to') {
+    alternatives.push(`how to ${anchor}`);
+  }
+
+  if (!isQuestion && targetArticle.contentFormat === 'guide') {
+    alternatives.push(`what is ${anchor}`);
+    alternatives.push(`guide to ${anchor}`);
+  }
+
+  if (!hasLocalIntent && targetArticle.targetRegions?.includes('Canada')) {
+    alternatives.push(`${anchor} in Canada`);
+  }
+
+  return {
+    original: anchor,
+    isVoiceOptimized: isQuestion || isNatural,
+    alternatives,
+    recommendation: !isQuestion && !isNatural
+      ? 'Consider using question-form anchor for voice search'
+      : null
+  };
+}
+```
+
+**Why It's Powerful:**
+- Voice search is growing
+- Question-form anchors rank better
+- Natural language optimization
+- Future-proofing
+
+**NOTES:**
+<!-- Add your thoughts on voice search -->
+
+
+### 34. Outbound Link Management
+
+Track and optimize external links too.
+
+```javascript
+// Track outbound links
+async function trackOutboundLinks(articleId) {
+  const article = await getArticle(articleId);
+  const content = article.body;
+
+  // Extract external links
+  const externalLinks = [];
+  const linkRegex = /<a[^>]+href=["']([^"']+)["'][^>]*>([^<]+)<\/a>/gi;
+  let match;
+
+  while ((match = linkRegex.exec(content)) !== null) {
+    const url = match[1];
+    const anchor = match[2];
+
+    if (!url.includes('lendcity.ca') && url.startsWith('http')) {
+      externalLinks.push({ url, anchor });
+    }
+  }
+
+  return externalLinks;
+}
+
+// Check outbound link health
+async function auditOutboundLinks() {
+  const articles = await getAllArticles();
+  const issues = [];
+
+  for (const article of articles) {
+    const outbound = await trackOutboundLinks(article.id);
+
+    for (const link of outbound) {
+      // Check if link is alive
+      const status = await checkLinkStatus(link.url);
+
+      if (status === 404) {
+        issues.push({
+          article: article.title,
+          url: link.url,
+          issue: 'broken_link',
+          severity: 'high'
+        });
+      }
+
+      // Check if link should be nofollow
+      const shouldNofollow = isAffiliateOrSponsored(link.url);
+      const hasNofollow = await hasNofollowAttribute(article.id, link.url);
+
+      if (shouldNofollow && !hasNofollow) {
+        issues.push({
+          article: article.title,
+          url: link.url,
+          issue: 'missing_nofollow',
+          severity: 'medium'
+        });
+      }
+
+      // Check domain authority (E-E-A-T)
+      const authority = await getDomainAuthority(link.url);
+      if (authority < 20) {
+        issues.push({
+          article: article.title,
+          url: link.url,
+          issue: 'low_authority_source',
+          severity: 'low',
+          recommendation: 'Consider linking to more authoritative source'
+        });
+      }
+    }
+  }
+
+  return issues;
+}
+
+// Suggest authoritative sources
+async function suggestAuthoritativeSources(topic) {
+  const authoritativeDomains = {
+    'mortgage-rates': ['bankofcanada.ca', 'cmhc-schl.gc.ca', 'ratehub.ca'],
+    'real-estate': ['crea.ca', 'realtor.ca', 'cmhc-schl.gc.ca'],
+    'tax-strategies': ['canada.ca/cra', 'taxtips.ca'],
+    'investing': ['investopedia.com', 'fool.ca', 'moneysense.ca']
+  };
+
+  return authoritativeDomains[topic] || [];
+}
+```
+
+**Why It's Powerful:**
+- E-E-A-T signals (linking to authoritative sources)
+- Broken link detection
+- Nofollow compliance
+- Better user experience
+
+**NOTES:**
+<!-- Add your thoughts on outbound links -->
+
+
+---
+
+### 35. Claude-Powered Strategic Content Creation
+
+Integrate Claude with your transcript-to-article workflow to strategically create content based on linking opportunities, content gaps, and SEO data.
+
+```javascript
+// Content gap analysis from linking data
+async function analyzeContentGaps() {
+  // Get all existing articles with their topics
+  const articles = await getAllArticles();
+  const existingTopics = new Set();
+  const topicCoverage = {};
+
+  for (const article of articles) {
+    existingTopics.add(article.topicCluster);
+
+    // Track coverage depth per cluster
+    if (!topicCoverage[article.topicCluster]) {
+      topicCoverage[article.topicCluster] = {
+        count: 0,
+        funnelCoverage: new Set(),
+        personaCoverage: new Set(),
+        difficultyLevels: new Set()
+      };
+    }
+
+    topicCoverage[article.topicCluster].count++;
+    topicCoverage[article.topicCluster].funnelCoverage.add(article.funnelStage);
+    topicCoverage[article.topicCluster].personaCoverage.add(article.targetPersona);
+    topicCoverage[article.topicCluster].difficultyLevels.add(article.difficultyLevel);
+  }
+
+  // Identify gaps
+  const gaps = [];
+
+  // 1. Funnel stage gaps - topics missing awareness/consideration/decision content
+  for (const [cluster, coverage] of Object.entries(topicCoverage)) {
+    const allStages = ['awareness', 'consideration', 'decision'];
+    const missingStages = allStages.filter(s => !coverage.funnelCoverage.has(s));
+
+    if (missingStages.length > 0) {
+      gaps.push({
+        type: 'funnel_gap',
+        cluster,
+        missingStages,
+        priority: missingStages.includes('decision') ? 'high' : 'medium',
+        suggestion: `Create ${missingStages.join(', ')} content for ${cluster}`
+      });
+    }
+  }
+
+  // 2. Linking orphan detection - articles with few inbound links
+  const orphans = articles.filter(a => a.inboundLinkCount < 2);
+  for (const orphan of orphans) {
+    gaps.push({
+      type: 'linking_orphan',
+      articleId: orphan.id,
+      title: orphan.title,
+      cluster: orphan.topicCluster,
+      priority: 'medium',
+      suggestion: `Create bridging content to link to "${orphan.title}"`
+    });
+  }
+
+  // 3. Keyword opportunity gaps from GSC data
+  const keywordGaps = await findUnderservedKeywords();
+  for (const kw of keywordGaps) {
+    gaps.push({
+      type: 'keyword_opportunity',
+      keyword: kw.query,
+      impressions: kw.impressions,
+      avgPosition: kw.position,
+      priority: kw.impressions > 1000 ? 'high' : 'medium',
+      suggestion: `Create content targeting "${kw.query}" (${kw.impressions} monthly impressions)`
+    });
+  }
+
+  // 4. Cluster connectivity gaps - clusters with no cross-links
+  const clusterLinks = await getClusterLinkMatrix();
+  for (const [cluster, linkedClusters] of Object.entries(clusterLinks)) {
+    const relatedClusters = getRelatedClusters(cluster);
+    const unlinked = relatedClusters.filter(c => !linkedClusters.includes(c));
+
+    if (unlinked.length > 0) {
+      gaps.push({
+        type: 'cluster_bridge_gap',
+        sourceCluster: cluster,
+        unlinkedClusters: unlinked,
+        priority: 'medium',
+        suggestion: `Create bridge content connecting ${cluster} to ${unlinked.join(', ')}`
+      });
+    }
+  }
+
+  return gaps.sort((a, b) => {
+    const priorityOrder = { high: 0, medium: 1, low: 2 };
+    return priorityOrder[a.priority] - priorityOrder[b.priority];
+  });
+}
+
+// Claude-powered transcript analyzer
+async function analyzeTranscriptForContentOpportunities(transcript, guestInfo = null) {
+  const contentGaps = await analyzeContentGaps();
+  const existingArticles = await getRecentArticleSummaries();
+
+  const analysisPrompt = `You are a content strategist for a real estate investment education website.
+
+TRANSCRIPT TO ANALYZE:
+${transcript}
+
+${guestInfo ? `GUEST INFO: ${JSON.stringify(guestInfo)}` : ''}
+
+CURRENT CONTENT GAPS (prioritized):
+${contentGaps.slice(0, 15).map(g => `- [${g.priority}] ${g.suggestion}`).join('\n')}
+
+RECENT EXISTING ARTICLES (avoid duplication):
+${existingArticles.map(a => `- "${a.title}" (${a.cluster}/${a.funnelStage})`).join('\n')}
+
+TASK: Analyze this transcript and identify:
+
+1. **Primary Article Opportunities** (1-3 articles that directly cover transcript content)
+   - Suggested title
+   - Target topic cluster
+   - Funnel stage (awareness/consideration/decision)
+   - Target persona (investor/homebuyer/general)
+   - Which content gaps this would fill
+   - Key sections/outline
+
+2. **Secondary/Spin-off Articles** (additional content that could be derived)
+   - Related topics mentioned that warrant separate articles
+   - How they connect to primary articles (linking opportunities)
+
+3. **Strategic Linking Plan**
+   - Which existing articles this new content could link TO
+   - Which gaps this fills in the linking structure
+
+4. **Keyword Targeting**
+   - Primary keywords to target
+   - Long-tail variations
+   - Questions from the transcript that could be H2s
+
+Respond in JSON format.`;
+
+  const analysis = await callClaude(analysisPrompt);
+  return JSON.parse(analysis);
+}
+
+// Strategic article generation from transcript
+async function generateStrategicArticle(transcript, articleSpec, linkingContext) {
+  const {
+    title,
+    cluster,
+    funnelStage,
+    persona,
+    outline,
+    targetKeywords
+  } = articleSpec;
+
+  // Get related content for internal linking context
+  const relatedContent = await getVectorSimilarContent(transcript, 10);
+  const clusterPillars = await getClusterPillars(cluster);
+
+  const generationPrompt = `You are a real estate investment content expert writing for LendCity.
+
+CONTEXT:
+- Target Cluster: ${cluster}
+- Funnel Stage: ${funnelStage}
+- Target Persona: ${persona}
+- Primary Keywords: ${targetKeywords.join(', ')}
+
+TRANSCRIPT SOURCE:
+${transcript}
+
+ARTICLE OUTLINE:
+${outline}
+
+INTERNAL LINKING REQUIREMENTS:
+These articles MUST be naturally linked within your content:
+${linkingContext.mustLink.map(l => `- "${l.title}" (URL: ${l.url}) - suggested anchor: "${l.suggestedAnchor}"`).join('\n')}
+
+These articles SHOULD be linked if contextually appropriate:
+${linkingContext.shouldLink.map(l => `- "${l.title}" (URL: ${l.url})`).join('\n')}
+
+PILLAR CONTENT TO REFERENCE:
+${clusterPillars.map(p => `- "${p.title}" (${p.url})`).join('\n')}
+
+TONE & STYLE:
+- ${funnelStage === 'awareness' ? 'Educational, introductory, avoid jargon' : ''}
+- ${funnelStage === 'consideration' ? 'Detailed, comparative, practical examples' : ''}
+- ${funnelStage === 'decision' ? 'Action-oriented, specific steps, address objections' : ''}
+- ${persona === 'investor' ? 'Focus on ROI, cash flow, portfolio building' : ''}
+- ${persona === 'homebuyer' ? 'Focus on affordability, first steps, reassurance' : ''}
+- Canadian market focus (mention provinces, Canadian regulations)
+
+REQUIREMENTS:
+1. Write a comprehensive article based on the transcript
+2. Include ALL required internal links naturally within the content
+3. Use target keywords in H2s and naturally throughout
+4. Include practical examples from the transcript
+5. Add a "Key Takeaways" section
+6. End with a relevant CTA
+
+FORMAT: Return valid HTML with proper heading hierarchy (H2, H3).`;
+
+  const article = await callClaude(generationPrompt, { max_tokens: 4000 });
+
+  return {
+    title,
+    body: article,
+    metadata: {
+      topicCluster: cluster,
+      funnelStage,
+      targetPersona: persona,
+      keywords: targetKeywords,
+      sourceTranscript: true,
+      generatedAt: new Date().toISOString()
+    }
+  };
+}
+
+// Full transcript-to-strategic-content pipeline
+async function processTranscriptStrategically(transcript, options = {}) {
+  const {
+    guestInfo = null,
+    maxArticles = 3,
+    autoPublish = false
+  } = options;
+
+  // Step 1: Analyze transcript for opportunities
+  console.log('Analyzing transcript for content opportunities...');
+  const analysis = await analyzeTranscriptForContentOpportunities(transcript, guestInfo);
+
+  // Step 2: Prioritize based on content gaps
+  const prioritizedArticles = analysis.primaryArticles
+    .sort((a, b) => {
+      // Prioritize articles that fill high-priority gaps
+      const gapPriority = { high: 3, medium: 2, low: 1 };
+      return (b.gapsFilled?.reduce((sum, g) => sum + gapPriority[g.priority], 0) || 0) -
+             (a.gapsFilled?.reduce((sum, g) => sum + gapPriority[g.priority], 0) || 0);
+    })
+    .slice(0, maxArticles);
+
+  // Step 3: Generate linking context for each article
+  const articles = [];
+  for (const spec of prioritizedArticles) {
+    console.log(`Generating article: "${spec.title}"...`);
+
+    // Build linking requirements
+    const linkingContext = await buildLinkingContext(spec);
+
+    // Generate the article
+    const article = await generateStrategicArticle(transcript, spec, linkingContext);
+
+    // Validate internal links are present
+    const linkValidation = validateInternalLinks(article.body, linkingContext);
+    if (!linkValidation.allRequiredPresent) {
+      console.warn(`Missing required links: ${linkValidation.missing.join(', ')}`);
+      // Optionally: regenerate or manually fix
+    }
+
+    articles.push({
+      ...article,
+      linkingContext,
+      analysis: spec
+    });
+  }
+
+  // Step 4: Generate embeddings and prepare for Sanity
+  for (const article of articles) {
+    article.embedding = await generateEmbedding(
+      `${article.title} ${extractTextFromHtml(article.body).slice(0, 8000)}`
+    );
+  }
+
+  // Step 5: Optionally auto-publish to Sanity
+  if (autoPublish) {
+    for (const article of articles) {
+      await publishToSanity(article);
+      await upsertToVectorDb(article);
+    }
+  }
+
+  return {
+    analysis,
+    generatedArticles: articles,
+    contentGapsFilled: articles.flatMap(a => a.analysis.gapsFilled || []),
+    linkingImprovements: articles.map(a => ({
+      title: a.title,
+      linksTo: a.linkingContext.mustLink.length + a.linkingContext.shouldLink.length,
+      fillsGaps: a.analysis.gapsFilled?.length || 0
+    }))
+  };
+}
+
+// Proactive content suggestions based on upcoming gaps
+async function getProactiveContentSuggestions() {
+  const gaps = await analyzeContentGaps();
+  const upcomingSeasons = getUpcomingSeasonalTopics(); // From Feature 29
+  const competitorGaps = await getCompetitorContentGaps(); // From Feature 30
+
+  // Combine and prioritize
+  const suggestions = [];
+
+  // High-value keyword opportunities
+  const keywordGaps = gaps.filter(g => g.type === 'keyword_opportunity' && g.priority === 'high');
+  for (const kw of keywordGaps.slice(0, 5)) {
+    suggestions.push({
+      priority: 1,
+      type: 'keyword_opportunity',
+      reason: `Ranking position ${kw.avgPosition.toFixed(1)} for "${kw.keyword}" with ${kw.impressions} impressions - new content could capture traffic`,
+      suggestedTitle: await generateTitleForKeyword(kw.keyword),
+      estimatedImpact: 'high'
+    });
+  }
+
+  // Funnel completion
+  const funnelGaps = gaps.filter(g => g.type === 'funnel_gap' && g.missingStages?.includes('decision'));
+  for (const fg of funnelGaps.slice(0, 3)) {
+    suggestions.push({
+      priority: 2,
+      type: 'funnel_completion',
+      reason: `${fg.cluster} cluster is missing decision-stage content - readers have nowhere to convert`,
+      suggestedTitle: `How to Choose the Right ${fg.cluster.replace(/-/g, ' ')} Strategy`,
+      estimatedImpact: 'high'
+    });
+  }
+
+  // Seasonal upcoming
+  for (const season of upcomingSeasons.slice(0, 2)) {
+    suggestions.push({
+      priority: 3,
+      type: 'seasonal_preparation',
+      reason: `${season.topic} season starts in ${season.daysUntil} days - create content now to rank`,
+      suggestedTitle: season.suggestedTitle,
+      estimatedImpact: 'medium'
+    });
+  }
+
+  // Linking orphan rescue
+  const orphans = gaps.filter(g => g.type === 'linking_orphan');
+  if (orphans.length > 0) {
+    suggestions.push({
+      priority: 4,
+      type: 'linking_improvement',
+      reason: `${orphans.length} articles have fewer than 2 inbound links - create bridge content`,
+      suggestedArticles: orphans.slice(0, 3).map(o => ({
+        orphanTitle: o.title,
+        bridgeIdea: `Create comprehensive guide that naturally links to "${o.title}"`
+      })),
+      estimatedImpact: 'medium'
+    });
+  }
+
+  return suggestions.sort((a, b) => a.priority - b.priority);
+}
+
+// Dashboard endpoint for content planning
+async function getContentPlanningDashboard() {
+  const gaps = await analyzeContentGaps();
+  const suggestions = await getProactiveContentSuggestions();
+  const recentTranscripts = await getUnprocessedTranscripts();
+
+  return {
+    summary: {
+      totalGaps: gaps.length,
+      highPriorityGaps: gaps.filter(g => g.priority === 'high').length,
+      unprocessedTranscripts: recentTranscripts.length
+    },
+
+    immediateActions: suggestions.slice(0, 5),
+
+    gapsByType: {
+      keywordOpportunities: gaps.filter(g => g.type === 'keyword_opportunity').length,
+      funnelGaps: gaps.filter(g => g.type === 'funnel_gap').length,
+      linkingOrphans: gaps.filter(g => g.type === 'linking_orphan').length,
+      clusterBridges: gaps.filter(g => g.type === 'cluster_bridge_gap').length
+    },
+
+    transcriptQueue: recentTranscripts.map(t => ({
+      id: t.id,
+      title: t.episodeTitle,
+      uploadedAt: t.uploadedAt,
+      estimatedArticles: 2, // Could be dynamic based on length
+      suggestedClusters: t.detectedTopics
+    })),
+
+    weeklyGoal: {
+      articlesNeeded: Math.ceil(gaps.filter(g => g.priority === 'high').length / 4),
+      focusAreas: [...new Set(gaps.filter(g => g.priority === 'high').map(g => g.cluster))].slice(0, 3)
+    }
+  };
+}
+```
+
+**Integration with Your Workflow:**
+
+```javascript
+// Example: Process a new podcast transcript
+const result = await processTranscriptStrategically(podcastTranscript, {
+  guestInfo: {
+    name: 'Expert Name',
+    specialty: 'BRRRR Strategy',
+    credentials: 'Real estate investor, 50+ properties'
+  },
+  maxArticles: 2,
+  autoPublish: false // Review before publishing
+});
+
+console.log(`Generated ${result.generatedArticles.length} articles`);
+console.log(`Filled ${result.contentGapsFilled.length} content gaps`);
+console.log(`Created ${result.linkingImprovements.reduce((s, a) => s + a.linksTo, 0)} internal links`);
+```
+
+**Why It's Powerful:**
+- Transforms your existing transcript workflow into strategic content creation
+- Every article fills identified gaps (keyword, funnel, linking)
+- Internal links are built-in from generation, not added later
+- Claude understands your content ecosystem and writes accordingly
+- Proactive suggestions tell you what to create BEFORE you record
+- Dashboard gives clear content priorities
+
+**Integration Points:**
+- **Feature 24 (SERP-Aware):** Uses GSC keyword data for opportunities
+- **Feature 26 (Content Suggestions):** Powers the gap analysis
+- **Feature 29 (Seasonal):** Factors seasonal timing into suggestions
+- **Feature 30 (Competitor Intel):** Identifies content your competitors have that you don't
+
+**NOTES:**
+<!-- Add your thoughts on Claude content integration -->
+
+
+---
+
+## Ultimate System Summary
+
+| Feature | Category | Impact | Effort |
+|---------|----------|--------|--------|
+| Knowledge Graph | Intelligence | Very High | High |
+| SERP-Aware Linking | SEO | Very High | Medium |
+| Click Depth Optimization | Technical SEO | High | Low |
+| Content Creation Suggestions | Strategy | High | Medium |
+| Conversion Path Optimization | Revenue | Very High | High |
+| Semantic Silos | SEO | High | Medium |
+| Seasonal Boosting | Relevance | Medium | Low |
+| Competitor Intelligence | Strategy | High | High |
+| Link Attribution | Analytics | High | Medium |
+| Readability-Aware | UX | Medium | Low |
+| Voice Search | Future-proof | Medium | Low |
+| Outbound Link Management | E-E-A-T | Medium | Low |
+| Claude Strategic Content | Content Strategy | Very High | Medium |
+
+**Recommended Implementation Order:**
+1. **Phase 1 (MVP):** Vectors + business rules + SEO features
+2. **Phase 2 (SEO Power):** SERP-aware + click depth + silos
+3. **Phase 3 (Content Engine):** Claude strategic content + gap analysis
+4. **Phase 4 (Intelligence):** Knowledge graph + conversion paths
+5. **Phase 5 (Optimization):** Analytics + competitor intel + seasonal
+
+**NOTES:**
+<!-- Add your implementation priorities here -->
+
+
+---
+
 ## Technology Recommendations
 
 ### Recommended Stack
