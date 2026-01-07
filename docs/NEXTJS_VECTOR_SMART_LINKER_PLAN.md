@@ -876,6 +876,962 @@ async function findTranslationMatches(articleId, targetLanguage) {
 
 ---
 
+## Advanced Improvements (Making It "The Smartest Possible")
+
+These improvements take the system from "great" to "excellent":
+
+### 9. Two-Stage Retrieval with Cross-Encoder Re-ranking
+
+```javascript
+// Stage 1: Fast vector search (bi-encoder) - gets candidates
+// Stage 2: Slow but accurate cross-encoder - re-ranks top results
+
+import { CrossEncoder } from '@/lib/cross-encoder';
+
+async function getTwoStageLinks(paragraph, article) {
+  // Stage 1: Fast bi-encoder retrieval (< 50ms)
+  const candidates = await queryVectors({
+    vector: await generateEmbedding(paragraph.text),
+    topK: 50  // Get more candidates for re-ranking
+  });
+
+  // Stage 2: Cross-encoder re-ranking (more accurate)
+  const crossEncoder = new CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2');
+
+  const pairs = candidates.map(c => ({
+    query: paragraph.text,
+    document: `${c.metadata.title}. ${c.metadata.summary}`,
+    candidate: c
+  }));
+
+  const scores = await crossEncoder.predict(pairs);
+
+  // Combine cross-encoder score with business rules
+  return pairs
+    .map((pair, i) => ({
+      ...pair.candidate,
+      crossEncoderScore: scores[i],
+      finalScore: scores[i] * 0.6 + calculateBusinessRuleScore(article, pair.candidate) * 0.4
+    }))
+    .sort((a, b) => b.finalScore - a.finalScore)
+    .slice(0, 10);
+}
+```
+
+**Why It's Better:**
+- Bi-encoders are fast but less accurate (encode query and doc separately)
+- Cross-encoders see query+doc together, understand interaction
+- 15-25% improvement in relevance vs bi-encoder alone
+- Small latency cost (~100ms for 50 candidates)
+
+**NOTES:**
+<!-- Add your thoughts on two-stage retrieval -->
+
+
+### 10. Contextual Anchor Selection with Small LLM
+
+```javascript
+// Instead of just pattern matching, use a small LLM to pick natural anchors
+
+async function selectContextualAnchor(paragraph, targetArticle) {
+  const prompt = `Given this paragraph from an article:
+
+"${paragraph.text}"
+
+And this target article to link to:
+Title: ${targetArticle.title}
+Summary: ${targetArticle.summary}
+
+Find the most natural 2-4 word phrase in the paragraph that could link to this article.
+The phrase must:
+1. Exist EXACTLY in the paragraph
+2. Be semantically related to the target article
+3. Read naturally as a hyperlink
+
+Respond with ONLY the exact phrase, or "NONE" if no good match.`;
+
+  const response = await callSmallLLM(prompt); // Claude Haiku or GPT-4o-mini
+
+  // Verify the phrase actually exists in paragraph
+  if (response !== 'NONE' && paragraph.text.toLowerCase().includes(response.toLowerCase())) {
+    return response;
+  }
+
+  // Fallback to pattern matching
+  return findBestAnchor(paragraph.text, targetArticle.anchorPhrases);
+}
+```
+
+**Cost:** ~$0.001 per article (using Haiku)
+**Benefit:** Much more natural anchor text selection
+
+**NOTES:**
+<!-- Add your thoughts on LLM anchor selection -->
+
+
+### 11. Link Decay Detection & Freshness Monitoring
+
+```javascript
+// Detect when links become stale due to content updates
+
+async function detectLinkDecay() {
+  const allLinks = await getAllLinks();
+  const decayedLinks = [];
+
+  for (const link of allLinks) {
+    const sourceEmbedding = await getArticleEmbedding(link.sourceId);
+    const targetEmbedding = await getArticleEmbedding(link.targetId);
+
+    // Check if embeddings have drifted since link was created
+    const currentSimilarity = cosineSimilarity(sourceEmbedding, targetEmbedding);
+
+    if (link.originalSimilarity && currentSimilarity < link.originalSimilarity * 0.7) {
+      decayedLinks.push({
+        ...link,
+        originalSimilarity: link.originalSimilarity,
+        currentSimilarity,
+        decay: (link.originalSimilarity - currentSimilarity) / link.originalSimilarity
+      });
+    }
+  }
+
+  return decayedLinks.sort((a, b) => b.decay - a.decay);
+}
+
+// Store original similarity when creating links
+async function createLinkWithTracking(sourceId, targetId, anchor) {
+  const sourceEmb = await getArticleEmbedding(sourceId);
+  const targetEmb = await getArticleEmbedding(targetId);
+
+  await createLink({
+    sourceId,
+    targetId,
+    anchor,
+    originalSimilarity: cosineSimilarity(sourceEmb, targetEmb),
+    createdAt: new Date()
+  });
+}
+```
+
+**Benefits:**
+- Auto-detect when articles have changed enough to invalidate links
+- Prioritize link review/refresh
+- Prevent stale internal linking
+
+**NOTES:**
+<!-- Add your thoughts on link decay detection -->
+
+
+### 12. A/B Testing Framework for Link Strategies
+
+```javascript
+// Test different linking strategies to optimize for engagement
+
+const LINK_STRATEGIES = {
+  aggressive: { maxLinks: 12, minScore: 40, funnelWeight: 2.0 },
+  moderate: { maxLinks: 8, minScore: 55, funnelWeight: 1.0 },
+  conservative: { maxLinks: 5, minScore: 70, funnelWeight: 0.5 },
+  orphan_rescue: { maxLinks: 8, minScore: 50, orphanBoost: 50 }
+};
+
+async function generateLinksWithStrategy(articleId, strategyName) {
+  const strategy = LINK_STRATEGIES[strategyName];
+  const links = await generateSmartLinks(articleId, strategy);
+
+  // Tag links with strategy for tracking
+  return links.map(link => ({
+    ...link,
+    strategy: strategyName,
+    experimentId: getCurrentExperiment()
+  }));
+}
+
+// Analytics integration
+async function trackLinkClick(linkId) {
+  const link = await getLink(linkId);
+  await analytics.track('link_click', {
+    strategy: link.strategy,
+    experimentId: link.experimentId,
+    sourceArticle: link.sourceId,
+    targetArticle: link.targetId
+  });
+}
+
+// Analyze results
+async function analyzeExperiment(experimentId) {
+  const results = await analytics.query({
+    event: 'link_click',
+    experimentId
+  });
+
+  return Object.entries(LINK_STRATEGIES).map(([name, _]) => ({
+    strategy: name,
+    clicks: results.filter(r => r.strategy === name).length,
+    ctr: calculateCTR(name, experimentId)
+  }));
+}
+```
+
+**Benefits:**
+- Data-driven optimization of linking strategy
+- Learn what actually drives engagement
+- Continuous improvement over time
+
+**NOTES:**
+<!-- Add your thoughts on A/B testing -->
+
+
+### 13. Inbound Link Balancing (PageRank-Style Distribution)
+
+```javascript
+// Balance link equity across the site like PageRank
+
+async function calculateLinkEquityDistribution() {
+  const articles = await getAllArticles();
+
+  // Calculate current "equity" based on inbound links
+  const equity = {};
+  for (const article of articles) {
+    const inboundLinks = await getInboundLinks(article.id);
+    equity[article.id] = {
+      current: inboundLinks.length,
+      isPillar: article.isPillar,
+      qualityScore: article.qualityScore
+    };
+  }
+
+  // Find imbalances
+  const avgEquity = Object.values(equity).reduce((sum, e) => sum + e.current, 0) / articles.length;
+
+  const underlinked = Object.entries(equity)
+    .filter(([id, e]) => e.current < avgEquity * 0.5)
+    .map(([id, e]) => ({
+      articleId: id,
+      deficit: avgEquity - e.current,
+      priority: e.isPillar ? 'high' : 'normal'
+    }))
+    .sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority === 'high' ? -1 : 1;
+      return b.deficit - a.deficit;
+    });
+
+  return underlinked;
+}
+
+// Boost underlinked articles in scoring
+function calculateHybridScoreWithEquity(source, candidate, equityData) {
+  let score = calculateBaseHybridScore(source, candidate);
+
+  const targetEquity = equityData[candidate.id];
+  if (targetEquity && targetEquity.current < 3) {
+    score += 25; // Orphan rescue bonus
+  } else if (targetEquity && targetEquity.deficit > 0) {
+    score += Math.min(targetEquity.deficit * 2, 15); // Deficit bonus
+  }
+
+  return score;
+}
+```
+
+**Benefits:**
+- Prevent link hoarding on popular articles
+- Rescue orphaned content systematically
+- Better overall site authority distribution
+
+**NOTES:**
+<!-- Add your thoughts on link equity balancing -->
+
+
+### 14. Freshness-Weighted Vector Similarity
+
+```javascript
+// Weight vector similarity by content freshness
+
+function calculateFreshnessWeightedSimilarity(source, candidate, baseScore) {
+  const now = new Date();
+  const candidateAge = (now - new Date(candidate.updatedAt)) / (1000 * 60 * 60 * 24); // days
+
+  // Freshness decay function (half-life of 180 days)
+  const freshnessMultiplier = Math.pow(0.5, candidateAge / 180);
+
+  // Don't penalize evergreen content as much
+  const lifespanFactor = candidate.contentLifespan === 'evergreen' ? 0.8 : 1.0;
+
+  const freshnessAdjustment = 1 - (lifespanFactor * (1 - freshnessMultiplier) * 0.3);
+
+  return baseScore * freshnessAdjustment;
+}
+
+// Example:
+// - 90% similar article from today: 90 * 1.0 = 90
+// - 92% similar article from 1 year ago: 92 * 0.85 = 78.2
+// Fresh content wins!
+```
+
+**Benefits:**
+- Naturally favor recently updated content
+- Keep link recommendations fresh
+- Evergreen content protected from over-penalization
+
+**NOTES:**
+<!-- Add your thoughts on freshness weighting -->
+
+
+### 15. User Behavior Feedback Loop (The "Best" System)
+
+```javascript
+// Learn from actual user behavior to improve linking
+
+// Track user journeys
+async function trackUserJourney(userId, pageViews) {
+  // pageViews = [{articleId, timestamp, timeOnPage, scrollDepth}, ...]
+
+  const journeys = [];
+  for (let i = 0; i < pageViews.length - 1; i++) {
+    const from = pageViews[i];
+    const to = pageViews[i + 1];
+
+    // Check if this was a link click (not direct navigation)
+    const wasLinkClick = await wasInternalLinkClick(from.articleId, to.articleId);
+
+    if (wasLinkClick) {
+      journeys.push({
+        fromArticle: from.articleId,
+        toArticle: to.articleId,
+        timeOnFromPage: from.timeOnPage,
+        scrollDepthOnFrom: from.scrollDepth,
+        engagedOnTarget: to.timeOnPage > 30 // 30+ seconds = engaged
+      });
+    }
+  }
+
+  await saveJourneys(journeys);
+}
+
+// Build a "what users actually click" model
+async function buildClickPredictionModel() {
+  const journeys = await getAllJourneys();
+
+  // Calculate click probability for each source->target pair
+  const clickProbs = {};
+
+  for (const journey of journeys) {
+    const key = `${journey.fromArticle}->${journey.toArticle}`;
+    if (!clickProbs[key]) {
+      clickProbs[key] = { shown: 0, clicked: 0, engaged: 0 };
+    }
+    clickProbs[key].clicked++;
+    if (journey.engagedOnTarget) {
+      clickProbs[key].engaged++;
+    }
+  }
+
+  return clickProbs;
+}
+
+// Incorporate into scoring
+function calculateScoreWithUserBehavior(source, candidate, clickProbs) {
+  let score = calculateHybridScore(source, candidate);
+
+  const key = `${source.id}->${candidate.id}`;
+  if (clickProbs[key]) {
+    const ctr = clickProbs[key].clicked / Math.max(clickProbs[key].shown, 1);
+    const engagementRate = clickProbs[key].engaged / Math.max(clickProbs[key].clicked, 1);
+
+    // Boost based on historical performance
+    score += ctr * 30;  // Up to 30 points for high CTR
+    score += engagementRate * 20;  // Up to 20 points for engagement
+  }
+
+  return score;
+}
+```
+
+**This is the "smartest possible" system because:**
+- Learns from real user behavior, not assumptions
+- Gets smarter over time
+- Optimizes for actual engagement, not just semantic similarity
+- Requires analytics infrastructure (Phase 2 feature)
+
+**NOTES:**
+<!-- Add your thoughts on user behavior feedback -->
+
+
+---
+
+## Smartness Levels Summary
+
+| Level | Components | Effort | Improvement |
+|-------|------------|--------|-------------|
+| **Good** | Vectors + business rules | MVP | Baseline |
+| **Great** | + Cross-encoder re-ranking | +1 day | +15-25% relevance |
+| **Excellent** | + LLM anchor selection | +1 day | +Better UX |
+| **Best** | + User behavior feedback | +1 week | +Continuous learning |
+
+**Recommended Approach:**
+1. Start with "Good" (MVP)
+2. Add cross-encoder for "Great" after validation
+3. Add LLM anchors for "Excellent" if anchor quality is an issue
+4. Add user behavior for "Best" once you have analytics
+
+**NOTES:**
+<!-- Add your notes on which level to target -->
+
+
+---
+
+## Complete SEO Plugin Features
+
+The system should be a complete SEO solution, not just linking. Here's the full SEO feature set:
+
+### 16. Smart Meta Title & Description Generation
+
+```javascript
+// Generate optimized meta titles and descriptions based on content analysis
+
+async function generateSEOMetadata(articleId) {
+  const article = await getArticle(articleId);
+  const embedding = await getArticleEmbedding(articleId);
+
+  // Find what this article is being linked TO for (its "role" in the site)
+  const inboundLinks = await getInboundLinks(articleId);
+  const linkContexts = inboundLinks.map(link => ({
+    anchor: link.anchorText,
+    sourceTitle: link.sourceTitle,
+    sourceCluster: link.sourceCluster
+  }));
+
+  const prompt = `Generate SEO-optimized metadata for this article.
+
+ARTICLE:
+Title: ${article.title}
+Summary: ${article.summary}
+Topic Cluster: ${article.topicCluster}
+Target Persona: ${article.targetPersona}
+Funnel Stage: ${article.funnelStage}
+
+INCOMING LINK CONTEXT (how other pages reference this):
+${linkContexts.map(l => `- "${l.anchor}" from "${l.sourceTitle}"`).join('\n')}
+
+EXISTING KEYWORDS TARGETING THIS PAGE:
+${inboundLinks.map(l => l.anchorText).join(', ')}
+
+Generate:
+1. SEO Title (50-60 chars, include primary keyword near start)
+2. Meta Description (150-160 chars, include CTA, mention value prop)
+3. Focus Keyphrase (2-4 words, based on how other pages link here)
+4. Secondary Keywords (5-8 related terms)
+
+Consider:
+- What searchers expect based on incoming link anchors
+- The funnel stage (awareness = educational, decision = transactional)
+- Canadian mortgage/real estate context
+
+Respond as JSON:
+{
+  "seoTitle": "...",
+  "metaDescription": "...",
+  "focusKeyphrase": "...",
+  "secondaryKeywords": ["..."]
+}`;
+
+  const response = await callLLM(prompt);
+  return JSON.parse(response);
+}
+```
+
+**The Magic:** Uses incoming link anchors to understand what the page "should" rank for. If 5 articles link to your page with "BRRRR strategy guide", that's your focus keyword!
+
+**NOTES:**
+<!-- Add your thoughts on meta generation -->
+
+
+### 17. Link-Aware Meta Updates
+
+```javascript
+// When links change, update meta to reflect new context
+
+async function updateMetaAfterLinkChange(articleId) {
+  const inboundLinks = await getInboundLinks(articleId);
+
+  // Extract anchor themes
+  const anchorFrequency = {};
+  for (const link of inboundLinks) {
+    const normalized = link.anchorText.toLowerCase();
+    anchorFrequency[normalized] = (anchorFrequency[normalized] || 0) + 1;
+  }
+
+  // Find dominant themes
+  const topAnchors = Object.entries(anchorFrequency)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 3)
+    .map(([anchor, count]) => anchor);
+
+  // Check if current meta aligns with link context
+  const currentMeta = await getArticleMeta(articleId);
+  const metaContainsTopAnchor = topAnchors.some(
+    anchor => currentMeta.title.toLowerCase().includes(anchor) ||
+              currentMeta.description.toLowerCase().includes(anchor)
+  );
+
+  if (!metaContainsTopAnchor && topAnchors.length > 0) {
+    // Meta doesn't align with how the site references this content
+    console.log(`Meta mismatch for ${articleId}: top anchors are ${topAnchors.join(', ')}`);
+
+    // Regenerate meta with link context awareness
+    const newMeta = await generateSEOMetadata(articleId);
+    await updateArticleMeta(articleId, newMeta);
+
+    return { updated: true, reason: 'link_context_mismatch', newMeta };
+  }
+
+  return { updated: false };
+}
+
+// Hook into link creation/deletion
+async function onLinkCreated(sourceId, targetId, anchor) {
+  // ... create link ...
+
+  // Check if target's meta should update
+  await updateMetaAfterLinkChange(targetId);
+}
+```
+
+**Benefits:**
+- Meta always reflects how the site "talks about" this page
+- Automatic keyword alignment
+- No manual meta optimization needed
+
+**NOTES:**
+<!-- Add your thoughts on link-aware meta -->
+
+
+### 18. Sanity.io SEO Schema Integration
+
+```javascript
+// schemas/article.js - SEO fields
+
+export default {
+  name: 'article',
+  type: 'document',
+  fields: [
+    // ... content fields ...
+
+    // === SEO FIELDS ===
+    {
+      name: 'seo',
+      title: 'SEO Settings',
+      type: 'object',
+      fields: [
+        {
+          name: 'title',
+          title: 'SEO Title',
+          type: 'string',
+          description: 'Auto-generated based on content and incoming links',
+          validation: Rule => Rule.max(60).warning('Title should be under 60 characters')
+        },
+        {
+          name: 'description',
+          title: 'Meta Description',
+          type: 'text',
+          rows: 3,
+          validation: Rule => Rule.max(160).warning('Description should be under 160 characters')
+        },
+        {
+          name: 'focusKeyphrase',
+          title: 'Focus Keyphrase',
+          type: 'string',
+          description: 'Primary keyword to target (informed by incoming links)'
+        },
+        {
+          name: 'secondaryKeywords',
+          title: 'Secondary Keywords',
+          type: 'array',
+          of: [{ type: 'string' }]
+        },
+        {
+          name: 'canonical',
+          title: 'Canonical URL',
+          type: 'url',
+          description: 'Leave blank to use page URL'
+        },
+        {
+          name: 'noIndex',
+          title: 'No Index',
+          type: 'boolean',
+          initialValue: false
+        },
+        {
+          name: 'ogImage',
+          title: 'Social Share Image',
+          type: 'image'
+        }
+      ]
+    },
+
+    // === AUTO-GENERATED SEO DATA ===
+    {
+      name: 'seoAnalysis',
+      title: 'SEO Analysis (Auto)',
+      type: 'object',
+      readOnly: true,
+      fields: [
+        { name: 'lastAnalyzed', type: 'datetime' },
+        { name: 'inboundLinkCount', type: 'number' },
+        { name: 'topInboundAnchors', type: 'array', of: [{ type: 'string' }] },
+        { name: 'suggestedFocusKeyphrase', type: 'string' },
+        { name: 'contentScore', type: 'number' },
+        { name: 'recommendations', type: 'array', of: [{ type: 'string' }] }
+      ]
+    }
+  ]
+}
+```
+
+### 19. SEO Dashboard & Recommendations
+
+```javascript
+// API route for SEO health check
+
+export async function GET(request) {
+  const articles = await getAllArticles();
+  const issues = [];
+
+  for (const article of articles) {
+    const articleIssues = [];
+
+    // Check meta title
+    if (!article.seo?.title) {
+      articleIssues.push({ type: 'missing_title', severity: 'high' });
+    } else if (article.seo.title.length > 60) {
+      articleIssues.push({ type: 'title_too_long', severity: 'medium' });
+    }
+
+    // Check meta description
+    if (!article.seo?.description) {
+      articleIssues.push({ type: 'missing_description', severity: 'high' });
+    } else if (article.seo.description.length > 160) {
+      articleIssues.push({ type: 'description_too_long', severity: 'low' });
+    }
+
+    // Check internal links
+    const inboundLinks = await getInboundLinks(article.id);
+    const outboundLinks = await getOutboundLinks(article.id);
+
+    if (inboundLinks.length === 0) {
+      articleIssues.push({ type: 'orphan_page', severity: 'high' });
+    }
+    if (outboundLinks.length === 0) {
+      articleIssues.push({ type: 'no_outbound_links', severity: 'medium' });
+    }
+
+    // Check focus keyword alignment
+    if (article.seo?.focusKeyphrase) {
+      const titleHasKeyword = article.seo.title?.toLowerCase()
+        .includes(article.seo.focusKeyphrase.toLowerCase());
+      if (!titleHasKeyword) {
+        articleIssues.push({ type: 'keyword_not_in_title', severity: 'medium' });
+      }
+    }
+
+    // Check anchor diversity (same anchor used too many times)
+    const anchorCounts = {};
+    for (const link of inboundLinks) {
+      const anchor = link.anchorText.toLowerCase();
+      anchorCounts[anchor] = (anchorCounts[anchor] || 0) + 1;
+    }
+    const overusedAnchors = Object.entries(anchorCounts)
+      .filter(([_, count]) => count > 3);
+    if (overusedAnchors.length > 0) {
+      articleIssues.push({
+        type: 'anchor_over_optimization',
+        severity: 'medium',
+        details: overusedAnchors
+      });
+    }
+
+    if (articleIssues.length > 0) {
+      issues.push({ article, issues: articleIssues });
+    }
+  }
+
+  // Calculate overall health score
+  const totalArticles = articles.length;
+  const articlesWithIssues = issues.length;
+  const healthScore = Math.round((1 - articlesWithIssues / totalArticles) * 100);
+
+  return Response.json({
+    healthScore,
+    totalArticles,
+    articlesWithIssues,
+    issues: issues.sort((a, b) =>
+      b.issues.filter(i => i.severity === 'high').length -
+      a.issues.filter(i => i.severity === 'high').length
+    )
+  });
+}
+```
+
+### 20. Schema.org Structured Data Generation
+
+```javascript
+// Generate JSON-LD structured data based on content type
+
+function generateStructuredData(article) {
+  const baseData = {
+    '@context': 'https://schema.org',
+    '@type': 'Article',
+    headline: article.title,
+    description: article.seo?.description || article.summary,
+    author: {
+      '@type': 'Organization',
+      name: 'LendCity',
+      url: 'https://lendcity.ca'
+    },
+    publisher: {
+      '@type': 'Organization',
+      name: 'LendCity',
+      logo: {
+        '@type': 'ImageObject',
+        url: 'https://lendcity.ca/logo.png'
+      }
+    },
+    datePublished: article.publishedAt,
+    dateModified: article.updatedAt
+  };
+
+  // Add type-specific data
+  switch (article.contentFormat) {
+    case 'how-to':
+      return {
+        ...baseData,
+        '@type': 'HowTo',
+        step: extractSteps(article.body)
+      };
+
+    case 'faq':
+      return {
+        '@context': 'https://schema.org',
+        '@type': 'FAQPage',
+        mainEntity: extractFAQs(article.body).map(faq => ({
+          '@type': 'Question',
+          name: faq.question,
+          acceptedAnswer: {
+            '@type': 'Answer',
+            text: faq.answer
+          }
+        }))
+      };
+
+    case 'calculator':
+      return {
+        ...baseData,
+        '@type': 'WebApplication',
+        applicationCategory: 'FinanceApplication',
+        operatingSystem: 'Web'
+      };
+
+    default:
+      return baseData;
+  }
+}
+```
+
+### 21. Automatic Internal Link Audit
+
+```javascript
+// Comprehensive link audit report
+
+async function generateLinkAudit() {
+  const articles = await getAllArticles();
+  const allLinks = await getAllLinks();
+
+  const audit = {
+    summary: {
+      totalArticles: articles.length,
+      totalLinks: allLinks.length,
+      avgLinksPerArticle: (allLinks.length / articles.length).toFixed(1),
+      orphanedPages: 0,
+      deadLinks: 0
+    },
+    linkDistribution: {
+      pages: { total: 0, avgInbound: 0 },
+      posts: { total: 0, avgInbound: 0 }
+    },
+    topLinkedPages: [],
+    orphanedPages: [],
+    pagesNeedingLinks: [],
+    anchorDiversity: {
+      uniqueAnchors: 0,
+      overusedAnchors: []
+    },
+    clusterCoverage: {},
+    recommendations: []
+  };
+
+  // Analyze each article
+  const inboundCounts = {};
+  const outboundCounts = {};
+  const anchorUsage = {};
+
+  for (const link of allLinks) {
+    inboundCounts[link.targetId] = (inboundCounts[link.targetId] || 0) + 1;
+    outboundCounts[link.sourceId] = (outboundCounts[link.sourceId] || 0) + 1;
+
+    const anchor = link.anchorText.toLowerCase();
+    if (!anchorUsage[anchor]) {
+      anchorUsage[anchor] = { count: 0, targets: new Set() };
+    }
+    anchorUsage[anchor].count++;
+    anchorUsage[anchor].targets.add(link.targetId);
+  }
+
+  // Find orphaned pages
+  for (const article of articles) {
+    if (!inboundCounts[article.id] || inboundCounts[article.id] === 0) {
+      audit.orphanedPages.push({
+        id: article.id,
+        title: article.title,
+        url: article.url,
+        isPillar: article.isPillar
+      });
+      audit.summary.orphanedPages++;
+    }
+
+    // Pages needing more links
+    if ((inboundCounts[article.id] || 0) < 3) {
+      audit.pagesNeedingLinks.push({
+        id: article.id,
+        title: article.title,
+        currentInbound: inboundCounts[article.id] || 0,
+        priority: article.isPillar ? 'high' : 'normal'
+      });
+    }
+  }
+
+  // Top linked pages
+  audit.topLinkedPages = Object.entries(inboundCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([id, count]) => {
+      const article = articles.find(a => a.id === id);
+      return { id, title: article?.title, inboundLinks: count };
+    });
+
+  // Anchor diversity analysis
+  audit.anchorDiversity.uniqueAnchors = Object.keys(anchorUsage).length;
+  audit.anchorDiversity.overusedAnchors = Object.entries(anchorUsage)
+    .filter(([_, data]) => data.count > 5)
+    .map(([anchor, data]) => ({
+      anchor,
+      count: data.count,
+      uniqueTargets: data.targets.size
+    }));
+
+  // Generate recommendations
+  if (audit.summary.orphanedPages > 0) {
+    audit.recommendations.push({
+      priority: 'high',
+      type: 'orphan_rescue',
+      message: `${audit.summary.orphanedPages} pages have no internal links pointing to them`,
+      action: 'Run smart linker on related content to build links'
+    });
+  }
+
+  if (audit.anchorDiversity.overusedAnchors.length > 0) {
+    audit.recommendations.push({
+      priority: 'medium',
+      type: 'anchor_diversity',
+      message: `${audit.anchorDiversity.overusedAnchors.length} anchor texts are overused`,
+      action: 'Vary anchor text to avoid over-optimization'
+    });
+  }
+
+  return audit;
+}
+```
+
+### 22. SEO Integration with Next.js
+
+```javascript
+// app/blog/[slug]/page.js - Full SEO implementation
+
+import { generateMetadata as generateNextMetadata } from 'next';
+
+export async function generateMetadata({ params }) {
+  const article = await getArticleBySlug(params.slug);
+
+  return {
+    title: article.seo?.title || article.title,
+    description: article.seo?.description || article.summary,
+    keywords: article.seo?.secondaryKeywords?.join(', '),
+    openGraph: {
+      title: article.seo?.title || article.title,
+      description: article.seo?.description || article.summary,
+      url: `https://lendcity.ca/blog/${params.slug}`,
+      siteName: 'LendCity',
+      images: [
+        {
+          url: article.seo?.ogImage || '/default-og.jpg',
+          width: 1200,
+          height: 630
+        }
+      ],
+      locale: 'en_CA',
+      type: 'article'
+    },
+    twitter: {
+      card: 'summary_large_image',
+      title: article.seo?.title || article.title,
+      description: article.seo?.description || article.summary,
+      images: [article.seo?.ogImage || '/default-og.jpg']
+    },
+    alternates: {
+      canonical: article.seo?.canonical || `https://lendcity.ca/blog/${params.slug}`
+    },
+    robots: article.seo?.noIndex ? 'noindex, nofollow' : 'index, follow'
+  };
+}
+
+export default async function ArticlePage({ params }) {
+  const article = await getArticleBySlug(params.slug);
+  const structuredData = generateStructuredData(article);
+
+  return (
+    <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
+      />
+      <article>
+        {/* Article content with smart links */}
+      </article>
+    </>
+  );
+}
+```
+
+---
+
+## SEO Feature Summary
+
+| Feature | Description | Priority |
+|---------|-------------|----------|
+| Meta Title/Description | AI-generated, link-context aware | P0 |
+| Focus Keyphrase Extraction | Based on inbound link anchors | P0 |
+| Link-Aware Meta Updates | Auto-update when links change | P1 |
+| SEO Dashboard | Health score + issue tracking | P1 |
+| Structured Data (JSON-LD) | Auto-generated schema.org | P1 |
+| Link Audit Report | Orphans, distribution, diversity | P1 |
+| Anchor Diversity Tracking | Prevent over-optimization | P2 |
+| Content Gap Analysis | Find missing topics | P2 |
+
+**NOTES:**
+<!-- Add your SEO feature priorities here -->
+
+
+---
+
 ## Technology Recommendations
 
 ### Recommended Stack
