@@ -513,6 +513,7 @@ function lendcity_rebuild_catalog() {
     }
 
     try {
+        error_log('LendCity: Starting sync process');
         $results = [
             'pillars' => ['total' => 0, 'success' => 0, 'failed' => 0],
             'pages' => ['total' => 0, 'success' => 0, 'failed' => 0],
@@ -521,7 +522,7 @@ function lendcity_rebuild_catalog() {
         ];
 
         // STEP 1: Sync pillar pages FIRST (they define topic clusters)
-        // Pillars sync individually to ensure they're in place before batch processing
+        error_log('LendCity: Querying pillar pages');
         $pillar_pages = get_posts([
             'post_type' => 'page',
             'post_status' => 'publish',
@@ -536,13 +537,16 @@ function lendcity_rebuild_catalog() {
         ]);
 
         $results['pillars']['total'] = count($pillar_pages);
+        error_log('LendCity: Found ' . count($pillar_pages) . ' pillar pages');
         $pillar_ids = [];
 
         foreach ($pillar_pages as $page) {
             $pillar_ids[] = $page->ID;
+            error_log('LendCity: Syncing pillar ' . $page->ID);
             $result = $api->sync_to_catalog($page->ID);
 
             if (is_wp_error($result)) {
+                error_log('LendCity: Pillar sync failed - ' . $result->get_error_message());
                 $results['pillars']['failed']++;
                 $results['errors'][] = [
                     'type' => 'pillar',
@@ -551,11 +555,13 @@ function lendcity_rebuild_catalog() {
                     'error' => $result->get_error_message()
                 ];
             } else {
+                error_log('LendCity: Pillar sync success');
                 $results['pillars']['success']++;
             }
         }
 
         // STEP 2: Batch sync remaining pages (non-pillar)
+        error_log('LendCity: Querying other pages');
         $other_pages = get_posts([
             'post_type' => 'page',
             'post_status' => 'publish',
@@ -564,16 +570,20 @@ function lendcity_rebuild_catalog() {
         ]);
 
         $results['pages']['total'] = count($other_pages);
+        error_log('LendCity: Found ' . count($other_pages) . ' other pages');
 
         if (!empty($other_pages)) {
             $page_ids = wp_list_pluck($other_pages, 'ID');
+            error_log('LendCity: Starting batch sync for pages');
             $batch_result = lendcity_batch_sync_with_retry($api, $page_ids);
             $results['pages']['success'] = $batch_result['success'];
             $results['pages']['failed'] = $batch_result['failed'];
             $results['errors'] = array_merge($results['errors'], $batch_result['errors']);
+            error_log('LendCity: Pages batch done - success: ' . $batch_result['success'] . ', failed: ' . $batch_result['failed']);
         }
 
         // STEP 3: Batch sync all posts
+        error_log('LendCity: Querying posts');
         $posts = get_posts([
             'post_type' => 'post',
             'post_status' => 'publish',
@@ -581,13 +591,16 @@ function lendcity_rebuild_catalog() {
         ]);
 
         $results['posts']['total'] = count($posts);
+        error_log('LendCity: Found ' . count($posts) . ' posts');
 
         if (!empty($posts)) {
             $post_ids = wp_list_pluck($posts, 'ID');
+            error_log('LendCity: Starting batch sync for posts');
             $batch_result = lendcity_batch_sync_with_retry($api, $post_ids);
             $results['posts']['success'] = $batch_result['success'];
             $results['posts']['failed'] = $batch_result['failed'];
             $results['errors'] = array_merge($results['errors'], $batch_result['errors']);
+            error_log('LendCity: Posts batch done - success: ' . $batch_result['success'] . ', failed: ' . $batch_result['failed']);
         }
 
         // Calculate totals
@@ -595,6 +608,7 @@ function lendcity_rebuild_catalog() {
         $results['success'] = $results['pillars']['success'] + $results['pages']['success'] + $results['posts']['success'];
         $results['failed'] = $results['pillars']['failed'] + $results['pages']['failed'] + $results['posts']['failed'];
 
+        error_log('LendCity: Sync complete - total: ' . $results['total'] . ', success: ' . $results['success'] . ', failed: ' . $results['failed']);
         wp_send_json_success($results);
 
     } catch (Exception $e) {
