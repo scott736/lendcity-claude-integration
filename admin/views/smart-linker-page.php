@@ -517,15 +517,20 @@ $total_links = $smart_linker->get_total_link_count();
                     </tr>
                 </thead>
                 <tbody id="links-tbody">
-                    <?php foreach (array_slice($all_links, 0, 25) as $idx => $link): ?>
-                        <tr data-link-id="<?php echo esc_attr($link['link_id'] ?? $link['source_post_id'] . '-' . $idx); ?>" 
-                            data-source-id="<?php echo esc_attr($link['source_post_id']); ?>" 
+                    <?php foreach (array_slice($all_links, 0, 25) as $idx => $link):
+                        // Skip invalid links missing required fields
+                        if (empty($link['url']) || empty($link['anchor']) || empty($link['source_post_id'])) continue;
+                        $link_id = $link['link_id'] ?? $link['source_post_id'] . '-' . $idx;
+                        $source_title = $link['source_post_title'] ?? get_the_title($link['source_post_id']);
+                    ?>
+                        <tr data-link-id="<?php echo esc_attr($link_id); ?>"
+                            data-source-id="<?php echo esc_attr($link['source_post_id']); ?>"
                             data-current-url="<?php echo esc_attr($link['url']); ?>"
-                            data-source-title="<?php echo esc_attr(strtolower($link['source_post_title'])); ?>"
+                            data-source-title="<?php echo esc_attr(strtolower($source_title)); ?>"
                             data-anchor="<?php echo esc_attr(strtolower($link['anchor'])); ?>"
                             data-target="<?php echo esc_attr(strtolower(str_replace(home_url(), '', $link['url']))); ?>"
                             data-type="<?php echo !empty($link['is_page']) ? 'page' : 'post'; ?>">
-                            <td><a href="<?php echo get_edit_post_link($link['source_post_id']); ?>" target="_blank"><?php echo esc_html($link['source_post_title']); ?></a></td>
+                            <td><a href="<?php echo get_edit_post_link($link['source_post_id']); ?>" target="_blank"><?php echo esc_html($source_title); ?></a></td>
                             <td><code><?php echo esc_html($link['anchor']); ?></code></td>
                             <td class="target-cell">
                                 <span class="target-display" style="cursor: pointer; color: #2271b1;" title="Click to change destination">

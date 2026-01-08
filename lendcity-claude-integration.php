@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 12.5.8
+ * Version: 12.5.9
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '12.5.8');
+define('LENDCITY_CLAUDE_VERSION', '12.5.9');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -1311,19 +1311,23 @@ class LendCity_Claude_Integration {
         // Build HTML
         $html = '';
         foreach ($links as $idx => $link) {
+            // Skip invalid links missing required fields
+            if (empty($link['url']) || empty($link['anchor']) || empty($link['source_post_id'])) continue;
+
             $edit_link = get_edit_post_link($link['source_post_id']);
             $is_page = !empty($link['is_page']) ? 'page' : 'post';
             $target_display = str_replace(home_url(), '', $link['url']);
             $link_id = $link['link_id'] ?? $link['source_post_id'] . '-' . $idx;
+            $source_title = $link['source_post_title'] ?? get_the_title($link['source_post_id']);
 
-            $html .= '<tr data-link-id="' . esc_attr($link_id) . '" 
-                data-source-id="' . esc_attr($link['source_post_id']) . '" 
+            $html .= '<tr data-link-id="' . esc_attr($link_id) . '"
+                data-source-id="' . esc_attr($link['source_post_id']) . '"
                 data-current-url="' . esc_attr($link['url']) . '"
-                data-source-title="' . esc_attr(strtolower($link['source_post_title'])) . '"
+                data-source-title="' . esc_attr(strtolower($source_title)) . '"
                 data-anchor="' . esc_attr(strtolower($link['anchor'])) . '"
                 data-target="' . esc_attr(strtolower($target_display)) . '"
                 data-type="' . $is_page . '">';
-            $html .= '<td><a href="' . esc_url($edit_link) . '" target="_blank">' . esc_html($link['source_post_title']) . '</a></td>';
+            $html .= '<td><a href="' . esc_url($edit_link) . '" target="_blank">' . esc_html($source_title) . '</a></td>';
             $html .= '<td><code>' . esc_html($link['anchor']) . '</code></td>';
             
             // Target cell with view link and edit dropdown
