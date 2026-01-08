@@ -3683,6 +3683,12 @@ class LendCity_Smart_Linker {
     }
 
     public function set_pillar_page($post_id, $is_pillar) {
+        // Only pages can be pillar content (not posts)
+        $post = get_post($post_id);
+        if (!$post || $post->post_type !== 'page') {
+            return false;
+        }
+
         $is_pillar = (bool) $is_pillar;
         update_post_meta($post_id, '_lendcity_is_pillar', $is_pillar ? 1 : 0);
         // Also update catalog if entry exists

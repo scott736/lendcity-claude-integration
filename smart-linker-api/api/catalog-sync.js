@@ -112,7 +112,8 @@ async function handleSync(req, res) {
     ? qualityScore : (analyzedData.qualityScore || 50);
   const finalContentLifespan = contentLifespan !== 'evergreen'
     ? contentLifespan : (analyzedData.contentLifespan || 'evergreen');
-  const finalIsPillar = isPillar || analyzedData.isPillar || false;
+  // Only pages can be pillar content (not posts)
+  const finalIsPillar = contentType === 'page' && (isPillar || analyzedData.isPillar || false);
 
   // Generate embedding
   const embedding = await generateArticleEmbedding({
