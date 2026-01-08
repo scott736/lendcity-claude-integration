@@ -175,6 +175,36 @@ async function incrementInboundLinks(postId, count = 1) {
   return { success: true };
 }
 
+/**
+ * Get all pillar pages with their keywords
+ * Used for topic cluster matching
+ */
+async function getPillarPages() {
+  const index = getIndex();
+
+  // Query for all pages marked as pillar content
+  const results = await index.query({
+    vector: new Array(1536).fill(0), // Dummy vector for metadata-only query
+    topK: 100, // Reasonable limit for pillar pages
+    filter: {
+      isPillar: true,
+      contentType: 'page'
+    },
+    includeMetadata: true
+  });
+
+  // Return pillar pages with their cluster-defining data
+  return (results.matches || []).map(match => ({
+    postId: match.metadata.postId,
+    title: match.metadata.title,
+    url: match.metadata.url,
+    topicCluster: match.metadata.topicCluster,
+    mainTopics: match.metadata.mainTopics || [],
+    semanticKeywords: match.metadata.semanticKeywords || [],
+    summary: match.metadata.summary || ''
+  }));
+}
+
 module.exports = {
   getClient,
   getIndex,
@@ -184,5 +214,6 @@ module.exports = {
   deleteArticle,
   getAllArticles,
   updateMetadata,
-  incrementInboundLinks
+  incrementInboundLinks,
+  getPillarPages
 };

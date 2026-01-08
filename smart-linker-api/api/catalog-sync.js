@@ -1,4 +1,4 @@
-const { upsertArticle, deleteArticle, getArticle } = require('../lib/pinecone');
+const { upsertArticle, deleteArticle, getArticle, getPillarPages } = require('../lib/pinecone');
 const { generateArticleEmbedding } = require('../lib/embeddings');
 const { generateSummary, extractKeywords, autoAnalyzeArticle } = require('../lib/claude');
 
@@ -94,7 +94,18 @@ async function handleSync(req, res) {
 
   if (needsAnalysis) {
     console.log(`Auto-analyzing article ${postId}: "${title}"`);
-    analyzedData = await autoAnalyzeArticle(title, content);
+
+    // Fetch pillar pages to use as topic cluster definitions
+    let pillarPages = [];
+    try {
+      pillarPages = await getPillarPages();
+      console.log(`Found ${pillarPages.length} pillar pages for cluster matching`);
+    } catch (err) {
+      console.warn('Could not fetch pillar pages:', err.message);
+    }
+
+    // Analyze with pillar context for smart cluster matching
+    analyzedData = await autoAnalyzeArticle(title, content, pillarPages);
     wasAutoAnalyzed = true;
     console.log(`Auto-analysis complete:`, analyzedData);
   }

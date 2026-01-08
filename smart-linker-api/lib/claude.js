@@ -245,10 +245,30 @@ Return JSON:
 
 /**
  * Auto-analyze article to detect metadata (cluster, funnel, persona, etc.)
- * This makes the system fully intelligent without needing WordPress metadata
+ * Uses pillar pages as topic cluster definitions when available.
+ * If no pillar matches, Claude creates a new cluster name automatically.
+ *
+ * @param {string} title - Article title
+ * @param {string} content - Article content
+ * @param {Array} pillarPages - Array of pillar pages with keywords (optional)
  */
-async function autoAnalyzeArticle(title, content) {
+async function autoAnalyzeArticle(title, content, pillarPages = []) {
   const client = getClient();
+
+  // Build pillar context if available
+  let pillarContext = '';
+  let clusterInstruction = '';
+
+  if (pillarPages && pillarPages.length > 0) {
+    pillarContext = `
+EXISTING TOPIC CLUSTERS (defined by pillar pages):
+${pillarPages.map((p, i) => `${i + 1}. "${p.topicCluster}" - Pillar: "${p.title}"
+   Keywords: ${[...(p.mainTopics || []), ...(p.semanticKeywords || [])].slice(0, 10).join(', ')}`).join('\n')}
+`;
+    clusterInstruction = `"topicCluster": "Match to the most relevant existing cluster above, OR if the content doesn't fit any cluster well, create a new descriptive cluster name (lowercase, hyphenated, e.g., 'multi-family-investing')"`;
+  } else {
+    clusterInstruction = `"topicCluster": "Create a descriptive cluster name for this content (lowercase, hyphenated, e.g., 'brrrr-strategy', 'private-lending', 'market-analysis')"`;
+  }
 
   const prompt = `You are analyzing a real estate investment education article for a Canadian audience.
 
@@ -256,19 +276,26 @@ TITLE: ${title}
 
 CONTENT (first 3000 chars):
 ${content.slice(0, 3000)}
-
+${pillarContext}
 Analyze this article and return JSON with:
 
 {
-  "topicCluster": "one of: brrrr-strategy, private-lending, rent-to-own, market-analysis, financing-mortgages, tax-legal, property-management, beginner-basics, case-studies, general",
-  "relatedClusters": ["array of 1-2 related clusters from the list above"],
+  ${clusterInstruction},
+  "relatedClusters": ["1-2 related clusters that this content also touches on"],
   "funnelStage": "one of: awareness (educational, what-is), consideration (how-to, comparison), decision (specific tactics, case studies)",
   "targetPersona": "one of: new-investor, experienced-investor, private-lender, rent-to-own-buyer, general",
   "difficultyLevel": "one of: beginner, intermediate, advanced",
   "contentLifespan": "one of: evergreen, timely, seasonal",
-  "isPillar": true/false (is this a comprehensive guide/pillar page?),
-  "qualityScore": 1-100 (based on depth, actionability, uniqueness)
+  "isPillar": false,
+  "qualityScore": 1-100 (based on depth, actionability, uniqueness),
+  "matchedPillarId": null or postId of matched pillar if applicable
 }
+
+IMPORTANT:
+- Posts are NEVER pillar content (isPillar must be false for posts)
+- If content matches an existing pillar cluster, use that cluster name exactly
+- If content doesn't fit existing clusters well, create a new descriptive cluster name
+- New clusters should be lowercase, hyphenated, descriptive (e.g., 'joint-ventures', 'vacation-rentals')
 
 Return ONLY valid JSON, no explanation.`;
 
@@ -295,7 +322,8 @@ Return ONLY valid JSON, no explanation.`;
       difficultyLevel: 'intermediate',
       contentLifespan: 'evergreen',
       isPillar: false,
-      qualityScore: 50
+      qualityScore: 50,
+      matchedPillarId: null
     };
   }
 }
