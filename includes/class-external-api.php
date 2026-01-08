@@ -142,9 +142,11 @@ class LendCity_External_API {
         }
 
         // Get link suggestions from external API
+        // Max links is configurable via settings (default 5)
+        $max_links = (int) get_option('lendcity_max_links_per_article', 5);
         $content = $post->post_content;
         $suggestions = $this->get_smart_links($post_id, $content, [
-            'max_links' => 5,
+            'max_links' => $max_links,
             'min_score' => 50,
             'use_claude' => true,
             'auto_insert' => true
@@ -426,11 +428,13 @@ function lendcity_delete_on_remove($post_id) {
 }
 
 /**
- * AJAX handler for bulk catalog sync
+ * AJAX handler for rebuilding catalog (pillars first, then content)
+ * This ensures pillar pages are in Pinecone before posts get cluster-matched
  */
-add_action('wp_ajax_lendcity_bulk_sync_catalog', 'lendcity_bulk_sync_catalog');
+add_action('wp_ajax_lendcity_rebuild_catalog', 'lendcity_rebuild_catalog');
+add_action('wp_ajax_lendcity_bulk_sync_catalog', 'lendcity_rebuild_catalog'); // Alias for compatibility
 
-function lendcity_bulk_sync_catalog() {
+function lendcity_rebuild_catalog() {
     check_ajax_referer('lendcity_bulk_sync', 'nonce');
 
     if (!current_user_can('manage_options')) {
@@ -442,34 +446,102 @@ function lendcity_bulk_sync_catalog() {
         wp_send_json_error(['message' => 'External API not configured']);
     }
 
-    // Get all published posts and pages
+    $results = [
+        'pillars' => ['total' => 0, 'success' => 0, 'failed' => 0],
+        'pages' => ['total' => 0, 'success' => 0, 'failed' => 0],
+        'posts' => ['total' => 0, 'success' => 0, 'failed' => 0],
+        'errors' => []
+    ];
+
+    // STEP 1: Sync pillar pages FIRST (they define topic clusters)
+    $pillar_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'meta_query' => [
+            [
+                'key' => '_lendcity_is_pillar',
+                'value' => '1',
+                'compare' => '='
+            ]
+        ]
+    ]);
+
+    $results['pillars']['total'] = count($pillar_pages);
+    $pillar_ids = [];
+
+    foreach ($pillar_pages as $page) {
+        $pillar_ids[] = $page->ID;
+        $result = $api->sync_to_catalog($page->ID);
+
+        if (is_wp_error($result)) {
+            $results['pillars']['failed']++;
+            $results['errors'][] = [
+                'type' => 'pillar',
+                'postId' => $page->ID,
+                'title' => $page->post_title,
+                'error' => $result->get_error_message()
+            ];
+        } else {
+            $results['pillars']['success']++;
+        }
+    }
+
+    // STEP 2: Sync remaining pages (non-pillar)
+    $other_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'post__not_in' => !empty($pillar_ids) ? $pillar_ids : [0]
+    ]);
+
+    $results['pages']['total'] = count($other_pages);
+
+    foreach ($other_pages as $page) {
+        $result = $api->sync_to_catalog($page->ID);
+
+        if (is_wp_error($result)) {
+            $results['pages']['failed']++;
+            $results['errors'][] = [
+                'type' => 'page',
+                'postId' => $page->ID,
+                'title' => $page->post_title,
+                'error' => $result->get_error_message()
+            ];
+        } else {
+            $results['pages']['success']++;
+        }
+    }
+
+    // STEP 3: Sync all posts (they get matched to pillar clusters)
     $posts = get_posts([
-        'post_type' => ['post', 'page'],
+        'post_type' => 'post',
         'post_status' => 'publish',
         'numberposts' => -1
     ]);
 
-    $results = [
-        'total' => count($posts),
-        'success' => 0,
-        'failed' => 0,
-        'errors' => []
-    ];
+    $results['posts']['total'] = count($posts);
 
     foreach ($posts as $post) {
         $result = $api->sync_to_catalog($post->ID);
 
         if (is_wp_error($result)) {
-            $results['failed']++;
+            $results['posts']['failed']++;
             $results['errors'][] = [
+                'type' => 'post',
                 'postId' => $post->ID,
                 'title' => $post->post_title,
                 'error' => $result->get_error_message()
             ];
         } else {
-            $results['success']++;
+            $results['posts']['success']++;
         }
     }
+
+    // Calculate totals
+    $results['total'] = $results['pillars']['total'] + $results['pages']['total'] + $results['posts']['total'];
+    $results['success'] = $results['pillars']['success'] + $results['pages']['success'] + $results['posts']['success'];
+    $results['failed'] = $results['pillars']['failed'] + $results['pages']['failed'] + $results['posts']['failed'];
 
     wp_send_json_success($results);
 }
