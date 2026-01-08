@@ -292,7 +292,7 @@ class LendCity_External_API {
      */
     private function get_catalog_entry($post_id) {
         global $wpdb;
-        $table_name = $wpdb->prefix . 'lendcity_smart_linker_catalog';
+        $table_name = $wpdb->prefix . 'lendcity_catalog';
 
         $row = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM {$table_name} WHERE post_id = %d",
