@@ -89,7 +89,7 @@ function cleanForEmbedding(text) {
 
 /**
  * Extract body text from HTML content
- * Takes first 8000 chars for embedding
+ * Uses full content - no truncation for complete semantic understanding
  */
 function extractBodyText(html) {
   const text = html
@@ -99,7 +99,9 @@ function extractBodyText(html) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  return text.slice(0, 8000);
+  // Full content - OpenAI embeddings handle up to 8191 tokens (~32k chars)
+  // For longer articles, the cleanForEmbedding function will handle truncation
+  return text;
 }
 
 /**

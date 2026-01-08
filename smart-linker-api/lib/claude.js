@@ -104,52 +104,64 @@ Return JSON object:
 
 /**
  * Analyze content for smart linking decisions
+ * IMPORTANT: Anchor text must be EXACT phrases that exist in the content
  */
 async function analyzeContentForLinking(content, candidates, options = {}) {
   const client = getClient();
   const { maxLinks = 5, existingLinks = [] } = options;
 
   const candidateList = candidates.map((c, i) =>
-    `${i + 1}. "${c.title}" (${c.url}) - ${c.topicCluster} - Score: ${c.score}`
+    `${i}. "${c.title}" (${c.url}) - Topic: ${c.topicCluster} - Score: ${c.score}`
   ).join('\n');
 
   const existingList = existingLinks.length > 0
-    ? `\nEXISTING LINKS IN CONTENT:\n${existingLinks.join('\n')}`
+    ? `\nEXISTING LINKS ALREADY IN CONTENT (do not duplicate these):\n${existingLinks.map(l => `- "${l.anchor}" -> ${l.url}`).join('\n')}`
     : '';
+
+  // Use full content for best phrase matching - no truncation
+  const contentForAnalysis = content;
 
   const prompt = `You are an internal linking strategist for a real estate education website.
 
-ARTICLE CONTENT:
-${content.slice(0, 4000)}
+ARTICLE CONTENT TO ADD LINKS TO:
+${contentForAnalysis}
 ${existingList}
 
-CANDIDATE ARTICLES TO LINK (ranked by relevance):
+CANDIDATE ARTICLES TO LINK TO (ranked by relevance score):
 ${candidateList}
 
 TASK: Select up to ${maxLinks} articles to link from this content.
 
-For each selected link, provide:
-1. The candidate number
-2. Where in the content to place it (quote the surrounding text)
-3. Suggested anchor text
-4. Why this link adds value for the reader
+CRITICAL REQUIREMENT - ANCHOR TEXT MUST BE EXACT PHRASES:
+- The anchorText MUST be an EXACT phrase that already exists VERBATIM in the article content above
+- Do NOT create new text - ONLY use phrases already written in the content
+- Find phrases (2-6 words) that naturally relate to each target article's topic
+- Copy-paste the exact phrase from the content - spelling and capitalization must match exactly
+
+For each link, provide:
+1. candidateIndex: The index number (0-based) from the candidate list
+2. anchorText: An EXACT phrase copied from the content above (must exist verbatim)
+3. placement: The surrounding sentence or context where the phrase appears
+4. reasoning: Why this link helps the reader
 
 Return JSON:
 {
   "links": [
     {
-      "candidateIndex": 1,
-      "placement": "text snippet where link should go",
-      "anchorText": "suggested anchor",
-      "reasoning": "why this link"
+      "candidateIndex": 0,
+      "anchorText": "exact phrase from content",
+      "placement": "the sentence containing the phrase",
+      "reasoning": "why this link adds value"
     }
   ],
-  "skipped": ["reason for not linking others"]
-}`;
+  "skipped": ["reasons for not linking certain candidates"]
+}
+
+IMPORTANT: Before returning, verify each anchorText appears EXACTLY in the content above. If you cannot find a good matching phrase for a candidate, skip it.`;
 
   const response = await client.messages.create({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 1000,
+    max_tokens: 1500,
     messages: [{ role: 'user', content: prompt }]
   });
 
@@ -157,21 +169,34 @@ Return JSON:
     const text = response.content[0].text.trim();
     // Handle potential markdown code blocks
     const jsonMatch = text.match(/\{[\s\S]*\}/);
-    if (jsonMatch) {
-      return JSON.parse(jsonMatch[0]);
-    }
-    return JSON.parse(text);
+    const parsed = jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
+
+    // Validate that anchor text actually exists in content (case-insensitive check)
+    const validatedLinks = parsed.links.filter(link => {
+      // Check if anchor exists in content (case-insensitive)
+      const anchorLower = link.anchorText.toLowerCase();
+      const contentLower = contentForAnalysis.toLowerCase();
+      const exists = contentLower.includes(anchorLower);
+
+      if (!exists) {
+        console.warn(`Anchor text not found in content, skipping: "${link.anchorText}"`);
+        return false;
+      }
+      return true;
+    });
+
+    console.log(`Validated ${validatedLinks.length}/${parsed.links.length} anchor texts exist in content`);
+
+    return {
+      links: validatedLinks,
+      skipped: parsed.skipped || []
+    };
   } catch (e) {
     console.error('Failed to parse Claude response:', e);
-    // Return top candidates as fallback
+    // Return empty - don't use fallback titles as they won't be in content
     return {
-      links: candidates.slice(0, maxLinks).map((c, i) => ({
-        candidateIndex: i,
-        placement: null,
-        anchorText: c.title,
-        reasoning: 'Fallback - high relevance score'
-      })),
-      skipped: ['Could not parse Claude analysis']
+      links: [],
+      skipped: ['Could not parse Claude analysis - no links added']
     };
   }
 }
@@ -186,8 +211,8 @@ async function generateSummary(content, options = {}) {
   const prompt = `Summarize this real estate article in ${maxLength} characters or less.
 Focus on the main topic, key takeaways, and who it's for.
 
-CONTENT:
-${content.slice(0, 6000)}
+FULL ARTICLE CONTENT:
+${content}
 
 Return only the summary, no quotes or labels.`;
 
@@ -209,8 +234,8 @@ async function extractKeywords(content, options = {}) {
 
   const prompt = `Extract the ${maxKeywords} most important keywords and entities from this real estate content.
 
-CONTENT:
-${content.slice(0, 4000)}
+FULL ARTICLE CONTENT:
+${content}
 
 Return JSON:
 {
@@ -243,11 +268,97 @@ Return JSON:
   }
 }
 
+/**
+ * Auto-analyze article to detect metadata (cluster, funnel, persona, etc.)
+ * Uses pillar pages as topic cluster definitions when available.
+ * If no pillar matches, Claude creates a new cluster name automatically.
+ *
+ * @param {string} title - Article title
+ * @param {string} content - Article content
+ * @param {Array} pillarPages - Array of pillar pages with keywords (optional)
+ */
+async function autoAnalyzeArticle(title, content, pillarPages = []) {
+  const client = getClient();
+
+  // Build pillar context if available
+  let pillarContext = '';
+  let clusterInstruction = '';
+
+  if (pillarPages && pillarPages.length > 0) {
+    pillarContext = `
+EXISTING TOPIC CLUSTERS (defined by pillar pages):
+${pillarPages.map((p, i) => `${i + 1}. "${p.topicCluster}" - Pillar: "${p.title}"
+   Keywords: ${[...(p.mainTopics || []), ...(p.semanticKeywords || [])].slice(0, 10).join(', ')}`).join('\n')}
+`;
+    clusterInstruction = `"topicCluster": "Match to the most relevant existing cluster above, OR if the content doesn't fit any cluster well, create a new descriptive cluster name (lowercase, hyphenated, e.g., 'multi-family-investing')"`;
+  } else {
+    clusterInstruction = `"topicCluster": "Create a descriptive cluster name for this content (lowercase, hyphenated, e.g., 'brrrr-strategy', 'private-lending', 'market-analysis')"`;
+  }
+
+  const prompt = `You are analyzing a real estate investment education article for a Canadian audience.
+
+TITLE: ${title}
+
+FULL CONTENT:
+${content}
+${pillarContext}
+Analyze this article and return JSON with:
+
+{
+  ${clusterInstruction},
+  "relatedClusters": ["1-2 related clusters that this content also touches on"],
+  "funnelStage": "one of: awareness (educational, what-is), consideration (how-to, comparison), decision (specific tactics, case studies)",
+  "targetPersona": "one of: new-investor, experienced-investor, private-lender, rent-to-own-buyer, general",
+  "difficultyLevel": "one of: beginner, intermediate, advanced",
+  "contentLifespan": "one of: evergreen, timely, seasonal",
+  "isPillar": false,
+  "qualityScore": 1-100 (based on depth, actionability, uniqueness),
+  "matchedPillarId": null or postId of matched pillar if applicable
+}
+
+IMPORTANT:
+- Posts are NEVER pillar content (isPillar must be false for posts)
+- If content matches an existing pillar cluster, use that cluster name exactly
+- If content doesn't fit existing clusters well, create a new descriptive cluster name
+- New clusters should be lowercase, hyphenated, descriptive (e.g., 'joint-ventures', 'vacation-rentals')
+
+Return ONLY valid JSON, no explanation.`;
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 400,
+    messages: [{ role: 'user', content: prompt }]
+  });
+
+  try {
+    const text = response.content[0].text.trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+    return JSON.parse(text);
+  } catch (e) {
+    // Return defaults if parsing fails
+    return {
+      topicCluster: 'general',
+      relatedClusters: [],
+      funnelStage: 'awareness',
+      targetPersona: 'general',
+      difficultyLevel: 'intermediate',
+      contentLifespan: 'evergreen',
+      isPillar: false,
+      qualityScore: 50,
+      matchedPillarId: null
+    };
+  }
+}
+
 module.exports = {
   getClient,
   generateAnchorText,
   generateMeta,
   analyzeContentForLinking,
   generateSummary,
-  extractKeywords
+  extractKeywords,
+  autoAnalyzeArticle
 };

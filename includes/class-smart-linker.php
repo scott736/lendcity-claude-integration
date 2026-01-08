@@ -3665,6 +3665,45 @@ class LendCity_Smart_Linker {
     }
 
     /**
+     * Get/Set pillar page status
+     */
+    public function is_pillar_page($post_id) {
+        // Check post meta first
+        $meta = get_post_meta($post_id, '_lendcity_is_pillar', true);
+        if ($meta !== '') {
+            return (bool) $meta;
+        }
+        // Fall back to catalog
+        global $wpdb;
+        $is_pillar = $wpdb->get_var($wpdb->prepare(
+            "SELECT is_pillar_content FROM {$this->table_name} WHERE post_id = %d",
+            $post_id
+        ));
+        return (bool) $is_pillar;
+    }
+
+    public function set_pillar_page($post_id, $is_pillar) {
+        // Only pages can be pillar content (not posts)
+        $post = get_post($post_id);
+        if (!$post || $post->post_type !== 'page') {
+            return false;
+        }
+
+        $is_pillar = (bool) $is_pillar;
+        update_post_meta($post_id, '_lendcity_is_pillar', $is_pillar ? 1 : 0);
+        // Also update catalog if entry exists
+        global $wpdb;
+        $wpdb->update(
+            $this->table_name,
+            array('is_pillar_content' => $is_pillar ? 1 : 0),
+            array('post_id' => $post_id),
+            array('%d'),
+            array('%d')
+        );
+        return $is_pillar;
+    }
+
+    /**
      * Get all priority pages
      */
     public function get_priority_pages() {
@@ -3683,6 +3722,7 @@ class LendCity_Smart_Linker {
                 'title' => $page->post_title,
                 'url' => get_permalink($page->ID),
                 'priority' => $this->get_page_priority($page->ID),
+                'is_pillar' => $this->is_pillar_page($page->ID),
                 'keywords' => $this->get_page_keywords($page->ID),
                 'inbound_links' => $this->count_inbound_links($page->ID)
             );
