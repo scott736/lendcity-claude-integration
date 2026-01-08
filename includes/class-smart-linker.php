@@ -47,10 +47,10 @@ class LendCity_Smart_Linker {
     const DB_VERSION = '6.0';
     const DB_VERSION_OPTION = 'lendcity_catalog_db_version';
 
-    // v5.0 Semantic Enhancement Options
-    private $anchor_usage_option = 'lendcity_anchor_usage_stats';
-    private $keyword_frequency_option = 'lendcity_keyword_frequency';
-    private $synonym_map_option = 'lendcity_synonym_map';
+    // v12.6.1: Removed all semantic enhancement options (using Pinecone instead)
+    // - anchor_usage_option: never used
+    // - synonym_map_option: never used
+    // - keyword_frequency_option: removed with local fallback
 
     // Parallel processing settings
     private $parallel_batch_size = 5; // Posts per parallel request
@@ -975,33 +975,24 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * v5.0: Clear all semantic enhancement indexes
+     * v12.6.1: Deprecated - no longer uses local semantic indexes
+     * Pinecone handles all semantic matching
      */
     public function clear_semantic_indexes() {
-        delete_option($this->keyword_frequency_option);
-        delete_option($this->synonym_map_option);
-        delete_option($this->anchor_usage_option);
-        $this->debug_log('Cleared v5.0 semantic indexes');
+        // v12.6.1: No-op - local fallback removed, using Pinecone
+        $this->debug_log('clear_semantic_indexes called (no-op - using Pinecone)');
     }
 
     /**
-     * v5.0: Build all semantic enhancement indexes
-     * Call this after catalog rebuild for optimal linking
+     * v12.6.1: Deprecated - no longer uses local semantic indexes
+     * Pinecone handles all semantic matching
      */
     public function build_semantic_indexes() {
-        $this->debug_log('Building v5.0 semantic indexes...');
-
-        // Build TF-IDF keyword frequency index
-        $this->build_keyword_frequency_index();
-
-        // Build synonym map
-        $this->build_synonym_map();
-
-        $this->debug_log('Completed building v5.0 semantic indexes');
-
+        // v12.6.1: No-op - local fallback removed, using Pinecone
+        $this->debug_log('build_semantic_indexes called (no-op - using Pinecone)');
         return array(
             'success' => true,
-            'message' => 'Built TF-IDF and synonym indexes'
+            'message' => 'Using Pinecone for semantic matching (local indexes deprecated)'
         );
     }
 
@@ -1115,6 +1106,7 @@ class LendCity_Smart_Linker {
 
     /**
      * Auto-catalog and auto-link when a post is published
+     * v12.6.1: Now uses Pinecone external API (local catalog removed)
      */
     public function on_post_publish($new_status, $old_status, $post) {
         if ($new_status !== 'publish' || $old_status === 'publish') {
@@ -1129,7 +1121,8 @@ class LendCity_Smart_Linker {
             return;
         }
 
-        if (empty($this->api_key)) {
+        // v12.6.1: Check if external API is enabled (required for auto-linking)
+        if (!get_option('lendcity_use_external_api', false)) {
             return;
         }
 
@@ -1249,6 +1242,7 @@ class LendCity_Smart_Linker {
 
     /**
      * Background task: Catalog and link a newly published post
+     * v12.6.1: Updated to use Pinecone external API instead of local catalog
      */
     public function process_new_post_auto_link($post_id) {
         // Use database-level lock for this specific post
@@ -1271,17 +1265,21 @@ class LendCity_Smart_Linker {
             return;
         }
 
-        // Build catalog entry for this post
-        $entry = $this->build_single_post_catalog($post_id);
-        if ($entry) {
-            $this->insert_catalog_entry($post_id, $entry);
-            $this->debug_log('Added post ' . $post_id . ' to catalog');
+        // v12.6.1: Use Pinecone external API for intelligent linking
+        $external_api = new LendCity_External_API();
+        if (!$external_api->is_configured()) {
+            $this->log('Auto-link skipped for post ' . $post_id . ' - External API not configured');
+            $this->release_lock($lock_name);
+            return;
         }
 
-        // v12.2.2: ALWAYS use Claude API for intelligent linking (ownership map removed)
-        $result = $this->create_links_from_source($post_id);
-        $this->log('Auto-link result for post ' . $post_id . ' - ' .
-            ($result['success'] ? 'Success: ' . ($result['links_created'] ?? 0) . ' links' : $result['message']));
+        $result = $external_api->auto_link_post($post_id);
+        if (!is_wp_error($result) && isset($result['success']) && $result['success']) {
+            $this->log('Auto-link result for post ' . $post_id . ' - Success: ' . ($result['links_created'] ?? 0) . ' links (pinecone)');
+        } else {
+            $error_msg = is_wp_error($result) ? $result->get_error_message() : ($result['message'] ?? 'Unknown error');
+            $this->log('Auto-link result for post ' . $post_id . ' - Error: ' . $error_msg);
+        }
 
         // Always auto-generate SEO metadata if post doesn't have it
         $existing_title = get_post_meta($post_id, '_seopress_titles_title', true);
@@ -2136,35 +2134,8 @@ class LendCity_Smart_Linker {
         return 0;
     }
 
-    /**
-     * Get anchor diversity penalty
-     * Penalize anchors that are overused across the site
-     */
-    private function get_anchor_diversity_penalty($anchor_text, $target_id) {
-        $usage = get_option($this->anchor_usage_option, array());
-        $key = strtolower($anchor_text) . '_' . $target_id;
-
-        $count = isset($usage[$key]) ? $usage[$key] : 0;
-        if ($count > 10) return -15;
-        if ($count > 5) return -10;
-        if ($count > 3) return -5;
-        return 0;
-    }
-
-    /**
-     * Track anchor usage for diversity scoring
-     */
-    public function track_anchor_usage($anchor_text, $target_id) {
-        $usage = get_option($this->anchor_usage_option, array());
-        $key = strtolower($anchor_text) . '_' . $target_id;
-
-        if (!isset($usage[$key])) {
-            $usage[$key] = 0;
-        }
-        $usage[$key]++;
-
-        update_option($this->anchor_usage_option, $usage, false);
-    }
+    // v12.6.0: Removed get_anchor_diversity_penalty() and track_anchor_usage()
+    // These were never used - anchor diversity scoring was built but never integrated
 
     /**
      * Check if anchor length is optimal (2-4 words)
@@ -2277,28 +2248,8 @@ class LendCity_Smart_Linker {
         return min($score, 20);
     }
 
-    /**
-     * Build synonym map from catalog (for ownership map)
-     */
-    public function build_synonym_map() {
-        $catalog = $this->get_catalog();
-        $synonyms = array();
-
-        foreach ($catalog as $entry) {
-            $keywords = $entry['semantic_keywords'] ?? array();
-            foreach ($keywords as $kw) {
-                $kw_lower = strtolower($kw);
-                $syns = $this->get_keyword_synonyms($kw);
-                if (!empty($syns)) {
-                    $synonyms[$kw_lower] = $syns;
-                }
-            }
-        }
-
-        update_option($this->synonym_map_option, $synonyms, false);
-        $this->debug_log("Built synonym map: " . count($synonyms) . " keyword groups");
-        return $synonyms;
-    }
+    // v12.6.0: Removed build_synonym_map() - synonym map was built but never read/used
+    // Ownership map system was removed in v12.2.3
 
     /**
      * v12.2: Build compact catalog table for full site awareness
@@ -2477,8 +2428,18 @@ class LendCity_Smart_Linker {
 
     /**
      * Get link suggestions WITHOUT inserting (review mode)
+     * v12.6.1: Deprecated - local catalog removed, use Pinecone Audit Links instead
      */
     public function get_link_suggestions($target_id) {
+        // v12.6.1: Local catalog removed - this function is deprecated
+        // Use "Audit All Links" in Vector Smart Linker section instead
+        return array(
+            'success' => false,
+            'message' => 'Review mode deprecated in v12.6.1. Use "Audit All Links" in Vector Smart Linker section for Pinecone-powered link suggestions.',
+            'deprecated' => true
+        );
+
+        // Old code kept for reference but unreachable:
         $target = get_post($target_id);
         if (!$target) {
             return array('success' => false, 'message' => 'Target not found');
@@ -2677,8 +2638,7 @@ class LendCity_Smart_Linker {
         update_post_meta($post_id, $this->link_meta_key, $links);
         $this->clear_links_cache();
 
-        // v5.0: Track anchor usage for diversity scoring
-        $this->track_anchor_usage($anchor_text, $target_id);
+        // v12.6.0: Removed track_anchor_usage call (anchor diversity scoring was never integrated)
 
         $this->debug_log("Inserted link to {$target_url} in post {$post_id}");
 
@@ -2766,32 +2726,40 @@ class LendCity_Smart_Linker {
 
     /**
      * Initialize bulk queue
+     * v12.6.0: No longer depends on local catalog - queries WordPress directly
+     * Works with Pinecone as source of truth
      */
     public function init_bulk_queue($skip_with_links = true) {
-        $catalog = $this->get_catalog();
+        // v12.6.0: Query WordPress directly instead of relying on local catalog
+        // This works regardless of whether local catalog is built
+        $posts = get_posts(array(
+            'post_type' => 'post',  // Only posts, not pages (pages are link targets)
+            'post_status' => 'publish',
+            'posts_per_page' => -1,
+            'fields' => 'ids'
+        ));
+
         $queue_ids = array();
         $skipped = 0;
 
-        foreach ($catalog as $id => $entry) {
-            if ($entry['is_page']) continue;
-
+        foreach ($posts as $post_id) {
             if ($skip_with_links) {
                 // Check meta key first (fast)
-                $existing_links = $this->get_post_links($id);
+                $existing_links = $this->get_post_links($post_id);
                 if (!empty($existing_links)) {
                     $skipped++;
                     continue;
                 }
 
                 // Also check actual content for claude links (fallback)
-                $post = get_post($id);
+                $post = get_post($post_id);
                 if ($post && strpos($post->post_content, 'data-claude-link="1"') !== false) {
                     $skipped++;
                     continue;
                 }
             }
 
-            $queue_ids[] = $id;
+            $queue_ids[] = $post_id;
         }
 
         update_option($this->queue_option, $queue_ids, false);
@@ -2822,8 +2790,8 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Process queue batch - API MODE (v12.2.2)
-     * All link requests go through Claude API for intelligent linking
+     * Process queue batch - PINECONE MODE (v12.6.1)
+     * All link requests go through Pinecone external API
      */
     public function process_queue_batch() {
         // Use database-level lock for reliable concurrency control
@@ -2844,17 +2812,18 @@ class LendCity_Smart_Linker {
                 $status['completed_at'] = current_time('mysql');
                 update_option($this->queue_status_option, $status, false);
             }
-            $this->clear_catalog_cache(); // Clean up
             $this->release_lock('queue_processing');
             return array('complete' => true);
         }
 
-        // v12.2.5: Skip catalog preload - use streaming queries instead to save memory
-        // Each post processes independently with fresh DB queries
-        $this->clear_catalog_cache(); // Ensure clean slate
+        // v12.6.1: Use external Pinecone API - no local catalog fallback
+        $external_api = new LendCity_External_API();
+        if (!$external_api->is_configured()) {
+            $this->release_lock('queue_processing');
+            return array('complete' => false, 'message' => 'External API not configured. Please configure Pinecone API in settings.');
+        }
 
         $batch_size = isset($status['batch_size']) ? $status['batch_size'] : 1;
-        $fast_mode = isset($status['fast_mode']) ? $status['fast_mode'] : true;
         $processed = 0;
         $links = 0;
 
@@ -2867,25 +2836,26 @@ class LendCity_Smart_Linker {
             $status['last_activity'] = current_time('mysql');
             update_option($this->queue_status_option, $status, false);
 
-            // v12.2.2: ALWAYS use Claude API for intelligent linking
-            $result = $this->create_links_from_source($post_id);
-            $count = isset($result['links_created']) ? $result['links_created'] : 0;
-            $mode = 'api';
+            // v12.6.1: Use Pinecone external API for intelligent linking
+            $result = $external_api->auto_link_post($post_id);
 
             $status['processed']++;
             $processed++;
 
-            if ($result['success']) {
+            if (!is_wp_error($result) && isset($result['success']) && $result['success']) {
+                $count = isset($result['links_created']) ? $result['links_created'] : 0;
                 $status['links_created'] += $count;
                 $links += $count;
-                $this->log('Queue: Processed ' . $post_id . ' - ' . $count . ' links (' . $mode . ')');
+                $this->log('Queue: Processed ' . $post_id . ' - ' . $count . ' links (pinecone)');
             } else {
                 $status['errors']++;
+                $error_msg = is_wp_error($result) ? $result->get_error_message() : ($result['message'] ?? 'Unknown error');
+                $this->log('Queue: Error processing ' . $post_id . ' - ' . $error_msg);
             }
 
             update_option($this->queue_status_option, $status, false);
 
-            // v12.2.3: Memory cleanup between posts to prevent exhaustion
+            // Memory cleanup between posts
             unset($result);
             if (function_exists('gc_collect_cycles')) {
                 gc_collect_cycles();
@@ -2893,7 +2863,6 @@ class LendCity_Smart_Linker {
             wp_cache_flush();
         }
 
-        $this->clear_catalog_cache(); // Clean up memory
         $this->release_lock('queue_processing');
 
         if (empty($queue)) {
@@ -3035,160 +3004,53 @@ class LendCity_Smart_Linker {
     }
 
     // =========================================================================
-    // v12.0 BACKGROUND QUEUE PROCESSING (Runs without browser)
+    // v12.6.1: BACKGROUND QUEUE PROCESSING - Local catalog deprecated
+    // Use Pinecone "Rebuild Catalog" in Vector Smart Linker section
     // =========================================================================
 
     /**
-     * Initialize catalog build queue for background processing
+     * v12.6.1: Deprecated - local catalog building removed
+     * Use Pinecone "Rebuild Catalog" instead
      */
     public function init_catalog_queue($post_types = array('post', 'page')) {
-        // Get all published posts/pages
-        $args = array(
-            'post_type' => $post_types,
-            'post_status' => 'publish',
-            'posts_per_page' => -1,
-            'fields' => 'ids'
+        return array(
+            'success' => false,
+            'message' => 'Local catalog building deprecated in v12.6.1. Use "Rebuild Catalog" in Vector Smart Linker section to sync to Pinecone.'
         );
-        $posts = get_posts($args);
-
-        if (empty($posts)) {
-            return array('success' => false, 'message' => 'No posts found');
-        }
-
-        // Save queue
-        update_option($this->catalog_queue_option, $posts, false);
-
-        // Initialize status
-        $status = array(
-            'state' => 'running',
-            'total' => count($posts),
-            'processed' => 0,
-            'errors' => 0,
-            'started_at' => current_time('mysql'),
-            'last_activity' => current_time('mysql'),
-            'current_post' => ''
-        );
-        update_option($this->catalog_queue_status_option, $status, false);
-
-        // Schedule cron if not already scheduled
-        if (!wp_next_scheduled('lendcity_process_catalog_queue')) {
-            wp_schedule_event(time(), 'every_minute', 'lendcity_process_catalog_queue');
-        }
-
-        $this->debug_log('Catalog queue initialized: ' . count($posts) . ' posts');
-
-        return array('success' => true, 'total' => count($posts));
     }
 
     /**
-     * Process catalog queue batch - runs via WP Cron (no browser needed)
+     * v12.6.1: Deprecated - local catalog building removed
+     * Use Pinecone "Rebuild Catalog" instead
      */
     public function process_catalog_queue_batch() {
-        // Use database-level lock for reliable concurrency control
-        if (!$this->acquire_lock('catalog_queue_processing', 0)) {
-            return array('complete' => false, 'message' => 'Already processing');
-        }
-
-        if (function_exists('set_time_limit')) {
-            @set_time_limit(300);
-        }
-
-        $queue = get_option($this->catalog_queue_option, array());
-        $status = get_option($this->catalog_queue_status_option, array());
-
-        if (empty($queue)) {
-            // Queue complete
-            if (isset($status['state']) && $status['state'] === 'running') {
-                $status['state'] = 'complete';
-                $status['completed_at'] = current_time('mysql');
-                update_option($this->catalog_queue_status_option, $status, false);
-
-                // Build semantic indexes after catalog complete
-                $this->build_semantic_indexes();
-            }
-            wp_clear_scheduled_hook('lendcity_process_catalog_queue');
-            $this->release_lock('catalog_queue_processing');
-            $this->debug_log('Catalog queue complete');
-            return array('complete' => true);
-        }
-
-        // Process batch of 3 posts (balance speed vs API limits)
-        $batch_size = 3;
-        $processed = 0;
-
-        while ($processed < $batch_size && !empty($queue)) {
-            $post_id = array_shift($queue);
-            update_option($this->catalog_queue_option, $queue, false);
-
-            $post = get_post($post_id);
-            if (!$post) {
-                $status['errors']++;
-                continue;
-            }
-
-            $status['current_post'] = $post->post_title;
-            $status['last_activity'] = current_time('mysql');
-            update_option($this->catalog_queue_status_option, $status, false);
-
-            // Build catalog entry for this post
-            $result = $this->build_single_catalog_entry($post_id);
-
-            if ($result['success']) {
-                $status['processed']++;
-                $this->debug_log('Catalog: Added ' . $post->post_title);
-            } else {
-                $status['errors']++;
-                $this->debug_log('Catalog: Failed ' . $post->post_title . ' - ' . ($result['message'] ?? 'Unknown error'));
-            }
-
-            update_option($this->catalog_queue_status_option, $status, false);
-            $processed++;
-
-            // Small delay to avoid API rate limits
-            usleep(500000); // 0.5 second
-        }
-
-        $this->release_lock('catalog_queue_processing');
-
-        if (empty($queue)) {
-            $status['state'] = 'complete';
-            $status['completed_at'] = current_time('mysql');
-            $status['current_post'] = '';
-            update_option($this->catalog_queue_status_option, $status, false);
-            wp_clear_scheduled_hook('lendcity_process_catalog_queue');
-
-            // Build semantic indexes
-            $this->build_semantic_indexes();
-
-            $this->debug_log('Catalog queue complete - ' . $status['processed'] . ' entries');
-            return array('complete' => true, 'processed' => $status['processed']);
-        }
-
-        return array('complete' => false, 'remaining' => count($queue), 'processed' => $processed);
+        // Clear any stale queue data
+        wp_clear_scheduled_hook('lendcity_process_catalog_queue');
+        return array('complete' => true, 'message' => 'Local catalog queue deprecated - using Pinecone');
     }
 
     /**
      * Get catalog queue status
+     * v12.6.1: Returns idle since local catalog is deprecated
      */
     public function get_catalog_queue_status() {
-        $queue = get_option($this->catalog_queue_option, array());
-        $status = get_option($this->catalog_queue_status_option, array());
-
         return array(
-            'state' => $status['state'] ?? 'idle',
-            'total' => $status['total'] ?? 0,
-            'processed' => $status['processed'] ?? 0,
-            'remaining' => is_array($queue) ? count($queue) : 0,
-            'errors' => $status['errors'] ?? 0,
-            'current_post' => $status['current_post'] ?? '',
-            'started_at' => $status['started_at'] ?? '',
-            'last_activity' => $status['last_activity'] ?? '',
-            'completed_at' => $status['completed_at'] ?? ''
+            'state' => 'idle',
+            'status' => 'idle',
+            'total' => 0,
+            'processed' => 0,
+            'remaining' => 0,
+            'errors' => 0,
+            'current_post' => '',
+            'started_at' => '',
+            'last_activity' => '',
+            'completed_at' => ''
         );
     }
 
     /**
      * Clear catalog queue
+     * v12.6.1: Just clears any stale data
      */
     public function clear_catalog_queue() {
         delete_option($this->catalog_queue_option);
@@ -4064,8 +3926,9 @@ class LendCity_Smart_Linker {
             return new WP_Error('not_found', 'Post not found');
         }
 
-        // 1. Get catalog entry for this post (enriched data)
-        $catalog_entry = $this->get_catalog_entry($post_id);
+        // v12.6.1: Local catalog removed - metadata from Pinecone not available here
+        // SEO metadata generation works with link data and content analysis only
+        $catalog_entry = null;
 
         // 2. Get all inbound link anchor texts (what other posts use to link TO this)
         $inbound_anchors = $this->get_inbound_anchors($post_id);

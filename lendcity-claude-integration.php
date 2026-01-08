@@ -1116,16 +1116,22 @@ class LendCity_Claude_Integration {
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Permission denied');
         }
-        
+
         $source_id = intval($_POST['source_id']);
-        
-        $smart_linker = new LendCity_Smart_Linker();
-        $result = $smart_linker->create_links_from_source($source_id);
-        
-        if ($result['success']) {
+
+        // v12.6.1: Use Pinecone external API instead of local catalog
+        $external_api = new LendCity_External_API();
+        if (!$external_api->is_configured()) {
+            wp_send_json_error('External API not configured. Please configure Pinecone API in settings.');
+        }
+
+        $result = $external_api->auto_link_post($source_id);
+
+        if (!is_wp_error($result) && isset($result['success']) && $result['success']) {
             wp_send_json_success($result);
         } else {
-            wp_send_json_error($result['message']);
+            $error_msg = is_wp_error($result) ? $result->get_error_message() : ($result['message'] ?? 'Unknown error');
+            wp_send_json_error($error_msg);
         }
     }
     
