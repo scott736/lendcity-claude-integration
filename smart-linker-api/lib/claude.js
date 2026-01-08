@@ -159,9 +159,13 @@ async function analyzeContentForLinking(content, candidates, options = {}) {
   const client = getClient();
   const { maxLinks = 5, existingLinks = [] } = options;
 
-  const candidateList = candidates.map((c, i) =>
-    `${i}. "${c.title}" (${c.url}) - Topic: ${c.topicCluster} - Score: ${c.score}`
-  ).join('\n');
+  const candidateList = candidates.map((c, i) => {
+    const summary = c.summary ? `\n   Summary: ${c.summary}` : '';
+    const topics = c.mainTopics?.length ? `\n   Topics: ${c.mainTopics.join(', ')}` : '';
+    const keywords = c.semanticKeywords?.length ? `\n   Keywords: ${c.semanticKeywords.slice(0, 10).join(', ')}` : '';
+    return `${i}. "${c.title}" (${c.url})
+   Cluster: ${c.topicCluster || 'general'} | Funnel: ${c.funnelStage || 'awareness'} | Score: ${c.score}${summary}${topics}${keywords}`;
+  }).join('\n\n');
 
   const existingList = existingLinks.length > 0
     ? `\nEXISTING LINKS ALREADY IN CONTENT (do not duplicate these):\n${existingLinks.map(l => `- "${l.anchor}" -> ${l.url}`).join('\n')}`
@@ -180,6 +184,11 @@ CANDIDATE ARTICLES TO LINK TO (ranked by relevance score):
 ${candidateList}
 
 TASK: Select up to ${maxLinks} articles to link from this content.
+
+USE THE SUMMARIES AND TOPICS to understand what each target article covers. Choose links where:
+1. The target article's content genuinely expands on what's mentioned in the source
+2. The anchor phrase relates to the target's summary/topics
+3. The link would help readers learn more about that specific topic
 
 CRITICAL REQUIREMENT - ANCHOR TEXT MUST BE EXACT PHRASES:
 - The anchorText MUST be an EXACT phrase that already exists VERBATIM in the article content above
@@ -255,10 +264,17 @@ IMPORTANT: Before returning, verify each anchorText appears EXACTLY in the conte
  */
 async function generateSummary(content, options = {}) {
   const client = getClient();
-  const { maxLength = 300 } = options;
+  const { maxLength = 800 } = options;
 
   const prompt = `Summarize this real estate article in ${maxLength} characters or less.
-Focus on the main topic, key takeaways, and who it's for.
+
+Include:
+1. Main topic and thesis
+2. Key strategies, concepts, or advice covered
+3. Target audience (new investors, experienced investors, etc.)
+4. Specific subtopics discussed (e.g., financing, cash flow, markets mentioned)
+
+This summary will be used for smart internal linking, so include specific details that help match this article to related content.
 
 FULL ARTICLE CONTENT:
 ${content}
@@ -267,7 +283,7 @@ Return only the summary, no quotes or labels.`;
 
   const response = await client.messages.create({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 150,
+    max_tokens: 300,
     messages: [{ role: 'user', content: prompt }]
   });
 
