@@ -267,19 +267,12 @@ class LendCity_External_API {
             'updatedAt' => $post->post_modified
         ];
 
-        $result = $this->request('api/catalog-sync', $data);
-
-        // Update WordPress catalog with sync status
-        if (!is_wp_error($result)) {
-            $this->update_wp_catalog($post_id, $result);
-        }
-
-        return $result;
+        return $this->request('api/catalog-sync', $data);
     }
 
     /**
      * Batch sync multiple articles to Pinecone
-     * v6.0: NEW - much faster than individual syncs
+     * v6.0: Much faster than individual syncs
      *
      * @param array $post_ids Array of post IDs to sync
      * @return array|WP_Error Results or error
@@ -312,89 +305,18 @@ class LendCity_External_API {
             return ['success' => true, 'processed' => 0];
         }
 
-        // Send batch request
-        $result = $this->request('api/catalog-sync-batch', ['articles' => $articles], 'POST', $this->batch_timeout);
-
-        // Update WordPress catalog with sync status for successful items
-        if (!is_wp_error($result) && !empty($result['details'])) {
-            foreach ($result['details'] as $detail) {
-                if ($detail['status'] === 'success') {
-                    $this->update_wp_catalog($detail['postId'], $detail);
-                }
-            }
-        }
-
-        return $result;
+        // Send batch request - Pinecone is the only data store
+        return $this->request('api/catalog-sync-batch', ['articles' => $articles], 'POST', $this->batch_timeout);
     }
 
     /**
-     * Update WordPress catalog with sync result
-     * v6.0: Only stores minimal data (pillar flag, topic cluster, sync status)
-     * NOTE: This is OPTIONAL - Pinecone is the source of truth
-     *
-     * @param int $post_id Post ID
-     * @param array $sync_result Result from Pinecone sync
-     */
-    private function update_wp_catalog($post_id, $sync_result) {
-        global $wpdb;
-        $table_name = $wpdb->prefix . 'lendcity_smart_linker_catalog';
-
-        // v6.0: Check if table exists - skip if not (Pinecone is source of truth)
-        $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$table_name}'") === $table_name;
-        if (!$table_exists) {
-            // Table doesn't exist - that's OK, Pinecone has the data
-            return;
-        }
-
-        // Check if synced_to_pinecone column exists (for older table schemas)
-        $columns = $wpdb->get_col("SHOW COLUMNS FROM {$table_name}", 0);
-        $has_sync_column = in_array('synced_to_pinecone', $columns);
-
-        $data = [
-            'post_id' => $post_id,
-            'is_pillar_content' => (bool) get_post_meta($post_id, '_lendcity_is_pillar', true) ? 1 : 0,
-            'topic_cluster' => $sync_result['metadata']['topicCluster'] ?? null,
-            'updated_at' => current_time('mysql')
-        ];
-
-        // Only include synced_to_pinecone if column exists
-        if ($has_sync_column) {
-            $data['synced_to_pinecone'] = 1;
-        }
-
-        // Check if exists
-        $existing = $wpdb->get_var($wpdb->prepare(
-            "SELECT id FROM {$table_name} WHERE post_id = %d",
-            $post_id
-        ));
-
-        if ($existing) {
-            $wpdb->update($table_name, $data, ['post_id' => $post_id]);
-        } else {
-            $wpdb->insert($table_name, $data);
-        }
-    }
-
-    /**
-     * Delete article from external catalog
+     * Delete article from Pinecone catalog
      *
      * @param int $post_id Post ID
      * @return array|WP_Error Result or error
      */
     public function delete_from_catalog($post_id) {
-        $result = $this->request('api/catalog-sync', ['postId' => $post_id], 'DELETE');
-
-        // Remove from WordPress catalog too (if table exists)
-        if (!is_wp_error($result)) {
-            global $wpdb;
-            $table_name = $wpdb->prefix . 'lendcity_smart_linker_catalog';
-            $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$table_name}'") === $table_name;
-            if ($table_exists) {
-                $wpdb->delete($table_name, ['post_id' => $post_id]);
-            }
-        }
-
-        return $result;
+        return $this->request('api/catalog-sync', ['postId' => $post_id], 'DELETE');
     }
 
     /**
