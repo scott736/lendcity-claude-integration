@@ -486,21 +486,28 @@ add_action('wp_ajax_lendcity_rebuild_catalog', 'lendcity_rebuild_catalog');
 add_action('wp_ajax_lendcity_bulk_sync_catalog', 'lendcity_rebuild_catalog');
 
 function lendcity_rebuild_catalog() {
+    // Debug: Log that we reached this function
+    error_log('LendCity: rebuild_catalog STARTED');
+
     check_ajax_referer('lendcity_bulk_sync', 'nonce');
+    error_log('LendCity: nonce verified');
 
     if (!current_user_can('manage_options')) {
         wp_send_json_error(['message' => 'Unauthorized']);
     }
+    error_log('LendCity: user authorized');
 
     // Increase limits for bulk operation
     @set_time_limit(300);
     @ini_set('memory_limit', '512M');
 
     try {
+        error_log('LendCity: creating API instance');
         $api = new LendCity_External_API();
         if (!$api->is_configured()) {
             wp_send_json_error(['message' => 'External API not configured']);
         }
+        error_log('LendCity: API configured');
     } catch (Exception $e) {
         wp_send_json_error(['message' => 'API init error: ' . $e->getMessage()]);
     }
