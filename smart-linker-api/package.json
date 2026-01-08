@@ -1,0 +1,22 @@
+{
+  "name": "lendcity-smart-linker-api",
+  "version": "1.0.0",
+  "description": "Vector-based smart linking API for LendCity",
+  "scripts": {
+    "dev": "vercel dev",
+    "deploy": "vercel --prod",
+    "migrate": "node scripts/migrate-catalog.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.24.0",
+    "@pinecone-database/pinecone": "^2.0.0",
+    "openai": "^4.28.0"
+  },
+  "devDependencies": {
+    "vercel": "^33.0.0",
+    "dotenv": "^16.4.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

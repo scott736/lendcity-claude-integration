@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "framework": null,
+  "functions": {
+    "api/**/*.js": {
+      "maxDuration": 60
+    }
+  },
+  "env": {
+    "PINECONE_API_KEY": "@pinecone-api-key",
+    "PINECONE_INDEX": "@pinecone-index",
+    "OPENAI_API_KEY": "@openai-api-key",
+    "ANTHROPIC_API_KEY": "@anthropic-api-key",
+    "API_SECRET_KEY": "@api-secret-key"
+  }
+}

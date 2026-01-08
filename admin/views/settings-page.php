@@ -12,6 +12,9 @@ $unsplash_key = get_option('lendcity_unsplash_api_key', '');
 $tinypng_key = get_option('lendcity_tinypng_api_key', '');
 $auto_link = get_option('lendcity_smart_linker_auto', 'yes');
 $debug_mode = get_option('lendcity_debug_mode', 'no');
+$use_external_api = get_option('lendcity_use_external_api', 'no');
+$external_api_url = get_option('lendcity_external_api_url', '');
+$external_api_key = get_option('lendcity_external_api_key', '');
 
 $nonce = wp_create_nonce('lendcity_claude_nonce');
 ?>
@@ -81,7 +84,46 @@ $nonce = wp_create_nonce('lendcity_claude_nonce');
                 </td>
             </tr>
         </table>
-        
+
+        <h2>External Vector API (Optional)</h2>
+        <p class="description">Connect to an external Vercel-hosted API for vector-based smart linking. This provides faster, smarter linking using embeddings.</p>
+        <table class="form-table">
+            <tr>
+                <th scope="row">Enable External API</th>
+                <td>
+                    <label>
+                        <input type="checkbox" name="lendcity_use_external_api" value="yes" <?php checked($use_external_api, 'yes'); ?> id="use-external-api">
+                        Use external vector API instead of local catalog
+                    </label>
+                    <p class="description">When enabled, smart linking will use the external Pinecone-based API for faster, more intelligent results.</p>
+                </td>
+            </tr>
+            <tr class="external-api-settings" style="<?php echo $use_external_api !== 'yes' ? 'display:none;' : ''; ?>">
+                <th scope="row">API URL</th>
+                <td>
+                    <input type="url" name="lendcity_external_api_url" value="<?php echo esc_attr($external_api_url); ?>" class="regular-text" placeholder="https://your-app.vercel.app">
+                    <p class="description">Your Vercel deployment URL (e.g., https://lendcity-smart-linker.vercel.app)</p>
+                </td>
+            </tr>
+            <tr class="external-api-settings" style="<?php echo $use_external_api !== 'yes' ? 'display:none;' : ''; ?>">
+                <th scope="row">API Secret Key</th>
+                <td>
+                    <input type="password" name="lendcity_external_api_key" value="<?php echo esc_attr($external_api_key); ?>" class="regular-text" id="external-api-key-field">
+                    <button type="button" class="button" onclick="var f=document.getElementById('external-api-key-field'); f.type = f.type==='password'?'text':'password';">Show/Hide</button>
+                    <button type="button" class="button" id="test-external-api-btn">Test Connection</button>
+                    <span id="external-api-test-result" style="margin-left: 10px;"></span>
+                    <p class="description">The API_SECRET_KEY configured in your Vercel environment</p>
+                </td>
+            </tr>
+            <tr class="external-api-settings" style="<?php echo $use_external_api !== 'yes' ? 'display:none;' : ''; ?>">
+                <th scope="row">Catalog Migration</th>
+                <td>
+                    <p><strong>Export URL:</strong> <code><?php echo esc_url(rest_url('smart-linker/v1/export-catalog')); ?></code></p>
+                    <p class="description">Use this endpoint to export your catalog for migration to Pinecone. See the API documentation for the migration script.</p>
+                </td>
+            </tr>
+        </table>
+
         <?php submit_button(); ?>
     </form>
     
@@ -268,6 +310,40 @@ jQuery(document).ready(function($) {
 
         // Reset file input
         $(this).val('');
+    });
+
+    // External API toggle
+    $('#use-external-api').on('change', function() {
+        if ($(this).is(':checked')) {
+            $('.external-api-settings').show();
+        } else {
+            $('.external-api-settings').hide();
+        }
+    });
+
+    // Test External API
+    $('#test-external-api-btn').on('click', function() {
+        var $btn = $(this);
+        var $result = $('#external-api-test-result');
+
+        $btn.prop('disabled', true).text('Testing...');
+        $result.html('');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_action',
+            sub_action: 'test_external_api',
+            nonce: nonce
+        }, function(response) {
+            if (response.success) {
+                $result.html('<span style="color: green;">' + response.data + '</span>');
+            } else {
+                $result.html('<span style="color: red;">Error: ' + response.data + '</span>');
+            }
+            $btn.prop('disabled', false).text('Test Connection');
+        }).fail(function() {
+            $result.html('<span style="color: red;">Connection failed</span>');
+            $btn.prop('disabled', false).text('Test Connection');
+        });
     });
 });
 </script>

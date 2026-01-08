@@ -342,6 +342,8 @@ function lendcity_load_classes() {
     }
     require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-claude-api.php';
     require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-smart-linker.php';
+    require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-external-api.php';
+    require_once LENDCITY_CLAUDE_PLUGIN_DIR . 'includes/class-catalog-export.php';
     $loaded = true;
 }
 
@@ -504,6 +506,7 @@ class LendCity_Claude_Integration {
             // Settings
             'test_api' => 'ajax_test_api',
             'test_tinypng' => 'ajax_test_tinypng',
+            'test_external_api' => 'ajax_test_external_api',
 
             // Podcast
             'scan_transistor_embeds' => 'ajax_scan_transistor_embeds',
@@ -568,6 +571,11 @@ class LendCity_Claude_Integration {
         ));
         register_setting('lendcity_claude_settings', 'lendcity_smart_linker_auto');
         register_setting('lendcity_claude_settings', 'lendcity_debug_mode');
+
+        // External Vector API settings
+        register_setting('lendcity_claude_settings', 'lendcity_use_external_api');
+        register_setting('lendcity_claude_settings', 'lendcity_external_api_url');
+        register_setting('lendcity_claude_settings', 'lendcity_external_api_key');
 
         // Podcast webhook settings - SEPARATE group to avoid overwriting API keys
         // NOTE: Webhook secret is NOT registered - it's managed separately via AJAX only
@@ -4159,6 +4167,39 @@ class LendCity_Claude_Integration {
             wp_send_json_error('Monthly limit exceeded');
         } else {
             wp_send_json_error('Unexpected response: ' . $code);
+        }
+    }
+
+    /**
+     * Test external vector API connection
+     */
+    public function ajax_test_external_api() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $api = new LendCity_External_API();
+        if (!$api->is_configured()) {
+            wp_send_json_error('API URL or key not configured');
+        }
+
+        $health = $api->health_check();
+
+        if (is_wp_error($health)) {
+            wp_send_json_error($health->get_error_message());
+        }
+
+        if ($health['status'] === 'ok') {
+            $services = [];
+            foreach ($health['services'] as $name => $service) {
+                if ($service['status'] === 'ok') {
+                    $services[] = $name;
+                }
+            }
+            wp_send_json_success('Connected! Services: ' . implode(', ', $services));
+        } else {
+            wp_send_json_error('API status: ' . $health['status']);
         }
     }
 
