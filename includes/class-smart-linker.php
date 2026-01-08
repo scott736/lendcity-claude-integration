@@ -1240,6 +1240,7 @@ class LendCity_Smart_Linker {
 
     /**
      * Background task: Catalog and link a newly published post
+     * v12.6.1: Updated to use Pinecone external API instead of local catalog
      */
     public function process_new_post_auto_link($post_id) {
         // Use database-level lock for this specific post
@@ -1262,17 +1263,21 @@ class LendCity_Smart_Linker {
             return;
         }
 
-        // Build catalog entry for this post
-        $entry = $this->build_single_post_catalog($post_id);
-        if ($entry) {
-            $this->insert_catalog_entry($post_id, $entry);
-            $this->debug_log('Added post ' . $post_id . ' to catalog');
+        // v12.6.1: Use Pinecone external API for intelligent linking
+        $external_api = new LendCity_External_API();
+        if (!$external_api->is_configured()) {
+            $this->log('Auto-link skipped for post ' . $post_id . ' - External API not configured');
+            $this->release_lock($lock_name);
+            return;
         }
 
-        // v12.2.2: ALWAYS use Claude API for intelligent linking (ownership map removed)
-        $result = $this->create_links_from_source($post_id);
-        $this->log('Auto-link result for post ' . $post_id . ' - ' .
-            ($result['success'] ? 'Success: ' . ($result['links_created'] ?? 0) . ' links' : $result['message']));
+        $result = $external_api->auto_link_post($post_id);
+        if (!is_wp_error($result) && isset($result['success']) && $result['success']) {
+            $this->log('Auto-link result for post ' . $post_id . ' - Success: ' . ($result['links_created'] ?? 0) . ' links (pinecone)');
+        } else {
+            $error_msg = is_wp_error($result) ? $result->get_error_message() : ($result['message'] ?? 'Unknown error');
+            $this->log('Auto-link result for post ' . $post_id . ' - Error: ' . $error_msg);
+        }
 
         // Always auto-generate SEO metadata if post doesn't have it
         $existing_title = get_post_meta($post_id, '_seopress_titles_title', true);
@@ -2421,8 +2426,18 @@ class LendCity_Smart_Linker {
 
     /**
      * Get link suggestions WITHOUT inserting (review mode)
+     * v12.6.1: Deprecated - local catalog removed, use Pinecone Audit Links instead
      */
     public function get_link_suggestions($target_id) {
+        // v12.6.1: Local catalog removed - this function is deprecated
+        // Use "Audit All Links" in Vector Smart Linker section instead
+        return array(
+            'success' => false,
+            'message' => 'Review mode deprecated in v12.6.1. Use "Audit All Links" in Vector Smart Linker section for Pinecone-powered link suggestions.',
+            'deprecated' => true
+        );
+
+        // Old code kept for reference but unreachable:
         $target = get_post($target_id);
         if (!$target) {
             return array('success' => false, 'message' => 'Target not found');
