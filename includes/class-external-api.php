@@ -178,7 +178,21 @@ class LendCity_External_API {
         $link_meta = get_post_meta($post_id, '_lendcity_smart_links', true) ?: [];
         $updated_content = $content;
 
-        foreach ($suggestions['links'] as $suggestion) {
+        // RULE: Sort suggestions to prefer pages over posts
+        $sorted_suggestions = $suggestions['links'];
+        usort($sorted_suggestions, function($a, $b) {
+            $a_is_page = isset($a['postType']) && $a['postType'] === 'page';
+            $b_is_page = isset($b['postType']) && $b['postType'] === 'page';
+            if ($a_is_page && !$b_is_page) return -1;
+            if (!$a_is_page && $b_is_page) return 1;
+            // If same type, sort by score
+            return ($b['score'] ?? 0) - ($a['score'] ?? 0);
+        });
+
+        // Track which paragraphs already have links (for one-link-per-paragraph rule)
+        $paragraphs_with_links = [];
+
+        foreach ($sorted_suggestions as $suggestion) {
             if (empty($suggestion['anchorText']) || empty($suggestion['url'])) {
                 continue;
             }
@@ -196,6 +210,39 @@ class LendCity_External_API {
             }
             if ($already_linked) continue;
 
+            // RULE: One link per paragraph - find which paragraph contains this anchor
+            // Split content into paragraphs and check if anchor's paragraph already has a link
+            $anchor_position = stripos($updated_content, $anchor);
+            if ($anchor_position !== false) {
+                // Find the paragraph boundaries (look for </p> or double newlines)
+                $para_start = strrpos(substr($updated_content, 0, $anchor_position), '<p');
+                if ($para_start === false) {
+                    $para_start = strrpos(substr($updated_content, 0, $anchor_position), "\n\n");
+                }
+                $para_start = $para_start !== false ? $para_start : 0;
+
+                $para_end = strpos($updated_content, '</p>', $anchor_position);
+                if ($para_end === false) {
+                    $para_end = strpos($updated_content, "\n\n", $anchor_position);
+                }
+                $para_end = $para_end !== false ? $para_end : strlen($updated_content);
+
+                // Create a unique key for this paragraph
+                $para_key = $para_start . '-' . $para_end;
+
+                // Check if this paragraph already has a link added in this session
+                if (in_array($para_key, $paragraphs_with_links)) {
+                    continue; // Skip - one link per paragraph rule
+                }
+
+                // Also check if the paragraph already contains any <a> tag
+                $para_content = substr($updated_content, $para_start, $para_end - $para_start);
+                if (preg_match('/<a\s+[^>]*href/i', $para_content)) {
+                    $paragraphs_with_links[] = $para_key; // Mark as having a link
+                    continue; // Skip - paragraph already has a link
+                }
+            }
+
             // Find and replace anchor text with link (first occurrence only)
             $pattern = '/(?<!["\'>])(' . preg_quote($anchor, '/') . ')(?![^<]*>)(?![^<]*<\/a>)/i';
             $replacement = '<a href="' . esc_url($url) . '">' . $anchor . '</a>';
@@ -212,6 +259,11 @@ class LendCity_External_API {
                     'created' => current_time('mysql')
                 ];
                 $links_created++;
+
+                // Mark this paragraph as having a link
+                if (isset($para_key)) {
+                    $paragraphs_with_links[] = $para_key;
+                }
             }
         }
 
