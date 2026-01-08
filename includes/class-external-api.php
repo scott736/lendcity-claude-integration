@@ -2,8 +2,8 @@
 /**
  * External Smart Linker API Client
  *
- * Handles communication with the Vercel-hosted vector API.
- * This replaces local catalog queries with external API calls.
+ * v6.0: Optimized for speed with batch operations
+ * All metadata now lives in Pinecone - WordPress only stores pillar flags
  *
  * @package LendCity_Claude_Integration
  */
@@ -30,6 +30,11 @@ class LendCity_External_API {
     private $timeout = 30;
 
     /**
+     * Batch timeout (longer for bulk operations)
+     */
+    private $batch_timeout = 120;
+
+    /**
      * Constructor
      */
     public function __construct() {
@@ -47,7 +52,7 @@ class LendCity_External_API {
     /**
      * Make API request
      */
-    private function request($endpoint, $data = [], $method = 'POST') {
+    private function request($endpoint, $data = [], $method = 'POST', $timeout = null) {
         if (!$this->is_configured()) {
             return new WP_Error('not_configured', 'External API not configured');
         }
@@ -56,7 +61,7 @@ class LendCity_External_API {
 
         $args = [
             'method' => $method,
-            'timeout' => $this->timeout,
+            'timeout' => $timeout ?? $this->timeout,
             'headers' => [
                 'Content-Type' => 'application/json',
                 'Authorization' => 'Bearer ' . $this->api_key
@@ -89,6 +94,7 @@ class LendCity_External_API {
 
     /**
      * Get smart link suggestions for content
+     * v6.0: Simplified - no WordPress catalog lookup needed
      *
      * @param int $post_id Post ID
      * @param string $content HTML content
@@ -101,18 +107,12 @@ class LendCity_External_API {
             return new WP_Error('invalid_post', 'Post not found');
         }
 
-        // Get catalog data if available
-        $catalog_entry = $this->get_catalog_entry($post_id);
-
+        // v6.0: Only pass post meta (Pinecone has the full metadata)
         $data = [
             'postId' => $post_id,
             'content' => $content,
             'title' => $post->post_title,
-            'topicCluster' => $catalog_entry['topic_cluster'] ?? get_post_meta($post_id, 'topic_cluster', true) ?: '',
-            'relatedClusters' => $catalog_entry['related_clusters'] ?? get_post_meta($post_id, 'related_clusters', true) ?: [],
-            'funnelStage' => $catalog_entry['funnel_stage'] ?? get_post_meta($post_id, 'funnel_stage', true) ?: '',
-            'targetPersona' => $catalog_entry['target_persona'] ?? get_post_meta($post_id, 'target_persona', true) ?: '',
-            'difficultyLevel' => $catalog_entry['difficulty_level'] ?? 'intermediate',
+            'topicCluster' => get_post_meta($post_id, 'topic_cluster', true) ?: '',
             'maxLinks' => $options['max_links'] ?? 5,
             'minScore' => $options['min_score'] ?? 40,
             'useClaudeAnalysis' => $options['use_claude'] ?? true,
@@ -142,7 +142,6 @@ class LendCity_External_API {
         }
 
         // Get link suggestions from external API
-        // Max links is configurable via settings (default 5)
         $max_links = (int) get_option('lendcity_max_links_per_article', 5);
         $content = $post->post_content;
         $suggestions = $this->get_smart_links($post_id, $content, [
@@ -156,7 +155,7 @@ class LendCity_External_API {
             return $suggestions;
         }
 
-        if (empty($suggestions['suggestions'])) {
+        if (empty($suggestions['links'])) {
             return ['success' => true, 'message' => 'No link opportunities found', 'links_created' => 0];
         }
 
@@ -165,13 +164,13 @@ class LendCity_External_API {
         $link_meta = get_post_meta($post_id, '_lendcity_smart_links', true) ?: [];
         $updated_content = $content;
 
-        foreach ($suggestions['suggestions'] as $suggestion) {
-            if (empty($suggestion['anchorText']) || empty($suggestion['targetUrl'])) {
+        foreach ($suggestions['links'] as $suggestion) {
+            if (empty($suggestion['anchorText']) || empty($suggestion['url'])) {
                 continue;
             }
 
             $anchor = $suggestion['anchorText'];
-            $url = $suggestion['targetUrl'];
+            $url = $suggestion['url'];
 
             // Skip if already linked to this URL
             $already_linked = false;
@@ -194,7 +193,7 @@ class LendCity_External_API {
                 $link_meta[] = [
                     'anchor' => $anchor,
                     'url' => $url,
-                    'target_id' => $suggestion['targetPostId'] ?? 0,
+                    'target_id' => $suggestion['postId'] ?? 0,
                     'score' => $suggestion['score'] ?? 0,
                     'created' => current_time('mysql')
                 ];
@@ -214,7 +213,7 @@ class LendCity_External_API {
         return [
             'success' => true,
             'links_created' => $links_created,
-            'suggestions_count' => count($suggestions['suggestions'])
+            'suggestions_count' => count($suggestions['links'])
         ];
     }
 
@@ -235,7 +234,6 @@ class LendCity_External_API {
             'postId' => $post_id,
             'title' => $post->post_title,
             'content' => $post->post_content,
-            'summary' => get_post_meta($post_id, 'summary', true),
             'topicCluster' => get_post_meta($post_id, 'topic_cluster', true),
             'focusKeyword' => $options['focus_keyword'] ?? null
         ];
@@ -244,7 +242,8 @@ class LendCity_External_API {
     }
 
     /**
-     * Sync article to external catalog
+     * Sync article to external catalog (Pinecone)
+     * v6.0: Sends raw content - Pinecone/Claude generates metadata
      *
      * @param int $post_id Post ID
      * @return array|WP_Error Result or error
@@ -255,10 +254,7 @@ class LendCity_External_API {
             return new WP_Error('invalid_post', 'Post not found');
         }
 
-        // Try to get data from WordPress catalog first (has Claude-analyzed metadata)
-        $catalog_entry = $this->get_catalog_entry($post_id);
-
-        // Build data array, preferring catalog data over post meta
+        // v6.0: Send minimal data - Pinecone API will auto-analyze with Claude
         $data = [
             'postId' => $post_id,
             'title' => $post->post_title,
@@ -266,56 +262,101 @@ class LendCity_External_API {
             'slug' => $post->post_name,
             'content' => $post->post_content,
             'contentType' => $post->post_type,
-            'topicCluster' => $catalog_entry['topic_cluster'] ?? get_post_meta($post_id, 'topic_cluster', true) ?: '',
-            'relatedClusters' => $catalog_entry['related_clusters'] ?? get_post_meta($post_id, 'related_clusters', true) ?: [],
-            'funnelStage' => $catalog_entry['funnel_stage'] ?? get_post_meta($post_id, 'funnel_stage', true) ?: '',
-            'targetPersona' => $catalog_entry['target_persona'] ?? get_post_meta($post_id, 'target_persona', true) ?: '',
-            'difficultyLevel' => $catalog_entry['difficulty_level'] ?? get_post_meta($post_id, 'difficulty_level', true) ?: 'intermediate',
-            'qualityScore' => (int) ($catalog_entry['content_quality_score'] ?? get_post_meta($post_id, 'content_quality_score', true) ?: 50),
-            'contentLifespan' => $catalog_entry['content_lifespan'] ?? get_post_meta($post_id, 'content_lifespan', true) ?: 'evergreen',
-            'isPillar' => (bool) ($catalog_entry['is_pillar_content'] ?? get_post_meta($post_id, '_lendcity_is_pillar', true) ?: false),
-            'summary' => $catalog_entry['summary'] ?? get_post_meta($post_id, 'summary', true) ?: '',
-            'mainTopics' => $catalog_entry['main_topics'] ?? [],
-            'semanticKeywords' => $catalog_entry['semantic_keywords'] ?? [],
+            'isPillar' => (bool) get_post_meta($post_id, '_lendcity_is_pillar', true),
             'publishedAt' => $post->post_date,
             'updatedAt' => $post->post_modified
         ];
 
-        return $this->request('api/catalog-sync', $data);
+        $result = $this->request('api/catalog-sync', $data);
+
+        // Update WordPress catalog with sync status
+        if (!is_wp_error($result)) {
+            $this->update_wp_catalog($post_id, $result);
+        }
+
+        return $result;
     }
 
     /**
-     * Get catalog entry from WordPress database
+     * Batch sync multiple articles to Pinecone
+     * v6.0: NEW - much faster than individual syncs
      *
-     * @param int $post_id Post ID
-     * @return array|null Catalog entry or null if not found
+     * @param array $post_ids Array of post IDs to sync
+     * @return array|WP_Error Results or error
      */
-    private function get_catalog_entry($post_id) {
-        global $wpdb;
-        $table_name = $wpdb->prefix . 'lendcity_smart_linker_catalog';
-
-        $row = $wpdb->get_row($wpdb->prepare(
-            "SELECT * FROM {$table_name} WHERE post_id = %d",
-            $post_id
-        ), ARRAY_A);
-
-        if (!$row) {
-            return null;
+    public function batch_sync_to_catalog($post_ids) {
+        if (empty($post_ids)) {
+            return ['success' => true, 'processed' => 0];
         }
 
-        return [
-            'topic_cluster' => $row['topic_cluster'] ?? null,
-            'related_clusters' => json_decode($row['related_clusters'] ?? '[]', true) ?: [],
-            'funnel_stage' => $row['funnel_stage'] ?? null,
-            'target_persona' => $row['target_persona'] ?? null,
-            'difficulty_level' => $row['difficulty_level'] ?? 'intermediate',
-            'content_quality_score' => (int) ($row['content_quality_score'] ?? 50),
-            'content_lifespan' => $row['content_lifespan'] ?? 'evergreen',
-            'is_pillar_content' => (bool) ($row['is_pillar_content'] ?? 0),
-            'summary' => $row['summary'] ?? '',
-            'main_topics' => json_decode($row['main_topics'] ?? '[]', true) ?: [],
-            'semantic_keywords' => json_decode($row['semantic_keywords'] ?? '[]', true) ?: []
+        // Build articles array
+        $articles = [];
+        foreach ($post_ids as $post_id) {
+            $post = get_post($post_id);
+            if (!$post) continue;
+
+            $articles[] = [
+                'postId' => $post_id,
+                'title' => $post->post_title,
+                'url' => get_permalink($post_id),
+                'slug' => $post->post_name,
+                'content' => $post->post_content,
+                'contentType' => $post->post_type,
+                'isPillar' => (bool) get_post_meta($post_id, '_lendcity_is_pillar', true),
+                'publishedAt' => $post->post_date,
+                'updatedAt' => $post->post_modified
+            ];
+        }
+
+        if (empty($articles)) {
+            return ['success' => true, 'processed' => 0];
+        }
+
+        // Send batch request
+        $result = $this->request('api/catalog-sync-batch', ['articles' => $articles], 'POST', $this->batch_timeout);
+
+        // Update WordPress catalog with sync status for successful items
+        if (!is_wp_error($result) && !empty($result['details'])) {
+            foreach ($result['details'] as $detail) {
+                if ($detail['status'] === 'success') {
+                    $this->update_wp_catalog($detail['postId'], $detail);
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Update WordPress catalog with sync result
+     * v6.0: Only stores minimal data (pillar flag, topic cluster, sync status)
+     *
+     * @param int $post_id Post ID
+     * @param array $sync_result Result from Pinecone sync
+     */
+    private function update_wp_catalog($post_id, $sync_result) {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'lendcity_catalog';
+
+        $data = [
+            'post_id' => $post_id,
+            'is_pillar_content' => (bool) get_post_meta($post_id, '_lendcity_is_pillar', true) ? 1 : 0,
+            'topic_cluster' => $sync_result['metadata']['topicCluster'] ?? null,
+            'synced_to_pinecone' => 1,
+            'updated_at' => current_time('mysql')
         ];
+
+        // Check if exists
+        $existing = $wpdb->get_var($wpdb->prepare(
+            "SELECT id FROM {$table_name} WHERE post_id = %d",
+            $post_id
+        ));
+
+        if ($existing) {
+            $wpdb->update($table_name, $data, ['post_id' => $post_id]);
+        } else {
+            $wpdb->insert($table_name, $data);
+        }
     }
 
     /**
@@ -325,7 +366,16 @@ class LendCity_External_API {
      * @return array|WP_Error Result or error
      */
     public function delete_from_catalog($post_id) {
-        return $this->request('api/catalog-sync', ['postId' => $post_id], 'DELETE');
+        $result = $this->request('api/catalog-sync', ['postId' => $post_id], 'DELETE');
+
+        // Remove from WordPress catalog too
+        if (!is_wp_error($result)) {
+            global $wpdb;
+            $table_name = $wpdb->prefix . 'lendcity_catalog';
+            $wpdb->delete($table_name, ['post_id' => $post_id]);
+        }
+
+        return $result;
     }
 
     /**
@@ -344,15 +394,11 @@ class LendCity_External_API {
         // Extract existing links from content
         $existing_links = $this->extract_links_from_content($post->post_content);
 
-        // Get catalog data
-        $catalog_entry = $this->get_catalog_entry($post_id);
-
         $data = [
             'postId' => $post_id,
             'content' => $post->post_content,
             'title' => $post->post_title,
             'existingLinks' => $existing_links,
-            'topicCluster' => $catalog_entry['topic_cluster'] ?? '',
             'maxSuggestions' => 5
         ];
 
@@ -493,10 +539,10 @@ function lendcity_delete_on_remove($post_id) {
 
 /**
  * AJAX handler for rebuilding catalog (pillars first, then content)
- * This ensures pillar pages are in Pinecone before posts get cluster-matched
+ * v6.0: Uses BATCH operations for much faster sync
  */
 add_action('wp_ajax_lendcity_rebuild_catalog', 'lendcity_rebuild_catalog');
-add_action('wp_ajax_lendcity_bulk_sync_catalog', 'lendcity_rebuild_catalog'); // Alias for compatibility
+add_action('wp_ajax_lendcity_bulk_sync_catalog', 'lendcity_rebuild_catalog');
 
 function lendcity_rebuild_catalog() {
     check_ajax_referer('lendcity_bulk_sync', 'nonce');
@@ -518,6 +564,7 @@ function lendcity_rebuild_catalog() {
     ];
 
     // STEP 1: Sync pillar pages FIRST (they define topic clusters)
+    // Pillars sync individually to ensure they're in place before batch processing
     $pillar_pages = get_posts([
         'post_type' => 'page',
         'post_status' => 'publish',
@@ -551,7 +598,7 @@ function lendcity_rebuild_catalog() {
         }
     }
 
-    // STEP 2: Sync remaining pages (non-pillar)
+    // STEP 2: Batch sync remaining pages (non-pillar)
     $other_pages = get_posts([
         'post_type' => 'page',
         'post_status' => 'publish',
@@ -561,23 +608,15 @@ function lendcity_rebuild_catalog() {
 
     $results['pages']['total'] = count($other_pages);
 
-    foreach ($other_pages as $page) {
-        $result = $api->sync_to_catalog($page->ID);
-
-        if (is_wp_error($result)) {
-            $results['pages']['failed']++;
-            $results['errors'][] = [
-                'type' => 'page',
-                'postId' => $page->ID,
-                'title' => $page->post_title,
-                'error' => $result->get_error_message()
-            ];
-        } else {
-            $results['pages']['success']++;
-        }
+    if (!empty($other_pages)) {
+        $page_ids = wp_list_pluck($other_pages, 'ID');
+        $batch_result = lendcity_batch_sync_with_retry($api, $page_ids);
+        $results['pages']['success'] = $batch_result['success'];
+        $results['pages']['failed'] = $batch_result['failed'];
+        $results['errors'] = array_merge($results['errors'], $batch_result['errors']);
     }
 
-    // STEP 3: Sync all posts (they get matched to pillar clusters)
+    // STEP 3: Batch sync all posts
     $posts = get_posts([
         'post_type' => 'post',
         'post_status' => 'publish',
@@ -586,20 +625,12 @@ function lendcity_rebuild_catalog() {
 
     $results['posts']['total'] = count($posts);
 
-    foreach ($posts as $post) {
-        $result = $api->sync_to_catalog($post->ID);
-
-        if (is_wp_error($result)) {
-            $results['posts']['failed']++;
-            $results['errors'][] = [
-                'type' => 'post',
-                'postId' => $post->ID,
-                'title' => $post->post_title,
-                'error' => $result->get_error_message()
-            ];
-        } else {
-            $results['posts']['success']++;
-        }
+    if (!empty($posts)) {
+        $post_ids = wp_list_pluck($posts, 'ID');
+        $batch_result = lendcity_batch_sync_with_retry($api, $post_ids);
+        $results['posts']['success'] = $batch_result['success'];
+        $results['posts']['failed'] = $batch_result['failed'];
+        $results['errors'] = array_merge($results['errors'], $batch_result['errors']);
     }
 
     // Calculate totals
@@ -608,6 +639,59 @@ function lendcity_rebuild_catalog() {
     $results['failed'] = $results['pillars']['failed'] + $results['pages']['failed'] + $results['posts']['failed'];
 
     wp_send_json_success($results);
+}
+
+/**
+ * Helper: Batch sync with chunking and retry logic
+ */
+function lendcity_batch_sync_with_retry($api, $post_ids, $batch_size = 20) {
+    $results = ['success' => 0, 'failed' => 0, 'errors' => []];
+
+    // Process in batches
+    $batches = array_chunk($post_ids, $batch_size);
+
+    foreach ($batches as $batch) {
+        $result = $api->batch_sync_to_catalog($batch);
+
+        if (is_wp_error($result)) {
+            // Batch failed - fall back to individual syncs
+            foreach ($batch as $post_id) {
+                $single_result = $api->sync_to_catalog($post_id);
+                if (is_wp_error($single_result)) {
+                    $results['failed']++;
+                    $post = get_post($post_id);
+                    $results['errors'][] = [
+                        'type' => 'post',
+                        'postId' => $post_id,
+                        'title' => $post ? $post->post_title : 'Unknown',
+                        'error' => $single_result->get_error_message()
+                    ];
+                } else {
+                    $results['success']++;
+                }
+            }
+        } else {
+            $results['success'] += $result['succeeded'] ?? 0;
+            $results['failed'] += $result['failed'] ?? 0;
+
+            // Collect errors from batch result
+            if (!empty($result['details'])) {
+                foreach ($result['details'] as $detail) {
+                    if ($detail['status'] === 'failed') {
+                        $post = get_post($detail['postId']);
+                        $results['errors'][] = [
+                            'type' => 'post',
+                            'postId' => $detail['postId'],
+                            'title' => $post ? $post->post_title : 'Unknown',
+                            'error' => $detail['error'] ?? 'Unknown error'
+                        ];
+                    }
+                }
+            }
+        }
+    }
+
+    return $results;
 }
 
 /**

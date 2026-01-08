@@ -353,6 +353,121 @@ Return ONLY valid JSON, no explanation.`;
   }
 }
 
+/**
+ * Batch analyze multiple articles in a single Claude call
+ * Optimized for speed - reduces API calls from N to 1
+ *
+ * @param {Array} articles - Array of articles with postId, title, content
+ * @param {Array} pillarPages - Array of pillar pages for cluster matching
+ * @returns {Object} Results keyed by postId
+ */
+async function batchAnalyzeArticles(articles, pillarPages = []) {
+  const client = getClient();
+
+  if (!articles || articles.length === 0) {
+    return {};
+  }
+
+  // Limit batch size to prevent token overflow
+  const MAX_BATCH = 10;
+  if (articles.length > MAX_BATCH) {
+    // Process in chunks and merge results
+    const results = {};
+    for (let i = 0; i < articles.length; i += MAX_BATCH) {
+      const chunk = articles.slice(i, i + MAX_BATCH);
+      const chunkResults = await batchAnalyzeArticles(chunk, pillarPages);
+      Object.assign(results, chunkResults);
+    }
+    return results;
+  }
+
+  // Build pillar context
+  let pillarContext = '';
+  if (pillarPages && pillarPages.length > 0) {
+    pillarContext = `
+EXISTING TOPIC CLUSTERS (defined by pillar pages):
+${pillarPages.map((p, i) => `${i + 1}. "${p.topicCluster}" - Pillar: "${p.title}"
+   Keywords: ${[...(p.mainTopics || []), ...(p.semanticKeywords || [])].slice(0, 8).join(', ')}`).join('\n')}
+`;
+  }
+
+  // Build article list for batch processing
+  // Truncate content to prevent token overflow (~4000 chars each)
+  const articleList = articles.map((a, i) => `
+--- ARTICLE ${a.postId} ---
+Title: ${a.title}
+Content Preview: ${(a.content || '').slice(0, 4000)}
+`).join('\n');
+
+  const prompt = `You are analyzing multiple real estate investment articles for a Canadian audience.
+Analyze each article and return metadata for smart internal linking.
+${pillarContext}
+ARTICLES TO ANALYZE:
+${articleList}
+
+For EACH article, provide analysis with these fields:
+- topicCluster: Match to existing cluster OR create new descriptive name (lowercase, hyphenated)
+- relatedClusters: 1-2 related cluster names
+- funnelStage: awareness | consideration | decision
+- targetPersona: new-investor | experienced-investor | private-lender | rent-to-own-buyer | general
+- difficultyLevel: beginner | intermediate | advanced
+- qualityScore: 1-100 based on depth and quality
+- summary: 1-2 sentence summary (under 200 chars)
+- mainTopics: array of 3-5 main topics
+- semanticKeywords: array of 5-8 keywords
+
+Return JSON object with postId as keys:
+{
+  "123": {
+    "topicCluster": "brrrr-strategy",
+    "relatedClusters": ["financing", "rental-properties"],
+    "funnelStage": "consideration",
+    "targetPersona": "new-investor",
+    "difficultyLevel": "intermediate",
+    "qualityScore": 75,
+    "summary": "Overview of the BRRRR method...",
+    "mainTopics": ["BRRRR", "refinancing"],
+    "semanticKeywords": ["buy", "rehab", "rent"]
+  },
+  "456": { ... }
+}
+
+Return ONLY valid JSON, no explanation or markdown.`;
+
+  try {
+    const response = await client.messages.create({
+      model: 'claude-sonnet-4-20250514',
+      max_tokens: 3000,
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    const text = response.content[0].text.trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+    return JSON.parse(text);
+  } catch (e) {
+    console.error('Batch analysis failed:', e.message);
+    // Return defaults for all articles
+    const defaults = {};
+    articles.forEach(a => {
+      defaults[a.postId] = {
+        topicCluster: 'general',
+        relatedClusters: [],
+        funnelStage: 'awareness',
+        targetPersona: 'general',
+        difficultyLevel: 'intermediate',
+        qualityScore: 50,
+        summary: '',
+        mainTopics: [],
+        semanticKeywords: []
+      };
+    });
+    return defaults;
+  }
+}
+
 module.exports = {
   getClient,
   generateAnchorText,
@@ -360,5 +475,6 @@ module.exports = {
   analyzeContentForLinking,
   generateSummary,
   extractKeywords,
-  autoAnalyzeArticle
+  autoAnalyzeArticle,
+  batchAnalyzeArticles
 };
