@@ -14,14 +14,11 @@ $catalog = $smart_linker->get_catalog();
 $catalog_stats = $smart_linker->get_catalog_stats();
 $catalog_built_at = get_option('lendcity_post_catalog_built_at', '');
 $auto_linking = get_option('lendcity_smart_linker_auto', 'yes');
-$auto_seo = get_option('lendcity_auto_seo_metadata', 'yes');
 $queue_status = $smart_linker->get_queue_status();
 
 if (isset($_POST['save_smart_linker_settings']) && check_admin_referer('smart_linker_settings')) {
     update_option('lendcity_smart_linker_auto', isset($_POST['auto_linking']) ? 'yes' : 'no');
-    update_option('lendcity_auto_seo_metadata', isset($_POST['auto_seo']) ? 'yes' : 'no');
     $auto_linking = get_option('lendcity_smart_linker_auto');
-    $auto_seo = get_option('lendcity_auto_seo_metadata');
     echo '<div class="notice notice-success"><p>Settings saved!</p></div>';
 }
 
@@ -116,36 +113,11 @@ $total_links = $smart_linker->get_total_link_count();
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
     </style>
 
-    <!-- BUILD ALL Button -->
-    <div style="background: linear-gradient(135deg, #11998e, #38ef7d); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
-        <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 15px;">
-            <div>
-                <h2 style="margin: 0; color: white;">Quick Start</h2>
-                <p style="margin: 5px 0 0; opacity: 0.9;">Run all 4 steps in background: Catalog → Keyword Map → Auto-Link → SEO Meta</p>
-            </div>
-            <button type="button" id="build-all-btn" class="button button-large" style="background: white; color: #11998e; border: none; font-weight: bold; font-size: 16px; padding: 12px 30px;">
-                🚀 BUILD ALL (Background)
-            </button>
-        </div>
-        <div id="build-all-progress" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
-            <div style="margin-bottom: 10px;">
-                <strong id="build-all-step">Starting...</strong>
-            </div>
-            <div style="background: #e0e0e0; height: 20px; border-radius: 4px; overflow: hidden;">
-                <div id="build-all-bar" style="background: linear-gradient(90deg, #11998e, #38ef7d); height: 100%; width: 0%; transition: width 0.3s;"></div>
-            </div>
-            <p style="margin-top: 10px; font-size: 13px; color: #666;">
-                ✅ All processes now run in background via WP Cron. You can close this window.
-            </p>
-        </div>
-    </div>
-
     <!-- Settings -->
     <div style="background: #f0f6fc; border: 1px solid #2271b1; border-radius: 4px; padding: 15px; margin-bottom: 20px;">
         <form method="post" style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
             <?php wp_nonce_field('smart_linker_settings'); ?>
-            <label><input type="checkbox" name="auto_linking" <?php checked($auto_linking, 'yes'); ?>> <strong>Auto-link new posts on publish</strong></label>
-            <label><input type="checkbox" name="auto_seo" <?php checked($auto_seo, 'yes'); ?>> <strong>Auto-generate SEO title/description</strong></label>
+            <label><input type="checkbox" name="auto_linking" <?php checked($auto_linking, 'yes'); ?>> <strong>Auto-link new posts on publish</strong> <span style="color: #666; font-weight: normal;">(also generates SEO title/description)</span></label>
             <button type="submit" name="save_smart_linker_settings" class="button">Save</button>
         </form>
     </div>
@@ -161,6 +133,9 @@ $total_links = $smart_linker->get_total_link_count();
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
             <h2 style="margin: 0; color: white;">🧠 Vector Smart Linker</h2>
             <span style="background: #00c853; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">PINECONE CONNECTED</span>
+            <span id="pinecone-stats" style="background: rgba(255,255,255,0.2); padding: 3px 10px; border-radius: 12px; font-size: 11px;">
+                <span class="spinner is-active" style="float: none; margin: 0; width: 12px; height: 12px;"></span> Loading stats...
+            </span>
         </div>
         <p style="margin: 0 0 15px; opacity: 0.9;">AI-powered linking using semantic vectors. Pillars define clusters, posts auto-link to best matches.</p>
 
@@ -168,7 +143,11 @@ $total_links = $smart_linker->get_total_link_count();
             <!-- Rebuild Catalog Card -->
             <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
                 <h3 style="margin: 0 0 10px; color: white;">📚 Rebuild Catalog</h3>
-                <p style="margin: 0 0 15px; font-size: 13px; opacity: 0.8;">Sync all content to Pinecone. Pillars first, then pages, then posts.</p>
+                <p style="margin: 0 0 10px; font-size: 13px; opacity: 0.8;">Sync all content to Pinecone. Pillars first, then pages, then posts.</p>
+                <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; cursor: pointer;">
+                    <input type="checkbox" id="skip-already-synced" checked>
+                    <span>Skip already catalogued articles</span>
+                </label>
                 <button type="button" id="rebuild-pinecone-catalog" class="button button-large" style="background: #4fc3f7; color: #0f0c29; border: none; font-weight: bold; width: 100%;">
                     🔄 Rebuild Catalog
                 </button>
@@ -639,38 +618,105 @@ jQuery(document).ready(function($) {
 
     // ========== VECTOR SMART LINKER (Pinecone) ==========
 
-    // Rebuild Catalog Button
+    // Load Pinecone stats on page load
+    function loadPineconeStats() {
+        $.post(ajaxurl, {
+            action: 'lendcity_get_pinecone_stats',
+            nonce: bulkSyncNonce
+        }, function(response) {
+            if (response.success) {
+                var data = response.data;
+                $('#pinecone-stats').html('<strong>' + data.catalogued + '</strong> of ' + data.total_wp + ' catalogued');
+            } else {
+                $('#pinecone-stats').text('Stats unavailable');
+            }
+        }).fail(function() {
+            $('#pinecone-stats').text('Stats unavailable');
+        });
+    }
+    loadPineconeStats();
+
+    // Rebuild Catalog Button - CHUNKED with skip option
     $('#rebuild-pinecone-catalog').on('click', function() {
         var $btn = $(this);
         var $status = $('#rebuild-catalog-status');
         var $bar = $('#rebuild-catalog-bar');
         var $text = $('#rebuild-catalog-text');
+        var skipSynced = $('#skip-already-synced').is(':checked');
 
         $btn.prop('disabled', true).text('Rebuilding...');
         $status.show();
-        $bar.css('width', '10%');
-        $text.text('Syncing pillars first, then pages, then posts...');
+        $bar.css('width', '5%');
+        $text.text('Getting content list...');
 
+        // Get filtered list based on skip option
         $.post(ajaxurl, {
-            action: 'lendcity_rebuild_catalog',
-            nonce: bulkSyncNonce
+            action: 'lendcity_get_sync_list_filtered',
+            nonce: bulkSyncNonce,
+            skip_synced: skipSynced ? 'true' : 'false'
         }, function(response) {
-            if (response.success) {
-                var data = response.data;
-                $bar.css('width', '100%');
-                $text.html(
-                    '<strong>Complete!</strong> ' +
-                    data.pillars.success + ' pillars, ' +
-                    data.pages.success + ' pages, ' +
-                    data.posts.success + ' posts synced. ' +
-                    (data.failed > 0 ? '<span style="color: #ff5252;">' + data.failed + ' failed</span>' : '')
-                );
-                $btn.prop('disabled', false).text('🔄 Rebuild Catalog');
-            } else {
-                $bar.css('width', '0%');
+            if (!response.success) {
                 $text.text('Error: ' + (response.data?.message || 'Unknown error'));
                 $btn.prop('disabled', false).text('🔄 Rebuild Catalog');
+                return;
             }
+
+            var items = response.data.items;
+            var total = items.length;
+
+            if (total === 0) {
+                $bar.css('width', '100%');
+                $text.html('<strong>All articles already catalogued!</strong> Uncheck "Skip already catalogued" to re-sync.');
+                $btn.prop('disabled', false).text('🔄 Rebuild Catalog');
+                return;
+            }
+
+            var processed = 0;
+            var succeeded = 0;
+            var failed = 0;
+            var chunkSize = 3;
+
+            $text.text('Syncing 0 of ' + total + ' articles...');
+
+            function processChunk() {
+                if (processed >= total) {
+                    $bar.css('width', '100%');
+                    $text.html('<strong>Complete!</strong> ' + succeeded + ' of ' + total + ' synced.' +
+                        (failed > 0 ? ' <span style="color: #ff5252;">' + failed + ' failed</span>' : ''));
+                    $btn.prop('disabled', false).text('🔄 Rebuild Catalog');
+                    loadPineconeStats(); // Refresh stats
+                    return;
+                }
+
+                var chunk = items.slice(processed, processed + chunkSize);
+                var chunkIds = chunk.map(function(item) { return item.id; });
+
+                $.post(ajaxurl, {
+                    action: 'lendcity_sync_chunk',
+                    nonce: bulkSyncNonce,
+                    post_ids: chunkIds
+                }, function(chunkResponse) {
+                    if (chunkResponse.success) {
+                        succeeded += chunkResponse.data.success || 0;
+                        failed += chunkResponse.data.failed || 0;
+                    } else {
+                        failed += chunk.length;
+                    }
+                    processed += chunk.length;
+
+                    var percent = Math.round((processed / total) * 100);
+                    $bar.css('width', percent + '%');
+                    $text.text('Syncing ' + processed + ' of ' + total + ' articles...');
+
+                    setTimeout(processChunk, 500);
+                }).fail(function() {
+                    failed += chunk.length;
+                    processed += chunk.length;
+                    setTimeout(processChunk, 500);
+                });
+            }
+
+            processChunk();
         }).fail(function() {
             $text.text('Request failed. Check console for details.');
             $btn.prop('disabled', false).text('🔄 Rebuild Catalog');
@@ -916,55 +962,6 @@ jQuery(document).ready(function($) {
             alert('Request failed. Please try again.');
             $btn.prop('disabled', false).text(action === 'remove_broken' ? 'Remove Link' : (action === 'swap_link' ? 'Accept Better' : 'Ignore'));
         });
-    });
-
-    // ========== BUILD ALL ==========
-    $('#build-all-btn').on('click', function() {
-        var $btn = $(this);
-        $btn.prop('disabled', true).text('Running...');
-        $('#build-all-progress').show();
-
-        var steps = [
-            { name: 'Step 1: Running Auto Linker...', action: 'auto_link' },
-            { name: 'Step 2: Generating SEO Metadata...', action: 'seo_meta' }
-        ];
-        var currentStep = 0;
-
-        function runStep() {
-            if (currentStep >= steps.length) {
-                $('#build-all-step').text('All steps complete!');
-                $('#build-all-bar').css('width', '100%');
-                $btn.prop('disabled', false).text('🚀 BUILD ALL');
-                setTimeout(function() { location.reload(); }, 2000);
-                return;
-            }
-
-            var step = steps[currentStep];
-            $('#build-all-step').text(step.name);
-            $('#build-all-bar').css('width', ((currentStep + 0.5) / steps.length * 100) + '%');
-
-            var ajaxAction = '';
-            var ajaxData = { nonce: nonce };
-
-            if (step.action === 'auto_link') {
-                ajaxAction = 'lendcity_init_bulk_queue';
-                ajaxData.skip_existing = true;
-            } else if (step.action === 'seo_meta') {
-                ajaxAction = 'lendcity_bulk_smart_metadata';
-                ajaxData.skip_existing = true;
-            }
-
-            $.post(ajaxurl, $.extend({ action: ajaxAction }, ajaxData), function(response) {
-                currentStep++;
-                $('#build-all-bar').css('width', (currentStep / steps.length * 100) + '%');
-                runStep();
-            }).fail(function() {
-                currentStep++;
-                runStep();
-            });
-        }
-
-        runStep();
     });
 
     // ========== TABLE SORTING ==========
@@ -2073,51 +2070,6 @@ jQuery(document).ready(function($) {
                 bgQueuePollInterval = null;
             }
             $('#background-queue-dashboard').hide();
-        });
-    });
-
-    // Update BUILD ALL to use background endpoints (v12.2.2 - Ownership removed)
-    $('#build-all-btn').off('click').on('click', function() {
-        if (!confirm('Start all 3 background processes?\n\n1. Build Catalog\n2. Auto Linker\n3. SEO Metadata\n\nYou can close the browser window - all processes run via WP Cron.')) return;
-
-        var $btn = $(this).prop('disabled', true).text('Starting...');
-        $('#build-all-progress').show();
-        $('#build-all-step').text('Starting background processes...');
-        $('#build-all-bar').css('width', '33%');
-
-        // Start catalog first (others depend on it)
-        $.post(ajaxurl, {
-            action: 'lendcity_action', sub_action: 'start_background_catalog',
-            nonce: nonce
-        }, function(r1) {
-            $('#build-all-bar').css('width', '66%');
-            $('#build-all-step').text('Starting auto linker...');
-
-            // Start linker queue
-            $.post(ajaxurl, {
-                action: 'lendcity_action', sub_action: 'init_bulk_queue',
-                nonce: nonce,
-                skip_existing: true
-            }, function(r2) {
-                $('#build-all-bar').css('width', '90%');
-                $('#build-all-step').text('Starting SEO metadata...');
-
-                // Start meta queue
-                $.post(ajaxurl, {
-                    action: 'lendcity_action', sub_action: 'bulk_smart_metadata',
-                    nonce: nonce,
-                    skip_existing: true
-                }, function(r3) {
-                    $('#build-all-bar').css('width', '100%');
-                    $('#build-all-step').text('All background processes started!');
-                    $btn.prop('disabled', false).text('🚀 BUILD ALL (Background)');
-                    startBackgroundQueuePolling();
-                });
-            });
-        }).fail(function() {
-            $btn.prop('disabled', false).text('🚀 BUILD ALL (Background)');
-            $('#build-all-progress').hide();
-            alert('Error starting processes');
         });
     });
 

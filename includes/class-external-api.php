@@ -50,6 +50,20 @@ class LendCity_External_API {
     }
 
     /**
+     * Get API URL
+     */
+    public function get_api_url() {
+        return $this->api_url;
+    }
+
+    /**
+     * Get API Key
+     */
+    public function get_api_key() {
+        return $this->api_key;
+    }
+
+    /**
      * Make API request
      */
     private function request($endpoint, $data = [], $method = 'POST', $timeout = null) {
@@ -164,7 +178,21 @@ class LendCity_External_API {
         $link_meta = get_post_meta($post_id, '_lendcity_smart_links', true) ?: [];
         $updated_content = $content;
 
-        foreach ($suggestions['links'] as $suggestion) {
+        // RULE: Sort suggestions to prefer pages over posts
+        $sorted_suggestions = $suggestions['links'];
+        usort($sorted_suggestions, function($a, $b) {
+            $a_is_page = isset($a['postType']) && $a['postType'] === 'page';
+            $b_is_page = isset($b['postType']) && $b['postType'] === 'page';
+            if ($a_is_page && !$b_is_page) return -1;
+            if (!$a_is_page && $b_is_page) return 1;
+            // If same type, sort by score
+            return ($b['score'] ?? 0) - ($a['score'] ?? 0);
+        });
+
+        // Track which paragraphs already have links (for one-link-per-paragraph rule)
+        $paragraphs_with_links = [];
+
+        foreach ($sorted_suggestions as $suggestion) {
             if (empty($suggestion['anchorText']) || empty($suggestion['url'])) {
                 continue;
             }
@@ -182,6 +210,39 @@ class LendCity_External_API {
             }
             if ($already_linked) continue;
 
+            // RULE: One link per paragraph - find which paragraph contains this anchor
+            // Split content into paragraphs and check if anchor's paragraph already has a link
+            $anchor_position = stripos($updated_content, $anchor);
+            if ($anchor_position !== false) {
+                // Find the paragraph boundaries (look for </p> or double newlines)
+                $para_start = strrpos(substr($updated_content, 0, $anchor_position), '<p');
+                if ($para_start === false) {
+                    $para_start = strrpos(substr($updated_content, 0, $anchor_position), "\n\n");
+                }
+                $para_start = $para_start !== false ? $para_start : 0;
+
+                $para_end = strpos($updated_content, '</p>', $anchor_position);
+                if ($para_end === false) {
+                    $para_end = strpos($updated_content, "\n\n", $anchor_position);
+                }
+                $para_end = $para_end !== false ? $para_end : strlen($updated_content);
+
+                // Create a unique key for this paragraph
+                $para_key = $para_start . '-' . $para_end;
+
+                // Check if this paragraph already has a link added in this session
+                if (in_array($para_key, $paragraphs_with_links)) {
+                    continue; // Skip - one link per paragraph rule
+                }
+
+                // Also check if the paragraph already contains any <a> tag
+                $para_content = substr($updated_content, $para_start, $para_end - $para_start);
+                if (preg_match('/<a\s+[^>]*href/i', $para_content)) {
+                    $paragraphs_with_links[] = $para_key; // Mark as having a link
+                    continue; // Skip - paragraph already has a link
+                }
+            }
+
             // Find and replace anchor text with link (first occurrence only)
             $pattern = '/(?<!["\'>])(' . preg_quote($anchor, '/') . ')(?![^<]*>)(?![^<]*<\/a>)/i';
             $replacement = '<a href="' . esc_url($url) . '">' . $anchor . '</a>';
@@ -198,6 +259,11 @@ class LendCity_External_API {
                     'created' => current_time('mysql')
                 ];
                 $links_created++;
+
+                // Mark this paragraph as having a link
+                if (isset($para_key)) {
+                    $paragraphs_with_links[] = $para_key;
+                }
             }
         }
 
@@ -210,10 +276,33 @@ class LendCity_External_API {
             update_post_meta($post_id, '_lendcity_smart_links', $link_meta);
         }
 
+        // Always generate SEO metadata if missing (runs with link generation for faster saves)
+        $existing_title = get_post_meta($post_id, '_seopress_titles_title', true);
+        $existing_desc = get_post_meta($post_id, '_seopress_titles_desc', true);
+        $seo_generated = false;
+
+        if (empty($existing_title) || empty($existing_desc)) {
+            $meta_result = $this->generate_meta($post_id);
+
+            if (!is_wp_error($meta_result) && is_array($meta_result)) {
+                if (!empty($meta_result['title'])) {
+                    update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($meta_result['title']));
+                }
+                if (!empty($meta_result['description'])) {
+                    update_post_meta($post_id, '_seopress_titles_desc', sanitize_text_field($meta_result['description']));
+                }
+                if (!empty($meta_result['focusKeyphrase'])) {
+                    update_post_meta($post_id, '_seopress_analysis_target_kw', sanitize_text_field($meta_result['focusKeyphrase']));
+                }
+                $seo_generated = true;
+            }
+        }
+
         return [
             'success' => true,
             'links_created' => $links_created,
-            'suggestions_count' => count($suggestions['links'])
+            'suggestions_count' => count($suggestions['links']),
+            'seo_generated' => $seo_generated
         ];
     }
 
@@ -569,6 +658,9 @@ function lendcity_sync_chunk() {
             $errors[] = ['postId' => $post_id, 'error' => $result->get_error_message()];
         } else {
             $success++;
+            // Mark as synced for skip functionality
+            update_post_meta($post_id, '_lendcity_pinecone_synced', '1');
+            update_post_meta($post_id, '_lendcity_pinecone_synced_at', current_time('mysql'));
         }
     }
 
@@ -1130,4 +1222,165 @@ function lendcity_fix_link() {
     } else {
         wp_send_json_error(['message' => 'Could not find the link to fix. The content may have changed.']);
     }
+}
+
+/**
+ * AJAX handler: Get Pinecone catalog stats
+ */
+add_action('wp_ajax_lendcity_get_pinecone_stats', 'lendcity_get_pinecone_stats');
+
+function lendcity_get_pinecone_stats() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'API not configured']);
+    }
+
+    // Get stats from Pinecone via our API
+    $response = wp_remote_get(
+        rtrim($api->get_api_url(), '/') . '/api/stats',
+        [
+            'timeout' => 15,
+            'headers' => [
+                'Authorization' => 'Bearer ' . $api->get_api_key(),
+                'Content-Type' => 'application/json'
+            ]
+        ]
+    );
+
+    if (is_wp_error($response)) {
+        // Fall back to counting WordPress posts with sync meta
+        $synced_count = 0;
+        $posts = get_posts([
+            'post_type' => ['post', 'page'],
+            'post_status' => 'publish',
+            'numberposts' => -1,
+            'meta_query' => [
+                [
+                    'key' => '_lendcity_pinecone_synced',
+                    'value' => '1'
+                ]
+            ]
+        ]);
+        $synced_count = count($posts);
+
+        $total_posts = wp_count_posts('post')->publish + wp_count_posts('page')->publish;
+
+        wp_send_json_success([
+            'catalogued' => $synced_count,
+            'total_wp' => $total_posts,
+            'source' => 'wordpress_meta'
+        ]);
+    }
+
+    $body = json_decode(wp_remote_retrieve_body($response), true);
+
+    if (isset($body['vectorCount'])) {
+        $total_posts = wp_count_posts('post')->publish + wp_count_posts('page')->publish;
+
+        wp_send_json_success([
+            'catalogued' => $body['vectorCount'],
+            'total_wp' => $total_posts,
+            'source' => 'pinecone'
+        ]);
+    } else {
+        // Fall back to WordPress meta count
+        $posts = get_posts([
+            'post_type' => ['post', 'page'],
+            'post_status' => 'publish',
+            'numberposts' => -1,
+            'meta_query' => [
+                [
+                    'key' => '_lendcity_pinecone_synced',
+                    'value' => '1'
+                ]
+            ]
+        ]);
+
+        $total_posts = wp_count_posts('post')->publish + wp_count_posts('page')->publish;
+
+        wp_send_json_success([
+            'catalogued' => count($posts),
+            'total_wp' => $total_posts,
+            'source' => 'wordpress_meta'
+        ]);
+    }
+}
+
+/**
+ * AJAX handler: Get sync list with optional skip for already synced
+ */
+add_action('wp_ajax_lendcity_get_sync_list_filtered', 'lendcity_get_sync_list_filtered');
+
+function lendcity_get_sync_list_filtered() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $skip_synced = isset($_POST['skip_synced']) && $_POST['skip_synced'] === 'true';
+
+    $items = [];
+
+    // Get pillar pages first
+    $pillar_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'meta_query' => [
+            [
+                'key' => '_lendcity_is_pillar',
+                'value' => '1'
+            ]
+        ]
+    ]);
+
+    foreach ($pillar_pages as $page) {
+        if ($skip_synced && get_post_meta($page->ID, '_lendcity_pinecone_synced', true) === '1') {
+            continue;
+        }
+        $items[] = ['id' => $page->ID, 'title' => $page->post_title, 'type' => 'pillar'];
+    }
+
+    // Get other pages
+    $pillar_ids = wp_list_pluck($pillar_pages, 'ID');
+    $other_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'post__not_in' => !empty($pillar_ids) ? $pillar_ids : [0]
+    ]);
+
+    foreach ($other_pages as $page) {
+        if ($skip_synced && get_post_meta($page->ID, '_lendcity_pinecone_synced', true) === '1') {
+            continue;
+        }
+        $items[] = ['id' => $page->ID, 'title' => $page->post_title, 'type' => 'page'];
+    }
+
+    // Get posts
+    $posts = get_posts([
+        'post_type' => 'post',
+        'post_status' => 'publish',
+        'numberposts' => -1
+    ]);
+
+    foreach ($posts as $post) {
+        if ($skip_synced && get_post_meta($post->ID, '_lendcity_pinecone_synced', true) === '1') {
+            continue;
+        }
+        $items[] = ['id' => $post->ID, 'title' => $post->post_title, 'type' => 'post'];
+    }
+
+    wp_send_json_success([
+        'items' => $items,
+        'total' => count($items),
+        'skipped_synced' => $skip_synced
+    ]);
 }
