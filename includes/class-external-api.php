@@ -101,14 +101,18 @@ class LendCity_External_API {
             return new WP_Error('invalid_post', 'Post not found');
         }
 
+        // Get catalog data if available
+        $catalog_entry = $this->get_catalog_entry($post_id);
+
         $data = [
             'postId' => $post_id,
             'content' => $content,
             'title' => $post->post_title,
-            'topicCluster' => get_post_meta($post_id, 'topic_cluster', true),
-            'relatedClusters' => get_post_meta($post_id, 'related_clusters', true) ?: [],
-            'funnelStage' => get_post_meta($post_id, 'funnel_stage', true),
-            'targetPersona' => get_post_meta($post_id, 'target_persona', true),
+            'topicCluster' => $catalog_entry['topic_cluster'] ?? get_post_meta($post_id, 'topic_cluster', true) ?: '',
+            'relatedClusters' => $catalog_entry['related_clusters'] ?? get_post_meta($post_id, 'related_clusters', true) ?: [],
+            'funnelStage' => $catalog_entry['funnel_stage'] ?? get_post_meta($post_id, 'funnel_stage', true) ?: '',
+            'targetPersona' => $catalog_entry['target_persona'] ?? get_post_meta($post_id, 'target_persona', true) ?: '',
+            'difficultyLevel' => $catalog_entry['difficulty_level'] ?? 'intermediate',
             'maxLinks' => $options['max_links'] ?? 5,
             'minScore' => $options['min_score'] ?? 40,
             'useClaudeAnalysis' => $options['use_claude'] ?? true,
@@ -116,6 +120,100 @@ class LendCity_External_API {
         ];
 
         return $this->request('api/smart-link', $data);
+    }
+
+    /**
+     * Auto-link a post using the external API
+     * Called when a post is published and external API is enabled
+     *
+     * @param int $post_id Post ID
+     * @return array|WP_Error Result or error
+     */
+    public function auto_link_post($post_id) {
+        $post = get_post($post_id);
+        if (!$post) {
+            return new WP_Error('invalid_post', 'Post not found');
+        }
+
+        // First sync to Pinecone to ensure it's in the catalog
+        $sync_result = $this->sync_to_catalog($post_id);
+        if (is_wp_error($sync_result)) {
+            error_log('LendCity: Failed to sync post ' . $post_id . ' before auto-linking: ' . $sync_result->get_error_message());
+        }
+
+        // Get link suggestions from external API
+        $content = $post->post_content;
+        $suggestions = $this->get_smart_links($post_id, $content, [
+            'max_links' => 5,
+            'min_score' => 50,
+            'use_claude' => true,
+            'auto_insert' => true
+        ]);
+
+        if (is_wp_error($suggestions)) {
+            return $suggestions;
+        }
+
+        if (empty($suggestions['suggestions'])) {
+            return ['success' => true, 'message' => 'No link opportunities found', 'links_created' => 0];
+        }
+
+        // Insert links into content
+        $links_created = 0;
+        $link_meta = get_post_meta($post_id, '_lendcity_smart_links', true) ?: [];
+        $updated_content = $content;
+
+        foreach ($suggestions['suggestions'] as $suggestion) {
+            if (empty($suggestion['anchorText']) || empty($suggestion['targetUrl'])) {
+                continue;
+            }
+
+            $anchor = $suggestion['anchorText'];
+            $url = $suggestion['targetUrl'];
+
+            // Skip if already linked to this URL
+            $already_linked = false;
+            foreach ($link_meta as $existing) {
+                if ($existing['url'] === $url) {
+                    $already_linked = true;
+                    break;
+                }
+            }
+            if ($already_linked) continue;
+
+            // Find and replace anchor text with link (first occurrence only)
+            $pattern = '/(?<!["\'>])(' . preg_quote($anchor, '/') . ')(?![^<]*>)(?![^<]*<\/a>)/i';
+            $replacement = '<a href="' . esc_url($url) . '">' . $anchor . '</a>';
+
+            $new_content = preg_replace($pattern, $replacement, $updated_content, 1, $count);
+
+            if ($count > 0) {
+                $updated_content = $new_content;
+                $link_meta[] = [
+                    'anchor' => $anchor,
+                    'url' => $url,
+                    'target_id' => $suggestion['targetPostId'] ?? 0,
+                    'score' => $suggestion['score'] ?? 0,
+                    'created' => current_time('mysql')
+                ];
+                $links_created++;
+            }
+        }
+
+        // Save updated content and link meta
+        if ($links_created > 0) {
+            wp_update_post([
+                'ID' => $post_id,
+                'post_content' => $updated_content
+            ]);
+            update_post_meta($post_id, '_lendcity_smart_links', $link_meta);
+        }
+
+        return [
+            'success' => true,
+            'links_created' => $links_created,
+            'suggestions_count' => count($suggestions['suggestions'])
+        ];
     }
 
     /**
@@ -274,6 +372,38 @@ function lendcity_sync_on_publish($post_id) {
 
     if (is_wp_error($result)) {
         error_log('LendCity API sync failed: ' . $result->get_error_message());
+        return;
+    }
+
+    // Auto-link if enabled (new content links OUT to existing content)
+    $auto_link = get_option('lendcity_smart_linker_auto', 'yes');
+    if ($auto_link === 'yes') {
+        // Schedule auto-link to run after a short delay (allows sync to complete)
+        wp_schedule_single_event(time() + 30, 'lendcity_external_auto_link', [$post_id]);
+    }
+}
+
+/**
+ * Hook for external API auto-linking
+ */
+add_action('lendcity_external_auto_link', 'lendcity_run_external_auto_link');
+
+function lendcity_run_external_auto_link($post_id) {
+    if (!get_option('lendcity_use_external_api', false)) {
+        return;
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        return;
+    }
+
+    $result = $api->auto_link_post($post_id);
+
+    if (is_wp_error($result)) {
+        error_log('LendCity external auto-link failed for post ' . $post_id . ': ' . $result->get_error_message());
+    } else {
+        error_log('LendCity external auto-link for post ' . $post_id . ': ' . ($result['links_created'] ?? 0) . ' links created');
     }
 }
 
