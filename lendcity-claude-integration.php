@@ -1225,22 +1225,25 @@ class LendCity_Claude_Integration {
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Permission denied');
         }
-        
+
         $page_id = intval($_POST['page_id']);
         $priority = intval($_POST['priority']);
+        $is_pillar = !empty($_POST['is_pillar']);
         $keywords = sanitize_text_field($_POST['keywords'] ?? '');
-        
+
         if (!$page_id) {
             wp_send_json_error('Invalid page ID');
         }
-        
+
         $smart_linker = new LendCity_Smart_Linker();
         $smart_linker->set_page_priority($page_id, $priority);
+        $smart_linker->set_pillar_page($page_id, $is_pillar);
         $smart_linker->set_page_keywords($page_id, $keywords);
-        
+
         wp_send_json_success(array(
             'page_id' => $page_id,
             'priority' => $priority,
+            'is_pillar' => $is_pillar,
             'keywords' => $keywords
         ));
     }

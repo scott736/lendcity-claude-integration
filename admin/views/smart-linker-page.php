@@ -387,6 +387,7 @@ $total_links = $smart_linker->get_total_link_count();
                     <tr>
                         <th style="width: 250px;">Page</th>
                         <th style="width: 120px;">Priority</th>
+                        <th style="width: 70px;">Pillar</th>
                         <th style="width: 300px;">Target Keywords (comma-separated)</th>
                         <th style="width: 100px;">Inbound Links</th>
                         <th style="width: 80px;">Action</th>
@@ -409,6 +410,9 @@ $total_links = $smart_linker->get_total_link_count();
                                 <option value="4" <?php selected($page['priority'], 4); ?>>4</option>
                                 <option value="5" <?php selected($page['priority'], 5); ?>>5 - High</option>
                             </select>
+                        </td>
+                        <td style="text-align: center;">
+                            <input type="checkbox" class="page-pillar" <?php checked(!empty($page['is_pillar'])); ?> title="Mark as pillar content">
                         </td>
                         <td>
                             <input type="text" class="page-keywords" value="<?php echo esc_attr($page['keywords']); ?>" placeholder="mortgage broker, investment loans..." style="width: 100%;">
@@ -1303,15 +1307,17 @@ jQuery(document).ready(function($) {
         var $row = $btn.closest('tr');
         var pageId = $row.data('page-id');
         var priority = $row.find('.page-priority').val();
+        var isPillar = $row.find('.page-pillar').is(':checked') ? 1 : 0;
         var keywords = $row.find('.page-keywords').val();
-        
+
         $btn.prop('disabled', true).text('...');
-        
+
         $.post(ajaxurl, {
             action: 'lendcity_action', sub_action: 'save_page_seo',
             nonce: nonce,
             page_id: pageId,
             priority: priority,
+            is_pillar: isPillar,
             keywords: keywords
         }, function(r) {
             if (r.success) {

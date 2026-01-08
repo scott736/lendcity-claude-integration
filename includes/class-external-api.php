@@ -173,7 +173,7 @@ class LendCity_External_API {
             'difficultyLevel' => $catalog_entry['difficulty_level'] ?? get_post_meta($post_id, 'difficulty_level', true) ?: 'intermediate',
             'qualityScore' => (int) ($catalog_entry['content_quality_score'] ?? get_post_meta($post_id, 'content_quality_score', true) ?: 50),
             'contentLifespan' => $catalog_entry['content_lifespan'] ?? get_post_meta($post_id, 'content_lifespan', true) ?: 'evergreen',
-            'isPillar' => (bool) ($catalog_entry['is_pillar_content'] ?? get_post_meta($post_id, 'is_pillar', true) ?: false),
+            'isPillar' => (bool) ($catalog_entry['is_pillar_content'] ?? get_post_meta($post_id, '_lendcity_is_pillar', true) ?: false),
             'summary' => $catalog_entry['summary'] ?? get_post_meta($post_id, 'summary', true) ?: '',
             'mainTopics' => $catalog_entry['main_topics'] ?? [],
             'semanticKeywords' => $catalog_entry['semantic_keywords'] ?? [],
