@@ -34,11 +34,6 @@ module.exports = async function handler(req, res) {
       postId,
       content,
       title,
-      // Source article metadata for scoring
-      topicCluster,
-      relatedClusters = [],
-      funnelStage,
-      targetPersona,
       // Options
       maxLinks = 5,
       minScore = 40,
@@ -55,15 +50,32 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // Build source article metadata
-    const sourceArticle = {
+    // Fetch source article metadata from Pinecone (the single source of truth)
+    let sourceArticle = {
       postId,
       title,
-      topicCluster,
-      relatedClusters,
-      funnelStage,
-      targetPersona
+      topicCluster: 'general',
+      relatedClusters: [],
+      funnelStage: 'awareness',
+      targetPersona: 'general'
     };
+
+    if (postId) {
+      const sourceFromPinecone = await getArticle(postId);
+      if (sourceFromPinecone) {
+        console.log(`Found source article ${postId} in Pinecone:`, sourceFromPinecone.topicCluster);
+        sourceArticle = {
+          postId,
+          title: title || sourceFromPinecone.title,
+          topicCluster: sourceFromPinecone.topicCluster || 'general',
+          relatedClusters: sourceFromPinecone.relatedClusters || [],
+          funnelStage: sourceFromPinecone.funnelStage || 'awareness',
+          targetPersona: sourceFromPinecone.targetPersona || 'general'
+        };
+      } else {
+        console.log(`Source article ${postId} not in Pinecone yet, using defaults`);
+      }
+    }
 
     // Step 1: Generate embedding for source content
     const contentText = extractBodyText(content);
