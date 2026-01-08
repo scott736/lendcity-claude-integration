@@ -49,6 +49,7 @@ class LendCity_External_API {
      */
     private function request($endpoint, $data = [], $method = 'POST') {
         if (!$this->is_configured()) {
+            error_log('LendCity Sync Error: External API not configured');
             return new WP_Error('not_configured', 'External API not configured');
         }
 
@@ -70,16 +71,21 @@ class LendCity_External_API {
         $response = wp_remote_request($url, $args);
 
         if (is_wp_error($response)) {
+            error_log('LendCity Sync Error: ' . $response->get_error_message() . ' - URL: ' . $url);
             return $response;
         }
 
         $status_code = wp_remote_retrieve_response_code($response);
-        $body = json_decode(wp_remote_retrieve_body($response), true);
+        $body_raw = wp_remote_retrieve_body($response);
+        $body = json_decode($body_raw, true);
 
         if ($status_code >= 400) {
+            $error_msg = $body['error'] ?? $body['message'] ?? 'API request failed';
+            error_log('LendCity Sync Error: HTTP ' . $status_code . ' - ' . $error_msg . ' - URL: ' . $url);
+            error_log('LendCity Sync Response: ' . substr($body_raw, 0, 500));
             return new WP_Error(
                 'api_error',
-                $body['error'] ?? 'API request failed',
+                $error_msg,
                 ['status' => $status_code, 'response' => $body]
             );
         }
@@ -292,7 +298,7 @@ class LendCity_External_API {
      */
     private function get_catalog_entry($post_id) {
         global $wpdb;
-        $table_name = $wpdb->prefix . 'lendcity_smart_linker_catalog';
+        $table_name = $wpdb->prefix . 'lendcity_catalog';
 
         $row = $wpdb->get_row($wpdb->prepare(
             "SELECT * FROM {$table_name} WHERE post_id = %d",
@@ -632,6 +638,99 @@ function lendcity_delete_on_remove($post_id) {
 }
 
 /**
+ * AJAX handler for getting sync items (first step of batched sync)
+ */
+add_action('wp_ajax_lendcity_get_sync_items', 'lendcity_get_sync_items');
+
+function lendcity_get_sync_items() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    // Get pillar pages first
+    $pillar_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'fields' => 'ids',
+        'meta_query' => [
+            ['key' => '_lendcity_is_pillar', 'value' => '1', 'compare' => '=']
+        ]
+    ]);
+
+    // Get other pages
+    $other_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'fields' => 'ids',
+        'post__not_in' => !empty($pillar_pages) ? $pillar_pages : [0]
+    ]);
+
+    // Get all posts
+    $posts = get_posts([
+        'post_type' => 'post',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'fields' => 'ids'
+    ]);
+
+    // Return ordered list: pillars first, then pages, then posts
+    $items = array_merge(
+        array_map(function($id) { return ['id' => $id, 'type' => 'pillar']; }, $pillar_pages),
+        array_map(function($id) { return ['id' => $id, 'type' => 'page']; }, $other_pages),
+        array_map(function($id) { return ['id' => $id, 'type' => 'post']; }, $posts)
+    );
+
+    wp_send_json_success([
+        'items' => $items,
+        'total' => count($items),
+        'pillars' => count($pillar_pages),
+        'pages' => count($other_pages),
+        'posts' => count($posts)
+    ]);
+}
+
+/**
+ * AJAX handler for syncing a single item
+ */
+add_action('wp_ajax_lendcity_sync_single_item', 'lendcity_sync_single_item');
+
+function lendcity_sync_single_item() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $post_id = isset($_POST['post_id']) ? intval($_POST['post_id']) : 0;
+    if (!$post_id) {
+        wp_send_json_error(['message' => 'No post ID provided']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'External API not configured']);
+    }
+
+    $result = $api->sync_to_catalog($post_id);
+
+    if (is_wp_error($result)) {
+        wp_send_json_error([
+            'message' => $result->get_error_message(),
+            'postId' => $post_id
+        ]);
+    }
+
+    wp_send_json_success([
+        'postId' => $post_id,
+        'result' => $result
+    ]);
+}
+
+/**
  * AJAX handler for rebuilding catalog (pillars first, then content)
  * This ensures pillar pages are in Pinecone before posts get cluster-matched
  */
@@ -647,8 +746,13 @@ function lendcity_rebuild_catalog() {
 
     $api = new LendCity_External_API();
     if (!$api->is_configured()) {
-        wp_send_json_error(['message' => 'External API not configured']);
+        error_log('LendCity Bulk Sync: External API not configured - check Settings page');
+        wp_send_json_error(['message' => 'External API not configured. Please check External Vector API settings.']);
     }
+
+    // Log the API URL being used (without the key)
+    $api_url = get_option('lendcity_external_api_url', '');
+    error_log('LendCity Bulk Sync: Starting sync to ' . $api_url);
 
     $results = [
         'pillars' => ['total' => 0, 'success' => 0, 'failed' => 0],

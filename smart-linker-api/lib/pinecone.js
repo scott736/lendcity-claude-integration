@@ -57,6 +57,8 @@ async function upsertArticle(article) {
       // Linking data
       inboundLinkCount: article.inboundLinkCount || 0,
       anchorPhrases: article.anchorPhrases || [],
+      suggestedAnchors: article.suggestedAnchors || [],
+      questionsAnswered: article.questionsAnswered || [],
 
       // SEO data
       summary: article.summary || '',

@@ -389,6 +389,13 @@ class LendCity_Claude_Integration {
         add_action('admin_menu', array($this, 'add_admin_menu'));
         add_action('admin_init', array($this, 'register_settings'));
         add_action('admin_notices', array($this, 'show_upgrade_notice'));
+
+        // Protect API keys from being overwritten with empty values
+        add_filter('pre_update_option_lendcity_claude_api_key', array($this, 'preserve_api_key'), 10, 3);
+        add_filter('pre_update_option_lendcity_tinypng_api_key', array($this, 'preserve_api_key'), 10, 3);
+        add_filter('pre_update_option_lendcity_unsplash_api_key', array($this, 'preserve_api_key'), 10, 3);
+        add_filter('pre_update_option_lendcity_external_api_key', array($this, 'preserve_api_key'), 10, 3);
+        add_filter('pre_update_option_lendcity_transistor_api_key', array($this, 'preserve_api_key'), 10, 3);
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_scripts'));
 
         // v12.3.0: Consolidated AJAX router - reduces 55 hooks to 1
@@ -606,7 +613,25 @@ class LendCity_Claude_Integration {
     }
 
     /**
+     * Preserve API keys - prevent overwriting with empty values
+     * This is the primary protection via pre_update_option filter
+     *
+     * @param mixed $new_value The new value being saved
+     * @param mixed $old_value The existing value in database
+     * @param string $option The option name
+     * @return mixed The value to save
+     */
+    public function preserve_api_key($new_value, $old_value, $option) {
+        // If new value is empty but old value exists, keep the old value
+        if (empty($new_value) && !empty($old_value)) {
+            return $old_value;
+        }
+        return sanitize_text_field($new_value);
+    }
+
+    /**
      * Sanitize API keys - preserve existing value if new value is empty
+     * This is a backup protection via sanitize_callback
      */
     public function sanitize_api_key_claude($value) {
         if (empty($value)) {

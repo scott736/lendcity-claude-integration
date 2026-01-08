@@ -21,7 +21,7 @@ function lendcity_claude_uninstall_cleanup() {
 
     // 1. Database tables - PRESERVED
     // We no longer drop tables on uninstall to preserve:
-    // - lendcity_smart_linker_catalog (Claude-analyzed article metadata)
+    // - lendcity_catalog (Claude-analyzed article metadata)
     // This allows users to reinstall without losing their catalog data
     // To fully remove data, users should use a database cleanup tool
 
