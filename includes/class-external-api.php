@@ -470,7 +470,7 @@ class LendCity_External_API {
         // Get catalog data for this post
         $catalog_entry = $this->get_catalog_entry($post_id);
 
-        // Get smart links stored for this post
+        // Get smart links stored for this post (outbound - links FROM this article)
         $smart_links = get_post_meta($post_id, '_lendcity_smart_links', true) ?: [];
         $internal_links = array_map(function($link) {
             // Get target post info for cluster context
@@ -487,6 +487,9 @@ class LendCity_External_API {
             ];
         }, $smart_links);
 
+        // Get inbound links (links TO this article from other posts)
+        $inbound_links = $this->get_inbound_links($post_id);
+
         $data = [
             'postId' => $post_id,
             'title' => $post->post_title,
@@ -494,14 +497,62 @@ class LendCity_External_API {
             'summary' => $catalog_entry['summary'] ?? get_post_meta($post_id, 'summary', true) ?: '',
             'topicCluster' => $catalog_entry['topic_cluster'] ?? get_post_meta($post_id, 'topic_cluster', true) ?: '',
             'focusKeyword' => $options['focus_keyword'] ?? null,
-            // Full context (new)
+            // Full context
             'internalLinks' => $internal_links,
+            'inboundLinks' => $inbound_links,  // NEW: Links pointing TO this article
             'relatedClusters' => $catalog_entry['related_clusters'] ?? [],
             'funnelStage' => $catalog_entry['funnel_stage'] ?? get_post_meta($post_id, 'funnel_stage', true) ?: '',
             'targetPersona' => $catalog_entry['target_persona'] ?? get_post_meta($post_id, 'target_persona', true) ?: ''
         ];
 
         return $this->request('api/meta-generate', $data);
+    }
+
+    /**
+     * Get inbound links - posts that link TO this article
+     *
+     * @param int $post_id Post ID to find inbound links for
+     * @return array Array of inbound link data
+     */
+    private function get_inbound_links($post_id) {
+        global $wpdb;
+
+        $post_url = get_permalink($post_id);
+        if (!$post_url) {
+            return [];
+        }
+
+        // Query all posts with smart links that point to this post
+        $results = $wpdb->get_results($wpdb->prepare("
+            SELECT pm.post_id, pm.meta_value
+            FROM {$wpdb->postmeta} pm
+            INNER JOIN {$wpdb->posts} p ON pm.post_id = p.ID
+            WHERE pm.meta_key = '_lendcity_smart_links'
+            AND p.post_status = 'publish'
+            AND pm.meta_value LIKE %s
+        ", '%' . $wpdb->esc_like('"target_post_id":' . $post_id) . '%'), ARRAY_A);
+
+        $inbound_links = [];
+        foreach ($results as $row) {
+            $links = maybe_unserialize($row['meta_value']);
+            if (!is_array($links)) continue;
+
+            foreach ($links as $link) {
+                $target_id = $link['target_post_id'] ?? ($link['target_id'] ?? 0);
+                if ((int)$target_id === (int)$post_id) {
+                    $source_id = $row['post_id'];
+                    $source_cluster = get_post_meta($source_id, 'topic_cluster', true) ?: '';
+                    $inbound_links[] = [
+                        'sourcePostId' => $source_id,
+                        'sourceTitle' => get_the_title($source_id),
+                        'anchorText' => $link['anchor'] ?? '',
+                        'sourceCluster' => $source_cluster
+                    ];
+                }
+            }
+        }
+
+        return array_slice($inbound_links, 0, 10); // Limit to top 10 inbound links
     }
 }
 
@@ -743,6 +794,25 @@ function lendcity_save_max_links() {
     update_option('lendcity_max_links_per_article', $max_links);
 
     wp_send_json_success(['max_links' => $max_links]);
+}
+
+/**
+ * AJAX handler for saving auto-meta after linking setting
+ */
+add_action('wp_ajax_lendcity_save_auto_meta_setting', 'lendcity_save_auto_meta_setting');
+
+function lendcity_save_auto_meta_setting() {
+    check_ajax_referer('lendcity_claude_nonce', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $enabled = isset($_POST['enabled']) && $_POST['enabled'] === 'yes' ? 'yes' : 'no';
+
+    update_option('lendcity_auto_meta_after_linking', $enabled);
+
+    wp_send_json_success(['enabled' => $enabled]);
 }
 
 /**

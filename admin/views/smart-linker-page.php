@@ -196,6 +196,7 @@ $total_links = $smart_linker->get_total_link_count();
             </div>
 
             <!-- Settings Card -->
+            <?php $auto_meta_enabled = get_option('lendcity_auto_meta_after_linking', 'no') === 'yes'; ?>
             <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
                 <h3 style="margin: 0 0 10px; color: white;">⚙️ Link Settings</h3>
                 <p style="margin: 0 0 10px; font-size: 13px; opacity: 0.8;">Configure auto-linking behavior.</p>
@@ -204,7 +205,13 @@ $total_links = $smart_linker->get_total_link_count();
                     <input type="number" id="max-links-setting" value="<?php echo esc_attr($max_links); ?>" min="1" max="20" style="width: 60px; padding: 5px;">
                     <button type="button" id="save-max-links" class="button" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3);">Save</button>
                 </div>
-                <p style="margin: 0; font-size: 11px; opacity: 0.6;">How many links to add when auto-linking new posts.</p>
+                <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.2);">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="auto-meta-after-linking" <?php checked($auto_meta_enabled); ?> style="width: 16px; height: 16px;">
+                        <span style="font-size: 13px;">Auto-regenerate SEO meta after linking</span>
+                    </label>
+                    <p style="margin: 5px 0 0 24px; font-size: 11px; opacity: 0.6;">When enabled, SEO title/description automatically updates after links are inserted.</p>
+                </div>
             </div>
 
             <!-- Pinecone Stats Card -->
@@ -839,6 +846,31 @@ jQuery(document).ready(function($) {
             }
         }).fail(function() {
             $btn.prop('disabled', false).text('Save');
+        });
+    });
+
+    // Auto-meta after linking toggle
+    $('#auto-meta-after-linking').on('change', function() {
+        var enabled = $(this).is(':checked') ? 'yes' : 'no';
+        var $checkbox = $(this);
+
+        $.post(ajaxurl, {
+            action: 'lendcity_save_auto_meta_setting',
+            nonce: nonce,
+            enabled: enabled
+        }, function(response) {
+            if (response.success) {
+                // Brief visual feedback
+                $checkbox.parent().css('background', 'rgba(76, 175, 80, 0.3)');
+                setTimeout(function() {
+                    $checkbox.parent().css('background', '');
+                }, 1000);
+            } else {
+                // Revert on error
+                $checkbox.prop('checked', !$checkbox.is(':checked'));
+            }
+        }).fail(function() {
+            $checkbox.prop('checked', !$checkbox.is(':checked'));
         });
     });
 

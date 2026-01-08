@@ -67,18 +67,28 @@ async function generateMeta(article, options = {}) {
   const client = getClient();
   const {
     focusKeyword = null,
-    internalLinks = [],      // Links inserted into this article
+    internalLinks = [],      // Links FROM this article (outbound)
+    inboundLinks = [],       // Links TO this article (from other posts)
     relatedClusters = [],    // Related topic clusters
     funnelStage = null,      // awareness, consideration, decision
     targetPersona = null     // new-investor, experienced-investor, etc.
   } = options;
 
-  // Build internal links context
+  // Build outbound links context (links FROM this article)
   let linksContext = '';
   if (internalLinks.length > 0) {
     linksContext = `
-INTERNAL LINKS IN THIS ARTICLE:
+OUTBOUND LINKS FROM THIS ARTICLE:
 ${internalLinks.map(l => `- "${l.anchorText}" → ${l.title} (${l.topicCluster || 'general'})`).join('\n')}
+`;
+  }
+
+  // Build inbound links context (links TO this article)
+  let inboundContext = '';
+  if (inboundLinks.length > 0) {
+    inboundContext = `
+INBOUND LINKS TO THIS ARTICLE (how other articles refer to this one):
+${inboundLinks.map(l => `- "${l.sourceTitle}" links here with anchor "${l.anchorText}" (${l.sourceCluster || 'general'})`).join('\n')}
 `;
   }
 
@@ -101,12 +111,14 @@ Summary: ${article.summary || 'N/A'}
 Content Preview: ${(article.content || article.body || '').slice(0, 2000)}
 Topic Cluster: ${article.topicCluster || 'N/A'}
 ${focusKeyword ? `Focus Keyword: ${focusKeyword}` : ''}
-${linksContext}${structureContext}
+${linksContext}${inboundContext}${structureContext}
 REQUIREMENTS:
 - Meta title: 50-60 characters, include primary keyword near start
 - Meta description: 150-160 characters, compelling, include call-to-action
 - Canadian real estate focus (LendCity)
 ${internalLinks.length > 0 ? '- Reference the linked topics naturally if relevant to the meta description' : ''}
+${inboundLinks.length > 0 ? '- Consider the inbound anchor text patterns - these show how other articles describe this content' : ''}
+${inboundLinks.length >= 3 ? '- The most common inbound anchor phrases may indicate key terms to include in the meta title' : ''}
 ${funnelStage === 'awareness' ? '- Use educational, informative language for awareness-stage content' : ''}
 ${funnelStage === 'consideration' ? '- Use how-to, comparison language for consideration-stage content' : ''}
 ${funnelStage === 'decision' ? '- Use action-oriented, specific language for decision-stage content' : ''}

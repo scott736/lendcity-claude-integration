@@ -36,8 +36,9 @@ module.exports = async function handler(req, res) {
       summary = null,
       topicCluster = null,
       focusKeyword = null,
-      // Full context options (new)
-      internalLinks = [],       // Links inserted into this article [{anchorText, title, topicCluster, url}]
+      // Full context options
+      internalLinks = [],       // Links FROM this article [{anchorText, title, topicCluster, url}]
+      inboundLinks = [],        // Links TO this article [{sourceTitle, anchorText, sourceCluster}]
       relatedClusters = [],     // Related topic clusters
       funnelStage = null,       // awareness, consideration, decision
       targetPersona = null,     // new-investor, experienced-investor, etc.
@@ -92,6 +93,7 @@ module.exports = async function handler(req, res) {
     const meta = await generateMeta(articleContext, {
       focusKeyword: derivedFocusKeyword,
       internalLinks,
+      inboundLinks,
       relatedClusters,
       funnelStage,
       targetPersona
