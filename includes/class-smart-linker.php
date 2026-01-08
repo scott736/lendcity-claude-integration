@@ -60,7 +60,7 @@ class LendCity_Smart_Linker {
 
     public function __construct() {
         global $wpdb;
-        $this->table_name = $wpdb->prefix . 'lendcity_catalog';
+        $this->table_name = $wpdb->prefix . 'lendcity_smart_linker_catalog';
         $this->api_key = get_option('lendcity_claude_api_key');
 
         // Cache debug mode setting (called 20+ times per request otherwise)
