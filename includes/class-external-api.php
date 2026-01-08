@@ -276,10 +276,33 @@ class LendCity_External_API {
             update_post_meta($post_id, '_lendcity_smart_links', $link_meta);
         }
 
+        // Always generate SEO metadata if missing (runs with link generation for faster saves)
+        $existing_title = get_post_meta($post_id, '_seopress_titles_title', true);
+        $existing_desc = get_post_meta($post_id, '_seopress_titles_desc', true);
+        $seo_generated = false;
+
+        if (empty($existing_title) || empty($existing_desc)) {
+            $meta_result = $this->generate_meta($post_id);
+
+            if (!is_wp_error($meta_result) && is_array($meta_result)) {
+                if (!empty($meta_result['title'])) {
+                    update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($meta_result['title']));
+                }
+                if (!empty($meta_result['description'])) {
+                    update_post_meta($post_id, '_seopress_titles_desc', sanitize_text_field($meta_result['description']));
+                }
+                if (!empty($meta_result['focusKeyphrase'])) {
+                    update_post_meta($post_id, '_seopress_analysis_target_kw', sanitize_text_field($meta_result['focusKeyphrase']));
+                }
+                $seo_generated = true;
+            }
+        }
+
         return [
             'success' => true,
             'links_created' => $links_created,
-            'suggestions_count' => count($suggestions['links'])
+            'suggestions_count' => count($suggestions['links']),
+            'seo_generated' => $seo_generated
         ];
     }
 

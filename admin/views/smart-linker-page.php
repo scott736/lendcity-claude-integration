@@ -14,14 +14,11 @@ $catalog = $smart_linker->get_catalog();
 $catalog_stats = $smart_linker->get_catalog_stats();
 $catalog_built_at = get_option('lendcity_post_catalog_built_at', '');
 $auto_linking = get_option('lendcity_smart_linker_auto', 'yes');
-$auto_seo = get_option('lendcity_auto_seo_metadata', 'yes');
 $queue_status = $smart_linker->get_queue_status();
 
 if (isset($_POST['save_smart_linker_settings']) && check_admin_referer('smart_linker_settings')) {
     update_option('lendcity_smart_linker_auto', isset($_POST['auto_linking']) ? 'yes' : 'no');
-    update_option('lendcity_auto_seo_metadata', isset($_POST['auto_seo']) ? 'yes' : 'no');
     $auto_linking = get_option('lendcity_smart_linker_auto');
-    $auto_seo = get_option('lendcity_auto_seo_metadata');
     echo '<div class="notice notice-success"><p>Settings saved!</p></div>';
 }
 
@@ -120,8 +117,7 @@ $total_links = $smart_linker->get_total_link_count();
     <div style="background: #f0f6fc; border: 1px solid #2271b1; border-radius: 4px; padding: 15px; margin-bottom: 20px;">
         <form method="post" style="display: flex; align-items: center; gap: 20px; flex-wrap: wrap;">
             <?php wp_nonce_field('smart_linker_settings'); ?>
-            <label><input type="checkbox" name="auto_linking" <?php checked($auto_linking, 'yes'); ?>> <strong>Auto-link new posts on publish</strong></label>
-            <label><input type="checkbox" name="auto_seo" <?php checked($auto_seo, 'yes'); ?>> <strong>Auto-generate SEO title/description</strong></label>
+            <label><input type="checkbox" name="auto_linking" <?php checked($auto_linking, 'yes'); ?>> <strong>Auto-link new posts on publish</strong> <span style="color: #666; font-weight: normal;">(also generates SEO title/description)</span></label>
             <button type="submit" name="save_smart_linker_settings" class="button">Save</button>
         </form>
     </div>
