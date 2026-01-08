@@ -196,6 +196,7 @@ $total_links = $smart_linker->get_total_link_count();
             </div>
 
             <!-- Settings Card -->
+            <?php $auto_meta_enabled = get_option('lendcity_auto_meta_after_linking', 'no') === 'yes'; ?>
             <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
                 <h3 style="margin: 0 0 10px; color: white;">⚙️ Link Settings</h3>
                 <p style="margin: 0 0 10px; font-size: 13px; opacity: 0.8;">Configure auto-linking behavior.</p>
@@ -204,7 +205,67 @@ $total_links = $smart_linker->get_total_link_count();
                     <input type="number" id="max-links-setting" value="<?php echo esc_attr($max_links); ?>" min="1" max="20" style="width: 60px; padding: 5px;">
                     <button type="button" id="save-max-links" class="button" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3);">Save</button>
                 </div>
-                <p style="margin: 0; font-size: 11px; opacity: 0.6;">How many links to add when auto-linking new posts.</p>
+                <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid rgba(255,255,255,0.2);">
+                    <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
+                        <input type="checkbox" id="auto-meta-after-linking" <?php checked($auto_meta_enabled); ?> style="width: 16px; height: 16px;">
+                        <span style="font-size: 13px;">Auto-regenerate SEO meta after linking</span>
+                    </label>
+                    <p style="margin: 5px 0 0 24px; font-size: 11px; opacity: 0.6;">When enabled, SEO title/description automatically updates after links are inserted.</p>
+                </div>
+            </div>
+
+            <!-- Pinecone Stats Card -->
+            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px; color: white;">📊 Pinecone Stats</h3>
+                <p style="margin: 0 0 15px; font-size: 13px; opacity: 0.8;">View what's vectorized in your Pinecone catalog.</p>
+                <button type="button" id="view-pinecone-stats" class="button button-large" style="background: #9c27b0; color: white; border: none; font-weight: bold; width: 100%;">
+                    📊 View Stats
+                </button>
+            </div>
+        </div>
+
+        <!-- Pinecone Stats Panel (hidden by default) -->
+        <div id="pinecone-stats-panel" style="display: none; background: rgba(255,255,255,0.95); padding: 20px; border-radius: 8px; color: #333; margin-top: 15px;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h3 style="margin: 0;">Pinecone Catalog Stats</h3>
+                <button type="button" id="close-pinecone-stats" class="button" style="padding: 0 10px;">&times; Close</button>
+            </div>
+            <div id="pinecone-stats-loading" style="text-align: center; padding: 20px;">Loading...</div>
+            <div id="pinecone-stats-content" style="display: none;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(100px, 1fr)); gap: 15px; margin-bottom: 20px;">
+                    <div style="text-align: center; padding: 15px; background: #e3f2fd; border-radius: 8px;">
+                        <div id="pinecone-total" style="font-size: 28px; font-weight: bold; color: #1565c0;">-</div>
+                        <div style="font-size: 11px; color: #666;">Total Vectorized</div>
+                    </div>
+                    <div style="text-align: center; padding: 15px; background: #e8f5e9; border-radius: 8px;">
+                        <div id="pinecone-pages" style="font-size: 28px; font-weight: bold; color: #2e7d32;">-</div>
+                        <div style="font-size: 11px; color: #666;">Pages</div>
+                    </div>
+                    <div style="text-align: center; padding: 15px; background: #fff3e0; border-radius: 8px;">
+                        <div id="pinecone-posts" style="font-size: 28px; font-weight: bold; color: #ef6c00;">-</div>
+                        <div style="font-size: 11px; color: #666;">Posts</div>
+                    </div>
+                    <div style="text-align: center; padding: 15px; background: #f3e5f5; border-radius: 8px;">
+                        <div id="pinecone-pillars" style="font-size: 28px; font-weight: bold; color: #7b1fa2;">-</div>
+                        <div style="font-size: 11px; color: #666;">Pillars</div>
+                    </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 20px;">
+                    <div>
+                        <h4 style="margin: 0 0 10px;">Topic Clusters</h4>
+                        <div id="pinecone-clusters" style="max-height: 200px; overflow-y: auto; font-size: 13px;"></div>
+                    </div>
+                    <div>
+                        <h4 style="margin: 0 0 10px;">Funnel Stages</h4>
+                        <div id="pinecone-funnels" style="font-size: 13px;"></div>
+                        <h4 style="margin: 15px 0 10px;">Personas</h4>
+                        <div id="pinecone-personas" style="font-size: 13px;"></div>
+                    </div>
+                </div>
+                <details style="margin-top: 20px;">
+                    <summary style="cursor: pointer; font-weight: bold;">View All Vectorized Articles</summary>
+                    <div id="pinecone-articles" style="max-height: 300px; overflow-y: auto; margin-top: 10px; font-size: 12px;"></div>
+                </details>
             </div>
         </div>
 
@@ -786,6 +847,120 @@ jQuery(document).ready(function($) {
         }).fail(function() {
             $btn.prop('disabled', false).text('Save');
         });
+    });
+
+    // Auto-meta after linking toggle
+    $('#auto-meta-after-linking').on('change', function() {
+        var enabled = $(this).is(':checked') ? 'yes' : 'no';
+        var $checkbox = $(this);
+
+        $.post(ajaxurl, {
+            action: 'lendcity_save_auto_meta_setting',
+            nonce: nonce,
+            enabled: enabled
+        }, function(response) {
+            if (response.success) {
+                // Brief visual feedback
+                $checkbox.parent().css('background', 'rgba(76, 175, 80, 0.3)');
+                setTimeout(function() {
+                    $checkbox.parent().css('background', '');
+                }, 1000);
+            } else {
+                // Revert on error
+                $checkbox.prop('checked', !$checkbox.is(':checked'));
+            }
+        }).fail(function() {
+            $checkbox.prop('checked', !$checkbox.is(':checked'));
+        });
+    });
+
+    // View Pinecone Stats
+    $('#view-pinecone-stats').on('click', function() {
+        var $btn = $(this);
+        var $panel = $('#pinecone-stats-panel');
+        var $loading = $('#pinecone-stats-loading');
+        var $content = $('#pinecone-stats-content');
+
+        $btn.prop('disabled', true).text('Loading...');
+        $panel.show();
+        $loading.show();
+        $content.hide();
+
+        $.post(ajaxurl, {
+            action: 'lendcity_get_pinecone_stats',
+            nonce: nonce
+        }, function(response) {
+            $loading.hide();
+
+            if (response.success) {
+                var data = response.data;
+                var stats = data.stats || {};
+
+                // Update summary stats
+                $('#pinecone-total').text(stats.totalVectorized || 0);
+                $('#pinecone-pages').text(stats.pages || 0);
+                $('#pinecone-posts').text(stats.posts || 0);
+                $('#pinecone-pillars').text(stats.pillars || 0);
+
+                // Build clusters list
+                var clustersHtml = '';
+                (data.clusters || []).forEach(function(c) {
+                    clustersHtml += '<div style="padding: 4px 0; border-bottom: 1px solid #eee;">' +
+                        '<strong>' + c.name + '</strong> <span style="color: #666;">(' + c.count + ')</span></div>';
+                });
+                $('#pinecone-clusters').html(clustersHtml || '<em>No clusters found</em>');
+
+                // Build funnel stages
+                var funnels = data.funnelStages || {};
+                var funnelHtml = '';
+                for (var stage in funnels) {
+                    var color = stage === 'awareness' ? '#2196f3' : (stage === 'consideration' ? '#ff9800' : '#4caf50');
+                    funnelHtml += '<div style="padding: 4px 0;"><span style="display: inline-block; width: 100px;">' +
+                        stage + ':</span> <strong style="color: ' + color + ';">' + funnels[stage] + '</strong></div>';
+                }
+                $('#pinecone-funnels').html(funnelHtml || '<em>No data</em>');
+
+                // Build personas
+                var personasHtml = '';
+                (data.personas || []).forEach(function(p) {
+                    personasHtml += '<div style="padding: 4px 0;">' + p.name + ': <strong>' + p.count + '</strong></div>';
+                });
+                $('#pinecone-personas').html(personasHtml || '<em>No data</em>');
+
+                // Build articles list
+                var articlesHtml = '<table style="width: 100%; border-collapse: collapse;">';
+                articlesHtml += '<tr style="background: #f5f5f5;"><th style="padding: 6px; text-align: left;">ID</th>' +
+                    '<th style="padding: 6px; text-align: left;">Title</th><th style="padding: 6px; text-align: left;">Type</th>' +
+                    '<th style="padding: 6px; text-align: left;">Cluster</th></tr>';
+                (data.articles || []).forEach(function(a) {
+                    var typeLabel = a.isPillar ? '⭐ Pillar' : (a.contentType === 'page' ? '📄 Page' : '📝 Post');
+                    articlesHtml += '<tr style="border-bottom: 1px solid #eee;">';
+                    articlesHtml += '<td style="padding: 6px;">' + a.postId + '</td>';
+                    articlesHtml += '<td style="padding: 6px;">' + (a.title || 'Untitled') + '</td>';
+                    articlesHtml += '<td style="padding: 6px;">' + typeLabel + '</td>';
+                    articlesHtml += '<td style="padding: 6px;">' + (a.topicCluster || '-') + '</td>';
+                    articlesHtml += '</tr>';
+                });
+                articlesHtml += '</table>';
+                $('#pinecone-articles').html(articlesHtml);
+
+                $content.show();
+                $btn.prop('disabled', false).text('📊 View Stats');
+            } else {
+                $content.html('<div style="color: #c62828; padding: 20px; text-align: center;">Error: ' +
+                    (response.data?.message || 'Failed to load stats') + '</div>').show();
+                $btn.prop('disabled', false).text('📊 View Stats');
+            }
+        }).fail(function() {
+            $loading.hide();
+            $content.html('<div style="color: #c62828; padding: 20px; text-align: center;">Request failed. Check your network connection.</div>').show();
+            $btn.prop('disabled', false).text('📊 View Stats');
+        });
+    });
+
+    // Close Pinecone Stats Panel
+    $('#close-pinecone-stats').on('click', function() {
+        $('#pinecone-stats-panel').hide();
     });
 
     // ========== BUILD ALL ==========

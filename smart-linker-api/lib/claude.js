@@ -58,10 +58,50 @@ Example: ["BRRRR strategy", "buy rehab rent refinance method", "learn how the BR
 
 /**
  * Generate meta title and description for an article
+ * Enhanced to consider full content structure: links, clusters, funnel, persona
+ *
+ * @param {Object} article - Article data (title, summary, content, topicCluster, etc.)
+ * @param {Object} options - Options including focusKeyword, internalLinks, relatedClusters
  */
 async function generateMeta(article, options = {}) {
   const client = getClient();
-  const { focusKeyword = null } = options;
+  const {
+    focusKeyword = null,
+    internalLinks = [],      // Links FROM this article (outbound)
+    inboundLinks = [],       // Links TO this article (from other posts)
+    relatedClusters = [],    // Related topic clusters
+    funnelStage = null,      // awareness, consideration, decision
+    targetPersona = null     // new-investor, experienced-investor, etc.
+  } = options;
+
+  // Build outbound links context (links FROM this article)
+  let linksContext = '';
+  if (internalLinks.length > 0) {
+    linksContext = `
+OUTBOUND LINKS FROM THIS ARTICLE:
+${internalLinks.map(l => `- "${l.anchorText}" → ${l.title} (${l.topicCluster || 'general'})`).join('\n')}
+`;
+  }
+
+  // Build inbound links context (links TO this article)
+  let inboundContext = '';
+  if (inboundLinks.length > 0) {
+    inboundContext = `
+INBOUND LINKS TO THIS ARTICLE (how other articles refer to this one):
+${inboundLinks.map(l => `- "${l.sourceTitle}" links here with anchor "${l.anchorText}" (${l.sourceCluster || 'general'})`).join('\n')}
+`;
+  }
+
+  // Build content structure context
+  let structureContext = '';
+  if (relatedClusters.length > 0 || funnelStage || targetPersona) {
+    structureContext = `
+CONTENT STRUCTURE:
+${relatedClusters.length > 0 ? `Related Clusters: ${relatedClusters.join(', ')}` : ''}
+${funnelStage ? `Funnel Stage: ${funnelStage}` : ''}
+${targetPersona ? `Target Persona: ${targetPersona}` : ''}
+`;
+  }
 
   const prompt = `You are an SEO expert writing meta titles and descriptions.
 
@@ -71,11 +111,19 @@ Summary: ${article.summary || 'N/A'}
 Content Preview: ${(article.content || article.body || '').slice(0, 2000)}
 Topic Cluster: ${article.topicCluster || 'N/A'}
 ${focusKeyword ? `Focus Keyword: ${focusKeyword}` : ''}
-
+${linksContext}${inboundContext}${structureContext}
 REQUIREMENTS:
 - Meta title: 50-60 characters, include primary keyword near start
 - Meta description: 150-160 characters, compelling, include call-to-action
 - Canadian real estate focus (LendCity)
+${internalLinks.length > 0 ? '- Reference the linked topics naturally if relevant to the meta description' : ''}
+${inboundLinks.length > 0 ? '- Consider the inbound anchor text patterns - these show how other articles describe this content' : ''}
+${inboundLinks.length >= 3 ? '- The most common inbound anchor phrases may indicate key terms to include in the meta title' : ''}
+${funnelStage === 'awareness' ? '- Use educational, informative language for awareness-stage content' : ''}
+${funnelStage === 'consideration' ? '- Use how-to, comparison language for consideration-stage content' : ''}
+${funnelStage === 'decision' ? '- Use action-oriented, specific language for decision-stage content' : ''}
+${targetPersona === 'new-investor' ? '- Speak to beginners exploring real estate investing' : ''}
+${targetPersona === 'experienced-investor' ? '- Speak to seasoned investors looking to optimize' : ''}
 
 Return JSON object:
 {
@@ -92,7 +140,8 @@ Return JSON object:
 
   try {
     const text = response.content[0].text.trim();
-    return JSON.parse(text);
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    return jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
   } catch (e) {
     return {
       metaTitle: article.title.slice(0, 60),

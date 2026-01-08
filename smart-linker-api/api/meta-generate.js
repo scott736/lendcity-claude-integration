@@ -36,6 +36,12 @@ module.exports = async function handler(req, res) {
       summary = null,
       topicCluster = null,
       focusKeyword = null,
+      // Full context options
+      internalLinks = [],       // Links FROM this article [{anchorText, title, topicCluster, url}]
+      inboundLinks = [],        // Links TO this article [{sourceTitle, anchorText, sourceCluster}]
+      relatedClusters = [],     // Related topic clusters
+      funnelStage = null,       // awareness, consideration, decision
+      targetPersona = null,     // new-investor, experienced-investor, etc.
       // Options
       includeRelatedKeywords = true,
       linkAwareMeta = true
@@ -83,9 +89,14 @@ module.exports = async function handler(req, res) {
       topicCluster: topicCluster || keywords.mainTopics[0] || 'general'
     };
 
-    // Generate meta with Claude
+    // Generate meta with Claude - now with full content structure context
     const meta = await generateMeta(articleContext, {
-      focusKeyword: derivedFocusKeyword
+      focusKeyword: derivedFocusKeyword,
+      internalLinks,
+      inboundLinks,
+      relatedClusters,
+      funnelStage,
+      targetPersona
     });
 
     // Build response

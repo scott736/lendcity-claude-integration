@@ -83,6 +83,9 @@ class LendCity_Smart_Linker {
         // v12.0 Background queue processing hooks (runs without browser)
         add_action('lendcity_process_catalog_queue', array($this, 'process_catalog_queue_batch'));
 
+        // v12.5 Auto-meta regeneration after linking
+        add_action('lendcity_batch_meta_regen', array($this, 'process_batch_meta_regeneration'));
+
         // Loopback processing (non-cron)
         add_action('wp_ajax_lendcity_background_process', array($this, 'ajax_background_process'));
         add_action('wp_ajax_nopriv_lendcity_background_process', array($this, 'ajax_background_process'));
@@ -2795,7 +2798,36 @@ class LendCity_Smart_Linker {
 
         $this->debug_log("Inserted link to {$target_url} in post {$post_id}");
 
+        // v12.5: Auto-trigger meta regeneration after linking (if enabled)
+        $this->maybe_schedule_meta_regeneration($post_id);
+
         return array('success' => true, 'link_id' => $link_id);
+    }
+
+    /**
+     * Schedule meta regeneration for a post after links are modified
+     * Only triggers if auto-meta setting is enabled
+     *
+     * @param int $post_id Post ID to regenerate meta for
+     */
+    private function maybe_schedule_meta_regeneration($post_id) {
+        // Check if auto-meta after linking is enabled
+        $auto_meta_enabled = get_option('lendcity_auto_meta_after_linking', 'no') === 'yes';
+        if (!$auto_meta_enabled) {
+            return;
+        }
+
+        // Mark this post for meta regeneration (batched to avoid multiple calls)
+        $pending_meta = get_transient('lendcity_pending_meta_regen') ?: [];
+        if (!in_array($post_id, $pending_meta)) {
+            $pending_meta[] = $post_id;
+            set_transient('lendcity_pending_meta_regen', $pending_meta, 300); // 5 minute window
+        }
+
+        // Schedule the meta regeneration to run after all links are inserted
+        if (!wp_next_scheduled('lendcity_batch_meta_regen')) {
+            wp_schedule_single_event(time() + 5, 'lendcity_batch_meta_regen');
+        }
     }
 
     /**
@@ -4574,6 +4606,67 @@ class LendCity_Smart_Linker {
         update_option($this->meta_queue_status_option, 'idle');
         wp_clear_scheduled_hook('lendcity_process_meta_queue');
         return array('success' => true);
+    }
+
+    // =========================================================================
+    // AUTO META REGENERATION AFTER LINKING (v12.5)
+    // =========================================================================
+
+    /**
+     * Process batch meta regeneration for posts that had links inserted
+     * Called via wp_schedule_single_event after links are modified
+     */
+    public function process_batch_meta_regeneration() {
+        $pending_posts = get_transient('lendcity_pending_meta_regen') ?: [];
+
+        if (empty($pending_posts)) {
+            return;
+        }
+
+        // Clear the pending list
+        delete_transient('lendcity_pending_meta_regen');
+
+        $this->debug_log("Auto-regenerating meta for " . count($pending_posts) . " posts after linking");
+
+        // Check if external API is configured
+        $external_api = new LendCity_External_API();
+        if (!$external_api->is_configured()) {
+            $this->debug_log("External API not configured, skipping auto-meta");
+            return;
+        }
+
+        $success_count = 0;
+        $error_count = 0;
+
+        foreach ($pending_posts as $post_id) {
+            // Generate meta with full context (includes links)
+            $result = $external_api->generate_meta_with_context($post_id);
+
+            if (is_wp_error($result)) {
+                $this->debug_log("Auto-meta failed for post {$post_id}: " . $result->get_error_message());
+                $error_count++;
+                continue;
+            }
+
+            if (!empty($result['success']) && !empty($result['meta'])) {
+                // Save to SEOPress meta fields
+                if (!empty($result['meta']['title'])) {
+                    update_post_meta($post_id, '_seopress_titles_title', sanitize_text_field($result['meta']['title']));
+                }
+                if (!empty($result['meta']['description'])) {
+                    update_post_meta($post_id, '_seopress_titles_desc', sanitize_text_field($result['meta']['description']));
+                }
+                $success_count++;
+                $this->debug_log("Auto-meta generated for post {$post_id}");
+            } else {
+                $error_count++;
+            }
+
+            // Brief pause between API calls
+            usleep(500000); // 0.5 second
+        }
+
+        $this->debug_log("Auto-meta regeneration complete: {$success_count} success, {$error_count} errors");
     }
 
     // =========================================================================
