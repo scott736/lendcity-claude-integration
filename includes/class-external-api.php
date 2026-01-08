@@ -252,6 +252,7 @@ class LendCity_External_API {
             if ($count > 0) {
                 $updated_content = $new_content;
                 $link_meta[] = [
+                    'link_id' => uniqid('lnk_'),
                     'anchor' => $anchor,
                     'url' => $url,
                     'target_id' => $suggestion['postId'] ?? 0,

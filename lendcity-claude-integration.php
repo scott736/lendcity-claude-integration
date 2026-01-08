@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 12.5.7
+ * Version: 12.5.8
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '12.5.7');
+define('LENDCITY_CLAUDE_VERSION', '12.5.8');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -1310,12 +1310,13 @@ class LendCity_Claude_Integration {
         
         // Build HTML
         $html = '';
-        foreach ($links as $link) {
+        foreach ($links as $idx => $link) {
             $edit_link = get_edit_post_link($link['source_post_id']);
             $is_page = !empty($link['is_page']) ? 'page' : 'post';
             $target_display = str_replace(home_url(), '', $link['url']);
-            
-            $html .= '<tr data-link-id="' . esc_attr($link['link_id']) . '" 
+            $link_id = $link['link_id'] ?? $link['source_post_id'] . '-' . $idx;
+
+            $html .= '<tr data-link-id="' . esc_attr($link_id) . '" 
                 data-source-id="' . esc_attr($link['source_post_id']) . '" 
                 data-current-url="' . esc_attr($link['url']) . '"
                 data-source-title="' . esc_attr(strtolower($link['source_post_title'])) . '"
