@@ -242,42 +242,16 @@ $total_links = $smart_linker->get_total_link_count();
     </div>
     <?php endif; ?>
 
-    <!-- STEP 1: Catalog -->
-    <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
-        <h2 style="margin-top: 0;"><span style="background: #2271b1; color: white; padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 1</span>Build Catalog</h2>
-        <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 15px;">
-            <?php if (!empty($catalog)): ?>
-                <div style="background: #d4edda; padding: 15px; border-radius: 4px;">
-                    <strong style="font-size: 24px;"><?php echo $catalog_stats['total'] ?? 0; ?></strong> items<br>
-                    <small><?php echo $catalog_stats['pages'] ?? 0; ?> pages + <?php echo $catalog_stats['posts'] ?? 0; ?> posts</small>
-                </div>
-            <?php else: ?>
-                <div style="background: #fff3cd; padding: 15px; border-radius: 4px;">⚠️ Catalog not built</div>
-            <?php endif; ?>
-            <div>
-                <button type="button" id="build-catalog-bg" class="button button-primary button-large">🚀 Build (Background)</button>
-                <button type="button" id="build-catalog" class="button button-large">Build (Keep Window Open)</button>
-                <button type="button" id="skip-catalog" class="button button-large" style="background: #f0f0f0; color: #666;">⏭️ Skip (Already in Pinecone)</button>
-                <button type="button" id="clear-catalog" class="button button-large" style="color: #d63638;" <?php echo empty($catalog) ? 'disabled' : ''; ?>>Clear</button>
-                <p class="description"><?php echo $total_items; ?> items • Runs via WP Cron when using Background mode. Skip if using Vector Smart Linker.</p>
-            </div>
-        </div>
-        <div id="catalog-progress" style="display: none;">
-            <div style="background: #e0e0e0; height: 20px; border-radius: 4px;"><div id="catalog-bar" style="background: #2271b1; height: 100%; width: 0%;"></div></div>
-            <p id="catalog-status"></p>
-        </div>
-    </div>
-
-    <!-- STEP 2: Auto Linker (v12.2.2 - Ownership Map Removed) -->
+    <!-- Auto Linker (Legacy - uses local catalog or Pinecone) -->
     <div style="background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
-        <h2 style="margin-top: 0; color: white;"><span style="background: rgba(255,255,255,0.3); padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 2</span>Auto Linker</h2>
-        <p>Process all <?php echo $catalog_stats['posts'] ?? $catalog_stats['total'] ?? 0; ?> posts in your catalog. Scales to 1000+ posts without timeout!</p>
-        
+        <h2 style="margin-top: 0; color: white;">🔗 Auto Linker (Legacy)</h2>
+        <p>Process posts using the legacy linking system. For best results, use the Vector Smart Linker above instead.</p>
+
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <button type="button" id="start-bulk-queue-btn" class="button button-large" style="background: white; color: #764ba2; border: none; font-weight: bold;" <?php echo empty($catalog) ? 'disabled' : ''; ?>>
+            <button type="button" id="start-bulk-queue-btn" class="button button-large" style="background: white; color: #764ba2; border: none; font-weight: bold;">
                 Start Bulk Processing
             </button>
-            <button type="button" id="review-mode-btn" class="button button-large" style="background: rgba(255,255,255,0.9); color: #764ba2; border: none;" <?php echo empty($catalog) ? 'disabled' : ''; ?>>
+            <button type="button" id="review-mode-btn" class="button button-large" style="background: rgba(255,255,255,0.9); color: #764ba2; border: none;">
                 Review Mode — Approve Each
             </button>
             <button type="button" id="clear-queue-btn" class="button" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid white;">Clear Queue</button>
@@ -864,9 +838,8 @@ jQuery(document).ready(function($) {
         $('#build-all-progress').show();
 
         var steps = [
-            { name: 'Step 1: Building Catalog...', action: 'build_catalog' },
-            { name: 'Step 2: Running Auto Linker...', action: 'auto_link' },
-            { name: 'Step 3: Generating SEO Metadata...', action: 'seo_meta' }
+            { name: 'Step 1: Running Auto Linker...', action: 'auto_link' },
+            { name: 'Step 2: Generating SEO Metadata...', action: 'seo_meta' }
         ];
         var currentStep = 0;
 
@@ -886,17 +859,7 @@ jQuery(document).ready(function($) {
             var ajaxAction = '';
             var ajaxData = { nonce: nonce };
 
-            if (step.action === 'build_catalog') {
-                // Trigger catalog build
-                $('#build-catalog').click();
-                // Wait for it to complete (simplified - in practice monitor progress)
-                setTimeout(function() {
-                    currentStep++;
-                    $('#build-all-bar').css('width', (currentStep / steps.length * 100) + '%');
-                    runStep();
-                }, 3000);
-                return;
-            } else if (step.action === 'auto_link') {
+            if (step.action === 'auto_link') {
                 ajaxAction = 'lendcity_init_bulk_queue';
                 ajaxData.skip_existing = true;
             } else if (step.action === 'seo_meta') {
@@ -1053,94 +1016,6 @@ jQuery(document).ready(function($) {
                 $btn.prop('disabled', false).text('✕ Delete');
             }
         });
-    });
-    
-    // Build Catalog
-    $('#build-catalog').on('click', function() {
-        if (!confirm('Build catalog for all posts and pages? This will take a few minutes for large sites.')) return;
-        var $btn = $(this).prop('disabled', true).text('Loading...');
-        $('#catalog-progress').show();
-        $('#catalog-status').text('Fetching content list...');
-        
-        $.post(ajaxurl, {action: 'lendcity_action', sub_action: 'get_all_content_ids', nonce: nonce}, function(r) {
-            if (!r.success) { 
-                alert('Error getting content: ' + (r.data || 'Unknown error')); 
-                $btn.prop('disabled', false).text('Build Catalog'); 
-                $('#catalog-progress').hide();
-                return; 
-            }
-            var ids = r.data.ids, total = ids.length, current = 0, success = 0;
-            var batchSize = 5; // Process 5 articles per API call (stays under 30k token limit)
-            $btn.text('Building...');
-            
-            function processBatch() {
-                if (current >= total) {
-                    $('#catalog-bar').css('width', '100%');
-                    $('#catalog-status').text('Done! ' + success + ' of ' + total + ' items indexed.');
-                    setTimeout(function() { location.reload(); }, 2000);
-                    return;
-                }
-                
-                // Get next batch of IDs
-                var batchIds = ids.slice(current, current + batchSize);
-                var batchEnd = Math.min(current + batchSize, total);
-                
-                $('#catalog-bar').css('width', (current/total*100) + '%');
-                $('#catalog-status').text('Processing ' + (current+1) + '-' + batchEnd + ' of ' + total + '...');
-                
-                $.post(ajaxurl, {
-                    action: 'lendcity_action', sub_action: 'build_catalog_batch', 
-                    nonce: nonce, 
-                    post_ids: batchIds
-                }, function(resp) {
-                    if (resp.success) {
-                        success += resp.data.success;
-                    }
-                    current += batchSize;
-                    setTimeout(processBatch, 1000); // 1 second delay between batches
-                }).fail(function() {
-                    current += batchSize;
-                    setTimeout(processBatch, 1000);
-                });
-            }
-            processBatch();
-        }).fail(function(xhr, status, error) {
-            alert('AJAX Error: ' + error);
-            $btn.prop('disabled', false).text('Build Catalog');
-            $('#catalog-progress').hide();
-        });
-    });
-    
-    // Clear Catalog
-    $('#clear-catalog').on('click', function() {
-        if (!confirm('Clear the entire catalog? You will need to rebuild it before using Smart Linker.')) return;
-        var $btn = $(this).prop('disabled', true).text('Clearing...');
-
-        $.post(ajaxurl, {action: 'lendcity_action', sub_action: 'clear_catalog', nonce: nonce}, function(r) {
-            if (r.success) {
-                alert('Catalog cleared!');
-                location.reload();
-            } else {
-                alert('Error: ' + (r.data || 'Unknown error'));
-                $btn.prop('disabled', false).text('Clear Catalog');
-            }
-        }).fail(function() {
-            alert('AJAX Error');
-            $btn.prop('disabled', false).text('Clear Catalog');
-        });
-    });
-
-    // Skip Catalog - for users who already have Pinecone catalog
-    $('#skip-catalog').on('click', function() {
-        if (!confirm('Skip building the local catalog?\n\nUse this if you are using the Vector Smart Linker (Pinecone) and have already synced your content there.\n\nThe local catalog is only needed for the legacy Smart Linker.')) return;
-
-        // Just visually mark as skipped - no action needed
-        $(this).text('✓ Skipped').css({background: '#d4edda', color: '#155724'}).prop('disabled', true);
-
-        // Enable Step 2 buttons even without local catalog
-        $('#start-bulk-queue-btn, #review-mode-btn').prop('disabled', false);
-
-        alert('Local catalog skipped.\n\nIf you\'re using the Vector Smart Linker, use the "Rebuild Catalog" button in the orange section above to sync to Pinecone.');
     });
 
     // Trust AI - Background
@@ -2092,28 +1967,6 @@ jQuery(document).ready(function($) {
         }
         pollBackgroundQueues(); // Immediate first poll
     }
-
-    // Background Catalog Build
-    $('#build-catalog-bg').on('click', function() {
-        if (!confirm('Build catalog in background for all posts and pages? You can close the browser window.')) return;
-        var $btn = $(this).prop('disabled', true).text('Starting...');
-
-        $.post(ajaxurl, {
-            action: 'lendcity_action', sub_action: 'start_background_catalog',
-            nonce: nonce
-        }, function(r) {
-            $btn.prop('disabled', false).text('🚀 Build (Background)');
-            if (r.success) {
-                alert('Background catalog build started! ' + r.data.total + ' items queued.\n\nYou can close this window - processing continues via WP Cron.');
-                startBackgroundQueuePolling();
-            } else {
-                alert('Error: ' + (r.data || 'Failed to start'));
-            }
-        }).fail(function() {
-            $btn.prop('disabled', false).text('🚀 Build (Background)');
-            alert('AJAX Error - please try again');
-        });
-    });
 
     // Stop All Queues
     $('#stop-all-queues-btn').on('click', function() {
