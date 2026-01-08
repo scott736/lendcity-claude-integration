@@ -387,7 +387,8 @@ jQuery(document).ready(function($) {
             var items = response.data.items;
             var total = items.length;
             var current = 0;
-            var success = 0;
+            var synced = 0;
+            var skipped = 0;
             var failed = 0;
             var errors = [];
 
@@ -399,11 +400,15 @@ jQuery(document).ready(function($) {
                     // Done!
                     $progressBar.css('width', '100%');
                     $progressText.text('Complete!');
-                    $result.html('<span style="color: green;">Synced ' + success + ' of ' + total + ' articles to Pinecone</span>');
+                    var resultMsg = '<span style="color: green;">Synced ' + synced + ' articles to Pinecone</span>';
+                    if (skipped > 0) {
+                        resultMsg += '<br><span style="color: #666;">' + skipped + ' unchanged articles skipped (saves API costs)</span>';
+                    }
                     if (failed > 0) {
-                        $result.append('<br><span style="color: orange;">' + failed + ' articles failed. Check console for details.</span>');
+                        resultMsg += '<br><span style="color: orange;">' + failed + ' articles failed. Check console for details.</span>';
                         console.log('Sync errors:', errors);
                     }
+                    $result.html(resultMsg);
                     $btn.prop('disabled', false).text('Sync All Articles to Pinecone');
                     return;
                 }
@@ -419,7 +424,12 @@ jQuery(document).ready(function($) {
                     post_id: item.id
                 }, function(res) {
                     if (res.success) {
-                        success++;
+                        // Check if it was skipped (unchanged) vs actually synced
+                        if (res.data && res.data.action === 'skipped') {
+                            skipped++;
+                        } else {
+                            synced++;
+                        }
                     } else {
                         failed++;
                         errors.push({
