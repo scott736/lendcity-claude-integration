@@ -19,44 +19,21 @@ if (!defined('WP_UNINSTALL_PLUGIN')) {
 function lendcity_claude_uninstall_cleanup() {
     global $wpdb;
 
-    // 1. Drop custom database table
-    $table_name = $wpdb->prefix . 'lendcity_catalog';
-    $wpdb->query("DROP TABLE IF EXISTS {$table_name}");
+    // 1. Database tables - PRESERVED
+    // We no longer drop tables on uninstall to preserve:
+    // - lendcity_smart_linker_catalog (Claude-analyzed article metadata)
+    // This allows users to reinstall without losing their catalog data
+    // To fully remove data, users should use a database cleanup tool
 
-    // 2. Delete all plugin options
+    // 2. Delete temporary/queue options only - PRESERVE API keys and settings
+    // API keys are valuable and should not be deleted on uninstall
     $options_to_delete = array(
-        // Core settings
-        'lendcity_claude_api_key',
-        'lendcity_claude_model',
-        'lendcity_links_per_post',
-        'lendcity_max_links_per_target',
-        'lendcity_link_target',
-        'lendcity_smart_linker_enabled',
+        // Version tracking (can be regenerated)
         'lendcity_catalog_db_version',
         'lendcity_claude_last_version',
         'lendcity_v11_notice_dismissed',
 
-        // Article scheduler settings
-        'lendcity_article_category',
-        'lendcity_article_author',
-        'lendcity_article_frequency',
-        'lendcity_auto_scheduler_enabled',
-        'lendcity_auto_scheduler_next_run',
-
-        // TinyPNG
-        'lendcity_tinypng_api_key',
-
-        // Unsplash
-        'lendcity_unsplash_access_key',
-
-        // Podcast settings
-        'lendcity_transistor_api_key',
-        'lendcity_transistor_shows',
-        'lendcity_podcast_webhook_secret',
-        'lendcity_podcast_default_author',
-        'lendcity_podcast_default_category',
-
-        // Queue states
+        // Queue states (temporary data)
         'lendcity_link_queue',
         'lendcity_link_queue_status',
         'lendcity_meta_queue',
@@ -64,9 +41,18 @@ function lendcity_claude_uninstall_cleanup() {
         'lendcity_catalog_queue',
         'lendcity_catalog_queue_status',
 
-        // Rate limiting
+        // Rate limiting (temporary)
         'lendcity_api_rate_limit',
     );
+
+    // PRESERVED (not deleted):
+    // - lendcity_claude_api_key (Claude API key)
+    // - lendcity_tinypng_api_key (TinyPNG API key)
+    // - lendcity_unsplash_access_key (Unsplash API key)
+    // - lendcity_transistor_api_key (Transistor API key)
+    // - lendcity_external_api_url (Vercel API URL)
+    // - lendcity_external_api_key (Vercel API key)
+    // - All other user settings
 
     foreach ($options_to_delete as $option) {
         delete_option($option);
@@ -99,11 +85,12 @@ function lendcity_claude_uninstall_cleanup() {
     // 5. Clear object cache for our keys
     wp_cache_flush();
 
-    // 6. Clean up post meta
-    $wpdb->query(
-        "DELETE FROM {$wpdb->postmeta}
-         WHERE meta_key LIKE 'lendcity_%'"
-    );
+    // 6. Post meta - PRESERVED
+    // We no longer delete post meta on uninstall to preserve:
+    // - Smart link data (_lendcity_smart_links)
+    // - Pillar page settings (_lendcity_is_pillar)
+    // - Page priority and keywords
+    // This allows users to reinstall the plugin without losing their link structure
 }
 
 // Run cleanup
