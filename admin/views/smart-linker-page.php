@@ -629,6 +629,14 @@ jQuery(document).ready(function($) {
     var bulkSyncNonce = '<?php echo wp_create_nonce('lendcity_bulk_sync'); ?>';
     var linkAuditNonce = '<?php echo wp_create_nonce('lendcity_link_audit'); ?>';
 
+    // Helper function to escape HTML
+    function escapeHtml(text) {
+        if (!text) return '';
+        var div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
     // ========== VECTOR SMART LINKER (Pinecone) ==========
 
     // Rebuild Catalog Button
@@ -730,20 +738,33 @@ jQuery(document).ready(function($) {
                     $('#audit-suboptimal-links').text(aggregatedStats.suboptimalLinks);
                     $('#audit-missing-opps').text(aggregatedStats.missingOpportunities);
 
-                    // Build issues list
+                    // Build issues list with action buttons
                     var issuesHtml = '';
                     if (allIssues.length > 0) {
-                        issuesHtml = '<table style="width: 100%; border-collapse: collapse; font-size: 13px;">';
-                        issuesHtml += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Type</th><th style="padding: 8px; text-align: left;">Post</th><th style="padding: 8px; text-align: left;">Details</th></tr>';
-                        allIssues.slice(0, 50).forEach(function(issue) {
+                        // Store issues globally for fix actions
+                        window.auditIssues = allIssues;
+
+                        issuesHtml = '<table style="width: 100%; border-collapse: collapse; font-size: 13px;" id="audit-issues-table">';
+                        issuesHtml += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Type</th><th style="padding: 8px; text-align: left;">Post</th><th style="padding: 8px; text-align: left;">Details</th><th style="padding: 8px; text-align: center;">Actions</th></tr>';
+                        allIssues.slice(0, 50).forEach(function(issue, index) {
                             var typeColor = issue.type === 'broken' ? '#c62828' : '#ef6c00';
                             var details = issue.type === 'broken'
-                                ? 'Anchor: "' + issue.anchor + '" → ' + issue.url
-                                : 'Current: ' + issue.currentTarget + ' → Better: ' + issue.betterOption;
-                            issuesHtml += '<tr style="border-bottom: 1px solid #eee;">';
+                                ? 'Anchor: "' + escapeHtml(issue.anchor) + '" → ' + escapeHtml(issue.url)
+                                : 'Current: ' + escapeHtml(issue.currentTarget) + ' → Better: ' + escapeHtml(issue.betterOption);
+
+                            var actions = '';
+                            if (issue.type === 'broken') {
+                                actions = '<button class="button button-small fix-link-btn" data-index="' + index + '" data-action="remove_broken" style="background: #dc3545; color: white; border: none;">Remove Link</button>';
+                            } else {
+                                actions = '<button class="button button-small fix-link-btn" data-index="' + index + '" data-action="swap_link" style="background: #28a745; color: white; border: none;">Accept Better</button>';
+                            }
+                            actions += ' <button class="button button-small fix-link-btn" data-index="' + index + '" data-action="ignore" style="background: #6c757d; color: white; border: none;">Ignore</button>';
+
+                            issuesHtml += '<tr id="issue-row-' + index + '" style="border-bottom: 1px solid #eee;">';
                             issuesHtml += '<td style="padding: 8px;"><span style="color: ' + typeColor + '; font-weight: bold;">' + issue.type.toUpperCase() + '</span></td>';
-                            issuesHtml += '<td style="padding: 8px;"><a href="post.php?post=' + issue.postId + '&action=edit" target="_blank">' + issue.postTitle + '</a></td>';
+                            issuesHtml += '<td style="padding: 8px;"><a href="post.php?post=' + issue.postId + '&action=edit" target="_blank">' + escapeHtml(issue.postTitle) + '</a></td>';
                             issuesHtml += '<td style="padding: 8px; font-size: 12px;">' + details + '</td>';
+                            issuesHtml += '<td style="padding: 8px; text-align: center; white-space: nowrap;">' + actions + '</td>';
                             issuesHtml += '</tr>';
                         });
                         issuesHtml += '</table>';
@@ -828,6 +849,72 @@ jQuery(document).ready(function($) {
             }
         }).fail(function() {
             $btn.prop('disabled', false).text('Save');
+        });
+    });
+
+    // Fix Link Button Handler (delegated for dynamically added buttons)
+    $(document).on('click', '.fix-link-btn', function() {
+        var $btn = $(this);
+        var index = parseInt($btn.data('index'));
+        var action = $btn.data('action');
+        var issue = window.auditIssues[index];
+
+        if (!issue) {
+            alert('Issue not found');
+            return;
+        }
+
+        // Confirmation
+        var confirmMsg = '';
+        if (action === 'remove_broken') {
+            confirmMsg = 'Remove the broken link "' + issue.anchor + '" from the post?\n\nThe anchor text will be kept, but the link will be removed.';
+        } else if (action === 'swap_link') {
+            confirmMsg = 'Change the link target from:\n"' + issue.currentTarget + '"\nto:\n"' + issue.betterOption + '"?';
+        } else if (action === 'ignore') {
+            confirmMsg = 'Ignore this issue?';
+        }
+
+        if (!confirm(confirmMsg)) {
+            return;
+        }
+
+        $btn.prop('disabled', true).text('...');
+
+        var postData = {
+            action: 'lendcity_fix_link',
+            nonce: linkAuditNonce,
+            post_id: issue.postId,
+            fix_type: action,
+            anchor: issue.anchor,
+            old_url: issue.type === 'broken' ? issue.url : issue.currentUrl,
+            new_url: issue.betterUrl || ''
+        };
+
+        $.post(ajaxurl, postData, function(response) {
+            if (response.success) {
+                // Mark row as fixed
+                var $row = $('#issue-row-' + index);
+                $row.css('background', '#d4edda');
+                $row.find('.fix-link-btn').remove();
+                $row.find('td:last').html('<span style="color: #28a745; font-weight: bold;">✓ ' + (action === 'ignore' ? 'Ignored' : 'Fixed') + '</span>');
+
+                // Update counters
+                if (action !== 'ignore') {
+                    var currentBroken = parseInt($('#audit-broken-links').text()) || 0;
+                    var currentSuboptimal = parseInt($('#audit-suboptimal-links').text()) || 0;
+                    if (issue.type === 'broken' && currentBroken > 0) {
+                        $('#audit-broken-links').text(currentBroken - 1);
+                    } else if (issue.type === 'suboptimal' && currentSuboptimal > 0) {
+                        $('#audit-suboptimal-links').text(currentSuboptimal - 1);
+                    }
+                }
+            } else {
+                alert('Error: ' + (response.data?.message || 'Failed to fix link'));
+                $btn.prop('disabled', false).text(action === 'remove_broken' ? 'Remove Link' : (action === 'swap_link' ? 'Accept Better' : 'Ignore'));
+            }
+        }).fail(function() {
+            alert('Request failed. Please try again.');
+            $btn.prop('disabled', false).text(action === 'remove_broken' ? 'Remove Link' : (action === 'swap_link' ? 'Accept Better' : 'Ignore'));
         });
     });
 
