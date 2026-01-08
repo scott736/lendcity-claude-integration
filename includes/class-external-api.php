@@ -155,7 +155,10 @@ class LendCity_External_API {
             return new WP_Error('invalid_post', 'Post not found');
         }
 
-        // Get all metadata
+        // Try to get data from WordPress catalog first (has Claude-analyzed metadata)
+        $catalog_entry = $this->get_catalog_entry($post_id);
+
+        // Build data array, preferring catalog data over post meta
         $data = [
             'postId' => $post_id,
             'title' => $post->post_title,
@@ -163,20 +166,56 @@ class LendCity_External_API {
             'slug' => $post->post_name,
             'content' => $post->post_content,
             'contentType' => $post->post_type,
-            'topicCluster' => get_post_meta($post_id, 'topic_cluster', true),
-            'relatedClusters' => get_post_meta($post_id, 'related_clusters', true) ?: [],
-            'funnelStage' => get_post_meta($post_id, 'funnel_stage', true),
-            'targetPersona' => get_post_meta($post_id, 'target_persona', true),
-            'difficultyLevel' => get_post_meta($post_id, 'difficulty_level', true) ?: 'intermediate',
-            'qualityScore' => (int) get_post_meta($post_id, 'content_quality_score', true) ?: 50,
-            'contentLifespan' => get_post_meta($post_id, 'content_lifespan', true) ?: 'evergreen',
-            'isPillar' => (bool) get_post_meta($post_id, 'is_pillar', true),
-            'summary' => get_post_meta($post_id, 'summary', true),
+            'topicCluster' => $catalog_entry['topic_cluster'] ?? get_post_meta($post_id, 'topic_cluster', true) ?: '',
+            'relatedClusters' => $catalog_entry['related_clusters'] ?? get_post_meta($post_id, 'related_clusters', true) ?: [],
+            'funnelStage' => $catalog_entry['funnel_stage'] ?? get_post_meta($post_id, 'funnel_stage', true) ?: '',
+            'targetPersona' => $catalog_entry['target_persona'] ?? get_post_meta($post_id, 'target_persona', true) ?: '',
+            'difficultyLevel' => $catalog_entry['difficulty_level'] ?? get_post_meta($post_id, 'difficulty_level', true) ?: 'intermediate',
+            'qualityScore' => (int) ($catalog_entry['content_quality_score'] ?? get_post_meta($post_id, 'content_quality_score', true) ?: 50),
+            'contentLifespan' => $catalog_entry['content_lifespan'] ?? get_post_meta($post_id, 'content_lifespan', true) ?: 'evergreen',
+            'isPillar' => (bool) ($catalog_entry['is_pillar_content'] ?? get_post_meta($post_id, 'is_pillar', true) ?: false),
+            'summary' => $catalog_entry['summary'] ?? get_post_meta($post_id, 'summary', true) ?: '',
+            'mainTopics' => $catalog_entry['main_topics'] ?? [],
+            'semanticKeywords' => $catalog_entry['semantic_keywords'] ?? [],
             'publishedAt' => $post->post_date,
             'updatedAt' => $post->post_modified
         ];
 
         return $this->request('api/catalog-sync', $data);
+    }
+
+    /**
+     * Get catalog entry from WordPress database
+     *
+     * @param int $post_id Post ID
+     * @return array|null Catalog entry or null if not found
+     */
+    private function get_catalog_entry($post_id) {
+        global $wpdb;
+        $table_name = $wpdb->prefix . 'lendcity_smart_linker_catalog';
+
+        $row = $wpdb->get_row($wpdb->prepare(
+            "SELECT * FROM {$table_name} WHERE post_id = %d",
+            $post_id
+        ), ARRAY_A);
+
+        if (!$row) {
+            return null;
+        }
+
+        return [
+            'topic_cluster' => $row['topic_cluster'] ?? null,
+            'related_clusters' => json_decode($row['related_clusters'] ?? '[]', true) ?: [],
+            'funnel_stage' => $row['funnel_stage'] ?? null,
+            'target_persona' => $row['target_persona'] ?? null,
+            'difficulty_level' => $row['difficulty_level'] ?? 'intermediate',
+            'content_quality_score' => (int) ($row['content_quality_score'] ?? 50),
+            'content_lifespan' => $row['content_lifespan'] ?? 'evergreen',
+            'is_pillar_content' => (bool) ($row['is_pillar_content'] ?? 0),
+            'summary' => $row['summary'] ?? '',
+            'main_topics' => json_decode($row['main_topics'] ?? '[]', true) ?: [],
+            'semantic_keywords' => json_decode($row['semantic_keywords'] ?? '[]', true) ?: []
+        ];
     }
 
     /**
