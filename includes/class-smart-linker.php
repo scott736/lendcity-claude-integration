@@ -267,14 +267,12 @@ class LendCity_Smart_Linker {
 
     /**
      * Create or upgrade the catalog database table
+     * v6.1: DISABLED - Pinecone is sole source of truth, no WP table needed
      */
     public function maybe_create_table() {
-        $installed_version = get_option(self::DB_VERSION_OPTION, '0');
-
-        if (version_compare($installed_version, self::DB_VERSION, '<')) {
-            $this->create_table();
-            update_option(self::DB_VERSION_OPTION, self::DB_VERSION);
-        }
+        // v6.1: Table is completely optional - skip all table operations
+        // Pinecone stores all metadata, WordPress only uses post_meta
+        return;
     }
 
     /**
