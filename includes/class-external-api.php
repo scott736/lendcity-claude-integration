@@ -923,3 +923,131 @@ function lendcity_bulk_audit_links() {
 
     wp_send_json_success($results);
 }
+
+/**
+ * AJAX handler: Get list of all posts for chunked audit
+ */
+add_action('wp_ajax_lendcity_get_audit_list', 'lendcity_get_audit_list');
+
+function lendcity_get_audit_list() {
+    check_ajax_referer('lendcity_link_audit', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $items = [];
+
+    // Get all published posts and pages
+    $posts = get_posts([
+        'post_type' => ['post', 'page'],
+        'post_status' => 'publish',
+        'numberposts' => -1
+    ]);
+
+    foreach ($posts as $post) {
+        $items[] = ['id' => $post->ID, 'title' => $post->post_title];
+    }
+
+    wp_send_json_success(['items' => $items, 'total' => count($items)]);
+}
+
+/**
+ * AJAX handler: Audit a small chunk of posts (to avoid timeout)
+ */
+add_action('wp_ajax_lendcity_audit_chunk', 'lendcity_audit_chunk');
+
+function lendcity_audit_chunk() {
+    check_ajax_referer('lendcity_link_audit', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $post_ids = isset($_POST['post_ids']) ? array_map('intval', (array)$_POST['post_ids']) : [];
+
+    if (empty($post_ids)) {
+        wp_send_json_error(['message' => 'No post IDs provided']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'External API not configured']);
+    }
+
+    $results = [
+        'audited' => 0,
+        'failed' => 0,
+        'errors' => [],
+        'stats' => [
+            'totalLinks' => 0,
+            'brokenLinks' => 0,
+            'suboptimalLinks' => 0,
+            'missingOpportunities' => 0
+        ],
+        'issues' => []
+    ];
+
+    foreach ($post_ids as $post_id) {
+        $post = get_post($post_id);
+        if (!$post) {
+            $results['failed']++;
+            $results['errors'][] = ['postId' => $post_id, 'error' => 'Post not found'];
+            continue;
+        }
+
+        $audit = $api->audit_links($post_id);
+
+        if (is_wp_error($audit)) {
+            $results['failed']++;
+            $results['errors'][] = ['postId' => $post_id, 'error' => $audit->get_error_message()];
+            continue;
+        }
+
+        $results['audited']++;
+
+        // Aggregate stats
+        if (isset($audit['audit']['stats'])) {
+            $stats = $audit['audit']['stats'];
+            $results['stats']['totalLinks'] += $stats['totalLinks'] ?? 0;
+            $results['stats']['brokenLinks'] += $stats['brokenLinks'] ?? 0;
+            $results['stats']['suboptimalLinks'] += $stats['suboptimalLinks'] ?? 0;
+            $results['stats']['missingOpportunities'] += $stats['missingOpportunities'] ?? 0;
+        }
+
+        // Collect issues
+        if (isset($audit['audit'])) {
+            $a = $audit['audit'];
+
+            // Broken links
+            if (!empty($a['existing']['broken'])) {
+                foreach ($a['existing']['broken'] as $broken) {
+                    $results['issues'][] = [
+                        'type' => 'broken',
+                        'postId' => $post_id,
+                        'postTitle' => $post->post_title,
+                        'anchor' => $broken['anchor'],
+                        'url' => $broken['url'],
+                        'issue' => $broken['issue']
+                    ];
+                }
+            }
+
+            // Suboptimal links
+            if (!empty($a['existing']['suboptimal'])) {
+                foreach ($a['existing']['suboptimal'] as $sub) {
+                    $results['issues'][] = [
+                        'type' => 'suboptimal',
+                        'postId' => $post_id,
+                        'postTitle' => $post->post_title,
+                        'anchor' => $sub['anchor'],
+                        'currentTarget' => $sub['currentTarget']['title'] ?? '',
+                        'betterOption' => $sub['betterOptions'][0]['title'] ?? ''
+                    ];
+                }
+            }
+        }
+    }
+
+    wp_send_json_success($results);
+}

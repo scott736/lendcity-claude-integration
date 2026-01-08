@@ -257,8 +257,9 @@ $total_links = $smart_linker->get_total_link_count();
             <div>
                 <button type="button" id="build-catalog-bg" class="button button-primary button-large">🚀 Build (Background)</button>
                 <button type="button" id="build-catalog" class="button button-large">Build (Keep Window Open)</button>
+                <button type="button" id="skip-catalog" class="button button-large" style="background: #f0f0f0; color: #666;">⏭️ Skip (Already in Pinecone)</button>
                 <button type="button" id="clear-catalog" class="button button-large" style="color: #d63638;" <?php echo empty($catalog) ? 'disabled' : ''; ?>>Clear</button>
-                <p class="description"><?php echo $total_items; ?> items • Runs via WP Cron when using Background mode</p>
+                <p class="description"><?php echo $total_items; ?> items • Runs via WP Cron when using Background mode. Skip if using Vector Smart Linker.</p>
             </div>
         </div>
         <div id="catalog-progress" style="display: none;">
@@ -694,7 +695,7 @@ jQuery(document).ready(function($) {
         });
     });
 
-    // Audit All Links Button
+    // Audit All Links Button - CHUNKED to avoid timeout
     $('#audit-all-links').on('click', function() {
         var $btn = $(this);
         var $status = $('#audit-links-status');
@@ -705,57 +706,125 @@ jQuery(document).ready(function($) {
         $btn.prop('disabled', true).text('Auditing...');
         $status.show();
         $results.hide();
-        $bar.css('width', '20%');
-        $text.text('Checking all posts for link issues...');
+        $bar.css('width', '5%');
+        $text.text('Getting list of posts to audit...');
 
+        // Step 1: Get list of all posts to audit
         $.post(ajaxurl, {
-            action: 'lendcity_bulk_audit_links',
+            action: 'lendcity_get_audit_list',
             nonce: linkAuditNonce
         }, function(response) {
-            if (response.success) {
-                var data = response.data;
-                var summary = data.summary;
-                $bar.css('width', '100%');
-                $text.text('Audit complete! ' + data.audited + ' posts checked.');
-
-                // Update results panel
-                $('#audit-health-score').text(summary.overallHealthScore + '%');
-                $('#audit-total-links').text(summary.totalLinks);
-                $('#audit-broken-links').text(summary.brokenLinks);
-                $('#audit-suboptimal-links').text(summary.suboptimalLinks);
-                $('#audit-missing-opps').text(summary.missingOpportunities);
-
-                // Build issues list
-                var issuesHtml = '';
-                if (data.issues.length > 0) {
-                    issuesHtml = '<table style="width: 100%; border-collapse: collapse; font-size: 13px;">';
-                    issuesHtml += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Type</th><th style="padding: 8px; text-align: left;">Post</th><th style="padding: 8px; text-align: left;">Details</th></tr>';
-                    data.issues.slice(0, 50).forEach(function(issue) {
-                        var typeColor = issue.type === 'broken' ? '#c62828' : '#ef6c00';
-                        var details = issue.type === 'broken'
-                            ? 'Anchor: "' + issue.anchor + '" → ' + issue.url
-                            : 'Current: ' + issue.currentTarget + ' → Better: ' + issue.betterOption;
-                        issuesHtml += '<tr style="border-bottom: 1px solid #eee;">';
-                        issuesHtml += '<td style="padding: 8px;"><span style="color: ' + typeColor + '; font-weight: bold;">' + issue.type.toUpperCase() + '</span></td>';
-                        issuesHtml += '<td style="padding: 8px;"><a href="post.php?post=' + issue.postId + '&action=edit" target="_blank">' + issue.postTitle + '</a></td>';
-                        issuesHtml += '<td style="padding: 8px; font-size: 12px;">' + details + '</td>';
-                        issuesHtml += '</tr>';
-                    });
-                    issuesHtml += '</table>';
-                    if (data.issues.length > 50) {
-                        issuesHtml += '<p style="color: #666; font-size: 12px;">Showing first 50 of ' + data.issues.length + ' issues.</p>';
-                    }
-                } else {
-                    issuesHtml = '<p style="color: #2e7d32; text-align: center; padding: 20px;">✅ No issues found! All links are healthy.</p>';
-                }
-                $('#audit-issues-list').html(issuesHtml);
-
-                $results.show();
-                $btn.prop('disabled', false).text('🔍 Audit Links');
-            } else {
+            if (!response.success) {
                 $text.text('Error: ' + (response.data?.message || 'Unknown error'));
                 $btn.prop('disabled', false).text('🔍 Audit Links');
+                return;
             }
+
+            var items = response.data.items;
+            var total = items.length;
+            var processed = 0;
+            var chunkSize = 3; // Process 3 at a time
+
+            // Aggregated results
+            var aggregatedStats = {
+                totalLinks: 0,
+                brokenLinks: 0,
+                suboptimalLinks: 0,
+                missingOpportunities: 0
+            };
+            var allIssues = [];
+            var audited = 0;
+
+            $text.text('Auditing 0 of ' + total + ' posts...');
+
+            function processChunk() {
+                if (processed >= total) {
+                    // Done! Calculate health score and display results
+                    $bar.css('width', '100%');
+                    $text.text('Audit complete! ' + audited + ' posts checked.');
+
+                    var healthScore = 100;
+                    if (aggregatedStats.totalLinks > 0) {
+                        var healthyLinks = aggregatedStats.totalLinks - aggregatedStats.brokenLinks - aggregatedStats.suboptimalLinks;
+                        healthScore = Math.round((healthyLinks / aggregatedStats.totalLinks) * 100);
+                    }
+
+                    // Update results panel
+                    $('#audit-health-score').text(healthScore + '%');
+                    $('#audit-total-links').text(aggregatedStats.totalLinks);
+                    $('#audit-broken-links').text(aggregatedStats.brokenLinks);
+                    $('#audit-suboptimal-links').text(aggregatedStats.suboptimalLinks);
+                    $('#audit-missing-opps').text(aggregatedStats.missingOpportunities);
+
+                    // Build issues list
+                    var issuesHtml = '';
+                    if (allIssues.length > 0) {
+                        issuesHtml = '<table style="width: 100%; border-collapse: collapse; font-size: 13px;">';
+                        issuesHtml += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Type</th><th style="padding: 8px; text-align: left;">Post</th><th style="padding: 8px; text-align: left;">Details</th></tr>';
+                        allIssues.slice(0, 50).forEach(function(issue) {
+                            var typeColor = issue.type === 'broken' ? '#c62828' : '#ef6c00';
+                            var details = issue.type === 'broken'
+                                ? 'Anchor: "' + issue.anchor + '" → ' + issue.url
+                                : 'Current: ' + issue.currentTarget + ' → Better: ' + issue.betterOption;
+                            issuesHtml += '<tr style="border-bottom: 1px solid #eee;">';
+                            issuesHtml += '<td style="padding: 8px;"><span style="color: ' + typeColor + '; font-weight: bold;">' + issue.type.toUpperCase() + '</span></td>';
+                            issuesHtml += '<td style="padding: 8px;"><a href="post.php?post=' + issue.postId + '&action=edit" target="_blank">' + issue.postTitle + '</a></td>';
+                            issuesHtml += '<td style="padding: 8px; font-size: 12px;">' + details + '</td>';
+                            issuesHtml += '</tr>';
+                        });
+                        issuesHtml += '</table>';
+                        if (allIssues.length > 50) {
+                            issuesHtml += '<p style="color: #666; font-size: 12px;">Showing first 50 of ' + allIssues.length + ' issues.</p>';
+                        }
+                    } else {
+                        issuesHtml = '<p style="color: #2e7d32; text-align: center; padding: 20px;">✅ No issues found! All links are healthy.</p>';
+                    }
+                    $('#audit-issues-list').html(issuesHtml);
+
+                    $results.show();
+                    $btn.prop('disabled', false).text('🔍 Audit Links');
+                    return;
+                }
+
+                var chunk = items.slice(processed, processed + chunkSize);
+                var chunkIds = chunk.map(function(item) { return item.id; });
+
+                $.post(ajaxurl, {
+                    action: 'lendcity_audit_chunk',
+                    nonce: linkAuditNonce,
+                    post_ids: chunkIds
+                }, function(chunkResponse) {
+                    if (chunkResponse.success) {
+                        var data = chunkResponse.data;
+                        audited += data.audited || 0;
+
+                        // Aggregate stats
+                        aggregatedStats.totalLinks += data.stats.totalLinks || 0;
+                        aggregatedStats.brokenLinks += data.stats.brokenLinks || 0;
+                        aggregatedStats.suboptimalLinks += data.stats.suboptimalLinks || 0;
+                        aggregatedStats.missingOpportunities += data.stats.missingOpportunities || 0;
+
+                        // Collect issues
+                        if (data.issues && data.issues.length > 0) {
+                            allIssues = allIssues.concat(data.issues);
+                        }
+                    }
+
+                    processed += chunk.length;
+                    var percent = Math.round((processed / total) * 100);
+                    $bar.css('width', percent + '%');
+                    $text.text('Auditing ' + processed + ' of ' + total + ' posts...');
+
+                    // Process next chunk
+                    setTimeout(processChunk, 500);
+                }).fail(function() {
+                    processed += chunk.length;
+                    setTimeout(processChunk, 500);
+                });
+            }
+
+            // Start processing
+            processChunk();
         }).fail(function() {
             $text.text('Request failed. Check console for details.');
             $btn.prop('disabled', false).text('🔍 Audit Links');
@@ -1046,7 +1115,7 @@ jQuery(document).ready(function($) {
     $('#clear-catalog').on('click', function() {
         if (!confirm('Clear the entire catalog? You will need to rebuild it before using Smart Linker.')) return;
         var $btn = $(this).prop('disabled', true).text('Clearing...');
-        
+
         $.post(ajaxurl, {action: 'lendcity_action', sub_action: 'clear_catalog', nonce: nonce}, function(r) {
             if (r.success) {
                 alert('Catalog cleared!');
@@ -1060,7 +1129,20 @@ jQuery(document).ready(function($) {
             $btn.prop('disabled', false).text('Clear Catalog');
         });
     });
-    
+
+    // Skip Catalog - for users who already have Pinecone catalog
+    $('#skip-catalog').on('click', function() {
+        if (!confirm('Skip building the local catalog?\n\nUse this if you are using the Vector Smart Linker (Pinecone) and have already synced your content there.\n\nThe local catalog is only needed for the legacy Smart Linker.')) return;
+
+        // Just visually mark as skipped - no action needed
+        $(this).text('✓ Skipped').css({background: '#d4edda', color: '#155724'}).prop('disabled', true);
+
+        // Enable Step 2 buttons even without local catalog
+        $('#start-bulk-queue-btn, #review-mode-btn').prop('disabled', false);
+
+        alert('Local catalog skipped.\n\nIf you\'re using the Vector Smart Linker, use the "Rebuild Catalog" button in the orange section above to sync to Pinecone.');
+    });
+
     // Trust AI - Background
     $('#trust-ai-btn').on('click', function() {
         if (!confirm('Queue ALL items for background linking? Links will be auto-inserted.')) return;
