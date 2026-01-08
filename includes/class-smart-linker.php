@@ -2136,35 +2136,8 @@ class LendCity_Smart_Linker {
         return 0;
     }
 
-    /**
-     * Get anchor diversity penalty
-     * Penalize anchors that are overused across the site
-     */
-    private function get_anchor_diversity_penalty($anchor_text, $target_id) {
-        $usage = get_option($this->anchor_usage_option, array());
-        $key = strtolower($anchor_text) . '_' . $target_id;
-
-        $count = isset($usage[$key]) ? $usage[$key] : 0;
-        if ($count > 10) return -15;
-        if ($count > 5) return -10;
-        if ($count > 3) return -5;
-        return 0;
-    }
-
-    /**
-     * Track anchor usage for diversity scoring
-     */
-    public function track_anchor_usage($anchor_text, $target_id) {
-        $usage = get_option($this->anchor_usage_option, array());
-        $key = strtolower($anchor_text) . '_' . $target_id;
-
-        if (!isset($usage[$key])) {
-            $usage[$key] = 0;
-        }
-        $usage[$key]++;
-
-        update_option($this->anchor_usage_option, $usage, false);
-    }
+    // v12.6.0: Removed get_anchor_diversity_penalty() and track_anchor_usage()
+    // These were never used - anchor diversity scoring was built but never integrated
 
     /**
      * Check if anchor length is optimal (2-4 words)
@@ -2277,28 +2250,8 @@ class LendCity_Smart_Linker {
         return min($score, 20);
     }
 
-    /**
-     * Build synonym map from catalog (for ownership map)
-     */
-    public function build_synonym_map() {
-        $catalog = $this->get_catalog();
-        $synonyms = array();
-
-        foreach ($catalog as $entry) {
-            $keywords = $entry['semantic_keywords'] ?? array();
-            foreach ($keywords as $kw) {
-                $kw_lower = strtolower($kw);
-                $syns = $this->get_keyword_synonyms($kw);
-                if (!empty($syns)) {
-                    $synonyms[$kw_lower] = $syns;
-                }
-            }
-        }
-
-        update_option($this->synonym_map_option, $synonyms, false);
-        $this->debug_log("Built synonym map: " . count($synonyms) . " keyword groups");
-        return $synonyms;
-    }
+    // v12.6.0: Removed build_synonym_map() - synonym map was built but never read/used
+    // Ownership map system was removed in v12.2.3
 
     /**
      * v12.2: Build compact catalog table for full site awareness
@@ -2677,8 +2630,7 @@ class LendCity_Smart_Linker {
         update_post_meta($post_id, $this->link_meta_key, $links);
         $this->clear_links_cache();
 
-        // v5.0: Track anchor usage for diversity scoring
-        $this->track_anchor_usage($anchor_text, $target_id);
+        // v12.6.0: Removed track_anchor_usage call (anchor diversity scoring was never integrated)
 
         $this->debug_log("Inserted link to {$target_url} in post {$post_id}");
 
@@ -2766,32 +2718,40 @@ class LendCity_Smart_Linker {
 
     /**
      * Initialize bulk queue
+     * v12.6.0: No longer depends on local catalog - queries WordPress directly
+     * Works with Pinecone as source of truth
      */
     public function init_bulk_queue($skip_with_links = true) {
-        $catalog = $this->get_catalog();
+        // v12.6.0: Query WordPress directly instead of relying on local catalog
+        // This works regardless of whether local catalog is built
+        $posts = get_posts(array(
+            'post_type' => 'post',  // Only posts, not pages (pages are link targets)
+            'post_status' => 'publish',
+            'posts_per_page' => -1,
+            'fields' => 'ids'
+        ));
+
         $queue_ids = array();
         $skipped = 0;
 
-        foreach ($catalog as $id => $entry) {
-            if ($entry['is_page']) continue;
-
+        foreach ($posts as $post_id) {
             if ($skip_with_links) {
                 // Check meta key first (fast)
-                $existing_links = $this->get_post_links($id);
+                $existing_links = $this->get_post_links($post_id);
                 if (!empty($existing_links)) {
                     $skipped++;
                     continue;
                 }
 
                 // Also check actual content for claude links (fallback)
-                $post = get_post($id);
+                $post = get_post($post_id);
                 if ($post && strpos($post->post_content, 'data-claude-link="1"') !== false) {
                     $skipped++;
                     continue;
                 }
             }
 
-            $queue_ids[] = $id;
+            $queue_ids[] = $post_id;
         }
 
         update_option($this->queue_option, $queue_ids, false);
