@@ -116,10 +116,17 @@ $nonce = wp_create_nonce('lendcity_claude_nonce');
                 </td>
             </tr>
             <tr class="external-api-settings" style="<?php echo $use_external_api !== 'yes' ? 'display:none;' : ''; ?>">
-                <th scope="row">Catalog Migration</th>
+                <th scope="row">Sync Catalog to Pinecone</th>
                 <td>
-                    <p><strong>Export URL:</strong> <code><?php echo esc_url(rest_url('smart-linker/v1/export-catalog')); ?></code></p>
-                    <p class="description">Use this endpoint to export your catalog for migration to Pinecone. See the API documentation for the migration script.</p>
+                    <button type="button" class="button button-primary" id="sync-catalog-btn">Sync All Articles to Pinecone</button>
+                    <span id="sync-catalog-result" style="margin-left: 10px;"></span>
+                    <div id="sync-progress" style="display:none; margin-top: 10px;">
+                        <div style="background: #f0f0f0; border-radius: 4px; overflow: hidden; height: 20px;">
+                            <div id="sync-progress-bar" style="background: #0073aa; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                        </div>
+                        <p id="sync-progress-text" style="margin: 5px 0;">Syncing...</p>
+                    </div>
+                    <p class="description">This will sync all your published posts and pages to Pinecone for vector-based smart linking. Run this once after initial setup.</p>
                 </td>
             </tr>
         </table>
@@ -343,6 +350,50 @@ jQuery(document).ready(function($) {
         }).fail(function() {
             $result.html('<span style="color: red;">Connection failed</span>');
             $btn.prop('disabled', false).text('Test Connection');
+        });
+    });
+
+    // Sync Catalog to Pinecone
+    $('#sync-catalog-btn').on('click', function() {
+        var $btn = $(this);
+        var $result = $('#sync-catalog-result');
+        var $progress = $('#sync-progress');
+        var $progressBar = $('#sync-progress-bar');
+        var $progressText = $('#sync-progress-text');
+
+        if (!confirm('This will sync all published posts and pages to Pinecone. This may take several minutes for large catalogs. Continue?')) {
+            return;
+        }
+
+        $btn.prop('disabled', true).text('Syncing...');
+        $result.html('');
+        $progress.show();
+        $progressBar.css('width', '10%');
+        $progressText.text('Starting sync...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_bulk_sync_catalog',
+            nonce: '<?php echo wp_create_nonce('lendcity_bulk_sync'); ?>'
+        }, function(response) {
+            $progressBar.css('width', '100%');
+            if (response.success) {
+                var data = response.data;
+                $progressText.text('Complete!');
+                $result.html('<span style="color: green;">Synced ' + data.success + ' of ' + data.total + ' articles to Pinecone</span>');
+                if (data.failed > 0) {
+                    $result.append('<br><span style="color: orange;">' + data.failed + ' articles failed. Check console for details.</span>');
+                    console.log('Sync errors:', data.errors);
+                }
+            } else {
+                $progressText.text('Failed');
+                $result.html('<span style="color: red;">Error: ' + response.data.message + '</span>');
+            }
+            $btn.prop('disabled', false).text('Sync All Articles to Pinecone');
+        }).fail(function() {
+            $progressBar.css('width', '0%');
+            $progressText.text('Failed');
+            $result.html('<span style="color: red;">Sync failed - check server logs</span>');
+            $btn.prop('disabled', false).text('Sync All Articles to Pinecone');
         });
     });
 });

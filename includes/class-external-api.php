@@ -255,3 +255,52 @@ function lendcity_delete_on_remove($post_id) {
 
     $api->delete_from_catalog($post_id);
 }
+
+/**
+ * AJAX handler for bulk catalog sync
+ */
+add_action('wp_ajax_lendcity_bulk_sync_catalog', 'lendcity_bulk_sync_catalog');
+
+function lendcity_bulk_sync_catalog() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'External API not configured']);
+    }
+
+    // Get all published posts and pages
+    $posts = get_posts([
+        'post_type' => ['post', 'page'],
+        'post_status' => 'publish',
+        'numberposts' => -1
+    ]);
+
+    $results = [
+        'total' => count($posts),
+        'success' => 0,
+        'failed' => 0,
+        'errors' => []
+    ];
+
+    foreach ($posts as $post) {
+        $result = $api->sync_to_catalog($post->ID);
+
+        if (is_wp_error($result)) {
+            $results['failed']++;
+            $results['errors'][] = [
+                'postId' => $post->ID,
+                'title' => $post->post_title,
+                'error' => $result->get_error_message()
+            ];
+        } else {
+            $results['success']++;
+        }
+    }
+
+    wp_send_json_success($results);
+}
