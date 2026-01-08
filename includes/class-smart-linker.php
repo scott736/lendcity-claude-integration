@@ -66,8 +66,9 @@ class LendCity_Smart_Linker {
         // Cache debug mode setting (called 20+ times per request otherwise)
         $this->debug_mode = get_option('lendcity_debug_mode', 'no') === 'yes';
 
-        // Check if database needs to be created/upgraded
-        $this->maybe_create_table();
+        // v6.1: Table is OPTIONAL - Pinecone is source of truth
+        // Skip table creation to avoid errors on hosts without table
+        // $this->maybe_create_table();
 
         // Hook into post publish to auto-catalog and auto-link
         add_action('transition_post_status', array($this, 'on_post_publish'), 10, 3);
@@ -88,6 +89,25 @@ class LendCity_Smart_Linker {
         // Loopback processing (non-cron)
         add_action('wp_ajax_lendcity_background_process', array($this, 'ajax_background_process'));
         add_action('wp_ajax_nopriv_lendcity_background_process', array($this, 'ajax_background_process'));
+    }
+
+    // =========================================================================
+    // TABLE EXISTENCE CHECK - v6.1 Pinecone is source of truth
+    // =========================================================================
+
+    /**
+     * Check if the catalog table exists
+     * v6.1: Table is optional - Pinecone stores all metadata
+     */
+    private function table_exists() {
+        global $wpdb;
+        static $exists = null;
+
+        if ($exists === null) {
+            $exists = $wpdb->get_var("SHOW TABLES LIKE '{$this->table_name}'") === $this->table_name;
+        }
+
+        return $exists;
     }
 
     // =========================================================================
@@ -445,6 +465,11 @@ class LendCity_Smart_Linker {
      * All rich metadata is stored in Pinecone vector database
      */
     public function insert_catalog_entry($post_id, $entry) {
+        // v6.1: Table is optional - skip if doesn't exist
+        if (!$this->table_exists()) {
+            return true; // Pretend success - Pinecone is source of truth
+        }
+
         global $wpdb;
 
         // v6.0: Only store minimal fields needed for WordPress admin UI
@@ -476,6 +501,11 @@ class LendCity_Smart_Linker {
      * Mark a post as synced to Pinecone
      */
     public function mark_synced_to_pinecone($post_id, $synced = true) {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return true;
+        }
+
         global $wpdb;
 
         return $wpdb->update(
@@ -489,6 +519,11 @@ class LendCity_Smart_Linker {
      * Get posts that need syncing to Pinecone
      */
     public function get_unsynced_posts($limit = 50) {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return array();
+        }
+
         global $wpdb;
 
         return $wpdb->get_col($wpdb->prepare(
@@ -507,6 +542,11 @@ class LendCity_Smart_Linker {
      * @return array Result with 'inserted' and 'failed' counts
      */
     public function bulk_insert_catalog_entries($entries) {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return array('inserted' => count($entries), 'failed' => 0);
+        }
+
         global $wpdb;
 
         if (empty($entries)) {
@@ -577,6 +617,17 @@ class LendCity_Smart_Linker {
      * v6.0: Returns minimal data only (post_id, is_pillar, topic_cluster, synced)
      */
     public function get_catalog_entry($post_id) {
+        // v6.1: Table is optional - return data from post meta instead
+        if (!$this->table_exists()) {
+            $is_pillar = get_post_meta($post_id, '_lendcity_is_pillar', true);
+            return array(
+                'post_id' => $post_id,
+                'is_pillar_content' => $is_pillar ? 1 : 0,
+                'topic_cluster' => null,
+                'synced_to_pinecone' => 1
+            );
+        }
+
         global $wpdb;
 
         $row = $wpdb->get_row($wpdb->prepare(
@@ -594,6 +645,11 @@ class LendCity_Smart_Linker {
      * v6.0: Returns minimal data only
      */
     public function get_catalog($filters = array()) {
+        // v6.1: Table is optional - return empty array
+        if (!$this->table_exists()) {
+            return array();
+        }
+
         global $wpdb;
 
         // Use cache if available and no filters specified (batch processing optimization)
@@ -655,6 +711,11 @@ class LendCity_Smart_Linker {
      * Get catalog entries by topic cluster (fast indexed query)
      */
     public function get_by_topic_cluster($cluster, $limit = 50) {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return array();
+        }
+
         global $wpdb;
 
         $rows = $wpdb->get_results($wpdb->prepare(
@@ -676,6 +737,11 @@ class LendCity_Smart_Linker {
      * Get catalog entries by funnel stage (fast indexed query)
      */
     public function get_by_funnel_stage($stage, $limit = 50) {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return array();
+        }
+
         global $wpdb;
 
         $rows = $wpdb->get_results($wpdb->prepare(
@@ -697,6 +763,11 @@ class LendCity_Smart_Linker {
      * Search catalog using FULLTEXT (fast semantic matching)
      */
     public function search_catalog($search_term, $limit = 20) {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return array();
+        }
+
         global $wpdb;
 
         $rows = $wpdb->get_results($wpdb->prepare(
@@ -719,6 +790,11 @@ class LendCity_Smart_Linker {
      * Get related content by matching clusters and topics
      */
     public function get_related_content($post_id, $limit = 10) {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return array();
+        }
+
         global $wpdb;
 
         $entry = $this->get_catalog_entry($post_id);
@@ -750,6 +826,11 @@ class LendCity_Smart_Linker {
      * Get all unique topic clusters
      */
     public function get_all_clusters() {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return array();
+        }
+
         global $wpdb;
 
         return $wpdb->get_col(
@@ -763,6 +844,11 @@ class LendCity_Smart_Linker {
      * Get pillar content for a cluster
      */
     public function get_pillar_for_cluster($cluster) {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return null;
+        }
+
         global $wpdb;
 
         $row = $wpdb->get_row($wpdb->prepare(
@@ -794,6 +880,17 @@ class LendCity_Smart_Linker {
      * v6.0: Minimal stats - counts from WordPress, detail from Pinecone
      */
     public function get_catalog_stats() {
+        // v6.1: Table is optional - return zeroes
+        if (!$this->table_exists()) {
+            return array(
+                'total' => 0,
+                'pillars' => 0,
+                'synced' => 0,
+                'clusters' => 0,
+                'unsynced' => 0
+            );
+        }
+
         // Check transient cache first (5 minute cache)
         $cached = get_transient('lendcity_catalog_stats');
         if ($cached !== false) {
@@ -830,6 +927,11 @@ class LendCity_Smart_Linker {
      * Get catalog count (very fast)
      */
     public function get_catalog_count() {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return 0;
+        }
+
         global $wpdb;
         return intval($wpdb->get_var("SELECT COUNT(*) FROM {$this->table_name}"));
     }
@@ -838,6 +940,11 @@ class LendCity_Smart_Linker {
      * Delete catalog entry
      */
     public function delete_catalog_entry($post_id) {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return true;
+        }
+
         global $wpdb;
         $result = $wpdb->delete($this->table_name, array('post_id' => $post_id));
         $this->clear_catalog_cache();
@@ -848,6 +955,11 @@ class LendCity_Smart_Linker {
      * Clear entire catalog
      */
     public function clear_catalog() {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return;
+        }
+
         global $wpdb;
         $wpdb->query("TRUNCATE TABLE {$this->table_name}");
         $this->clear_catalog_cache();
@@ -2199,6 +2311,11 @@ class LendCity_Smart_Linker {
      * v12.2.5: Memory optimized - streaming queries with minimal columns, NO LIMITS
      */
     private function build_compact_catalog_table($source_id, $linked_urls = array()) {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return "PAGES: None (catalog not available)\n\nPOSTS: None (catalog not available)\n";
+        }
+
         global $wpdb;
 
         $pages_table = "ID|Title|Inbound#|Pri\n";
@@ -3448,6 +3565,10 @@ class LendCity_Smart_Linker {
         if ($meta !== '') {
             return (bool) $meta;
         }
+        // v6.1: Table is optional - return false if doesn't exist
+        if (!$this->table_exists()) {
+            return false;
+        }
         // Fall back to catalog
         global $wpdb;
         $is_pillar = $wpdb->get_var($wpdb->prepare(
@@ -3466,15 +3587,17 @@ class LendCity_Smart_Linker {
 
         $is_pillar = (bool) $is_pillar;
         update_post_meta($post_id, '_lendcity_is_pillar', $is_pillar ? 1 : 0);
-        // Also update catalog if entry exists
-        global $wpdb;
-        $wpdb->update(
-            $this->table_name,
-            array('is_pillar_content' => $is_pillar ? 1 : 0),
-            array('post_id' => $post_id),
-            array('%d'),
-            array('%d')
-        );
+        // v6.1: Also update catalog if table exists
+        if ($this->table_exists()) {
+            global $wpdb;
+            $wpdb->update(
+                $this->table_name,
+                array('is_pillar_content' => $is_pillar ? 1 : 0),
+                array('post_id' => $post_id),
+                array('%d'),
+                array('%d')
+            );
+        }
         return $is_pillar;
     }
 
@@ -3873,6 +3996,11 @@ class LendCity_Smart_Linker {
      * Update link counts for all catalog entries (run periodically)
      */
     public function update_link_counts() {
+        // v6.1: Table is optional
+        if (!$this->table_exists()) {
+            return;
+        }
+
         global $wpdb;
 
         $all_links = $this->get_all_site_links(5000);
