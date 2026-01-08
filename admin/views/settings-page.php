@@ -353,7 +353,7 @@ jQuery(document).ready(function($) {
         });
     });
 
-    // Sync Catalog to Pinecone
+    // Sync Catalog to Pinecone - CHUNKED to avoid timeout
     $('#sync-catalog-btn').on('click', function() {
         var $btn = $(this);
         var $result = $('#sync-catalog-result');
@@ -361,38 +361,85 @@ jQuery(document).ready(function($) {
         var $progressBar = $('#sync-progress-bar');
         var $progressText = $('#sync-progress-text');
 
-        if (!confirm('This will sync all published posts and pages to Pinecone. This may take several minutes for large catalogs. Continue?')) {
+        if (!confirm('This will sync all published posts and pages to Pinecone. Continue?')) {
             return;
         }
 
         $btn.prop('disabled', true).text('Syncing...');
         $result.html('');
         $progress.show();
-        $progressBar.css('width', '10%');
-        $progressText.text('Starting sync...');
+        $progressBar.css('width', '5%');
+        $progressText.text('Getting content list...');
 
+        // Step 1: Get list of all content to sync
         $.post(ajaxurl, {
-            action: 'lendcity_bulk_sync_catalog',
+            action: 'lendcity_get_sync_list',
             nonce: '<?php echo wp_create_nonce('lendcity_bulk_sync'); ?>'
         }, function(response) {
-            $progressBar.css('width', '100%');
-            if (response.success) {
-                var data = response.data;
-                $progressText.text('Complete!');
-                $result.html('<span style="color: green;">Synced ' + data.success + ' of ' + data.total + ' articles to Pinecone</span>');
-                if (data.failed > 0) {
-                    $result.append('<br><span style="color: orange;">' + data.failed + ' articles failed. Check console for details.</span>');
-                    console.log('Sync errors:', data.errors);
-                }
-            } else {
+            if (!response.success) {
                 $progressText.text('Failed');
-                $result.html('<span style="color: red;">Error: ' + response.data.message + '</span>');
+                $result.html('<span style="color: red;">Error: ' + (response.data.message || 'Unknown error') + '</span>');
+                $btn.prop('disabled', false).text('Sync All Articles to Pinecone');
+                return;
             }
-            $btn.prop('disabled', false).text('Sync All Articles to Pinecone');
+
+            var items = response.data.items;
+            var total = items.length;
+            var processed = 0;
+            var succeeded = 0;
+            var failed = 0;
+            var chunkSize = 3; // Process 3 at a time to stay under timeout
+
+            $progressText.text('Syncing 0 of ' + total + '...');
+
+            function processChunk() {
+                if (processed >= total) {
+                    // Done!
+                    $progressBar.css('width', '100%');
+                    $progressText.text('Complete!');
+                    $result.html('<span style="color: green;">Synced ' + succeeded + ' of ' + total + ' articles to Pinecone</span>');
+                    if (failed > 0) {
+                        $result.append('<br><span style="color: orange;">' + failed + ' articles failed.</span>');
+                    }
+                    $btn.prop('disabled', false).text('Sync All Articles to Pinecone');
+                    return;
+                }
+
+                var chunk = items.slice(processed, processed + chunkSize);
+                var chunkIds = chunk.map(function(item) { return item.id; });
+
+                $.post(ajaxurl, {
+                    action: 'lendcity_sync_chunk',
+                    nonce: '<?php echo wp_create_nonce('lendcity_bulk_sync'); ?>',
+                    post_ids: chunkIds
+                }, function(chunkResponse) {
+                    if (chunkResponse.success) {
+                        succeeded += chunkResponse.data.success || 0;
+                        failed += chunkResponse.data.failed || 0;
+                    } else {
+                        failed += chunk.length;
+                    }
+                    processed += chunk.length;
+
+                    var percent = Math.round((processed / total) * 100);
+                    $progressBar.css('width', percent + '%');
+                    $progressText.text('Syncing ' + processed + ' of ' + total + '...');
+
+                    // Process next chunk
+                    setTimeout(processChunk, 500);
+                }).fail(function() {
+                    failed += chunk.length;
+                    processed += chunk.length;
+                    setTimeout(processChunk, 500);
+                });
+            }
+
+            // Start processing
+            processChunk();
         }).fail(function() {
             $progressBar.css('width', '0%');
             $progressText.text('Failed');
-            $result.html('<span style="color: red;">Sync failed - check server logs</span>');
+            $result.html('<span style="color: red;">Failed to get content list</span>');
             $btn.prop('disabled', false).text('Sync All Articles to Pinecone');
         });
     });

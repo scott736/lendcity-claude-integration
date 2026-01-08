@@ -479,6 +479,107 @@ function lendcity_delete_on_remove($post_id) {
 }
 
 /**
+ * AJAX handler: Get list of all content to sync (for chunked processing)
+ */
+add_action('wp_ajax_lendcity_get_sync_list', 'lendcity_get_sync_list');
+
+function lendcity_get_sync_list() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $items = [];
+
+    // Get pillar pages first (they should sync first)
+    $pillar_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'meta_query' => [
+            ['key' => '_lendcity_is_pillar', 'value' => '1', 'compare' => '=']
+        ]
+    ]);
+
+    foreach ($pillar_pages as $page) {
+        $items[] = ['id' => $page->ID, 'type' => 'pillar', 'title' => $page->post_title];
+    }
+
+    $pillar_ids = wp_list_pluck($pillar_pages, 'ID');
+
+    // Get other pages
+    $other_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'post__not_in' => !empty($pillar_ids) ? $pillar_ids : [0]
+    ]);
+
+    foreach ($other_pages as $page) {
+        $items[] = ['id' => $page->ID, 'type' => 'page', 'title' => $page->post_title];
+    }
+
+    // Get all posts
+    $posts = get_posts([
+        'post_type' => 'post',
+        'post_status' => 'publish',
+        'numberposts' => -1
+    ]);
+
+    foreach ($posts as $post) {
+        $items[] = ['id' => $post->ID, 'type' => 'post', 'title' => $post->post_title];
+    }
+
+    wp_send_json_success(['items' => $items, 'total' => count($items)]);
+}
+
+/**
+ * AJAX handler: Sync a small chunk of posts (to avoid timeout)
+ */
+add_action('wp_ajax_lendcity_sync_chunk', 'lendcity_sync_chunk');
+
+function lendcity_sync_chunk() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $post_ids = isset($_POST['post_ids']) ? array_map('intval', (array)$_POST['post_ids']) : [];
+
+    if (empty($post_ids)) {
+        wp_send_json_error(['message' => 'No post IDs provided']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'External API not configured']);
+    }
+
+    $success = 0;
+    $failed = 0;
+    $errors = [];
+
+    foreach ($post_ids as $post_id) {
+        $result = $api->sync_to_catalog($post_id);
+
+        if (is_wp_error($result)) {
+            $failed++;
+            $errors[] = ['postId' => $post_id, 'error' => $result->get_error_message()];
+        } else {
+            $success++;
+        }
+    }
+
+    wp_send_json_success([
+        'success' => $success,
+        'failed' => $failed,
+        'errors' => $errors
+    ]);
+}
+
+/**
  * AJAX handler for rebuilding catalog (pillars first, then content)
  * v6.0: Uses BATCH operations for much faster sync
  */
