@@ -1106,6 +1106,7 @@ class LendCity_Smart_Linker {
 
     /**
      * Auto-catalog and auto-link when a post is published
+     * v12.6.1: Now uses Pinecone external API (local catalog removed)
      */
     public function on_post_publish($new_status, $old_status, $post) {
         if ($new_status !== 'publish' || $old_status === 'publish') {
@@ -1120,7 +1121,8 @@ class LendCity_Smart_Linker {
             return;
         }
 
-        if (empty($this->api_key)) {
+        // v12.6.1: Check if external API is enabled (required for auto-linking)
+        if (!get_option('lendcity_use_external_api', false)) {
             return;
         }
 
