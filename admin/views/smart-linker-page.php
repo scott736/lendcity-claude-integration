@@ -10,9 +10,7 @@ if (!defined('ABSPATH')) {
 }
 
 $smart_linker = new LendCity_Smart_Linker();
-$catalog = $smart_linker->get_catalog();
-$catalog_stats = $smart_linker->get_catalog_stats();
-$catalog_built_at = get_option('lendcity_post_catalog_built_at', '');
+// v12.6.1: Removed local catalog references - now using Pinecone as source of truth
 $auto_linking = get_option('lendcity_smart_linker_auto', 'yes');
 $queue_status = $smart_linker->get_queue_status();
 
@@ -25,7 +23,6 @@ if (isset($_POST['save_smart_linker_settings']) && check_admin_referer('smart_li
 // Optimized queries - only fetch what's needed
 $all_pages = get_posts(array('post_type' => 'page', 'post_status' => 'publish', 'posts_per_page' => 100, 'orderby' => 'title', 'order' => 'ASC', 'fields' => 'all'));
 $all_posts = get_posts(array('post_type' => 'post', 'post_status' => 'publish', 'posts_per_page' => 100, 'orderby' => 'date', 'order' => 'DESC', 'fields' => 'all'));
-$total_items = count($catalog);
 
 // Get links with limit for initial display
 $all_links = $smart_linker->get_all_site_links(100);
@@ -36,11 +33,10 @@ $total_links = $smart_linker->get_total_link_count();
     <h1>Smart Linker <span style="font-size: 14px; color: #666;">AI-Powered Internal Linking</span></h1>
 
     <!-- Background Queue Status Dashboard -->
+    <!-- v12.6.1: Removed local Catalog Queue (now using Pinecone for catalog) -->
     <?php
-    $catalog_queue_status = $smart_linker->get_catalog_queue_status();
     $meta_queue_status = $smart_linker->get_meta_queue_status();
     $any_queue_active =
-        ($catalog_queue_status['status'] ?? 'idle') === 'running' ||
         ($queue_status['state'] ?? 'idle') === 'running' ||
         ($meta_queue_status['status'] ?? 'idle') === 'running';
     ?>
@@ -51,23 +47,6 @@ $total_links = $smart_linker->get_total_link_count();
             <span style="opacity: 0.7; font-size: 13px; margin-left: auto;">You can close this window — processing continues in background</span>
         </div>
         <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px;">
-            <!-- Catalog Queue -->
-            <div id="bg-catalog-status" class="bg-queue-card" style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px; <?php echo ($catalog_queue_status['status'] ?? 'idle') !== 'running' ? 'opacity: 0.5;' : ''; ?>">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                    <strong>📚 Catalog</strong>
-                    <span class="bg-status-badge" style="background: <?php echo ($catalog_queue_status['status'] ?? 'idle') === 'running' ? '#00c853' : '#666'; ?>; padding: 2px 8px; border-radius: 10px; font-size: 11px;">
-                        <?php echo ucfirst($catalog_queue_status['status'] ?? 'idle'); ?>
-                    </span>
-                </div>
-                <div style="background: rgba(255,255,255,0.2); height: 8px; border-radius: 4px; overflow: hidden;">
-                    <?php $cat_pct = ($catalog_queue_status['total'] ?? 0) > 0 ? round((($catalog_queue_status['total'] ?? 0) - ($catalog_queue_status['remaining'] ?? 0)) / ($catalog_queue_status['total'] ?? 1) * 100) : 0; ?>
-                    <div class="bg-progress-bar" style="background: #4fc3f7; height: 100%; width: <?php echo $cat_pct; ?>%;"></div>
-                </div>
-                <div style="font-size: 12px; margin-top: 8px; opacity: 0.8;">
-                    <span class="bg-processed"><?php echo ($catalog_queue_status['total'] ?? 0) - ($catalog_queue_status['remaining'] ?? 0); ?></span> /
-                    <span class="bg-total"><?php echo $catalog_queue_status['total'] ?? 0; ?></span> items
-                </div>
-            </div>
             <!-- Linker Queue -->
             <div id="bg-linker-status" class="bg-queue-card" style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px; <?php echo ($queue_status['state'] ?? 'idle') !== 'running' ? 'opacity: 0.5;' : ''; ?>">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">

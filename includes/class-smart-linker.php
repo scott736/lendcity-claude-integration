@@ -987,21 +987,21 @@ class LendCity_Smart_Linker {
     /**
      * v5.0: Build all semantic enhancement indexes
      * Call this after catalog rebuild for optimal linking
+     * v12.6.1: Simplified - only builds TF-IDF index (synonym map removed as unused)
      */
     public function build_semantic_indexes() {
-        $this->debug_log('Building v5.0 semantic indexes...');
+        $this->debug_log('Building semantic indexes...');
 
-        // Build TF-IDF keyword frequency index
+        // Build TF-IDF keyword frequency index (still used for local fallback scoring)
         $this->build_keyword_frequency_index();
 
-        // Build synonym map
-        $this->build_synonym_map();
+        // v12.6.1: Removed build_synonym_map() call - was never used
 
-        $this->debug_log('Completed building v5.0 semantic indexes');
+        $this->debug_log('Completed building semantic indexes');
 
         return array(
             'success' => true,
-            'message' => 'Built TF-IDF and synonym indexes'
+            'message' => 'Built TF-IDF index'
         );
     }
 
