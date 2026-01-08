@@ -84,6 +84,25 @@ async function handleSync(req, res) {
   const existing = await getArticle(postId);
   const isUpdate = !!existing;
 
+  // COST OPTIMIZATION: Skip re-processing if article hasn't changed
+  // Compare updatedAt timestamps to avoid unnecessary Claude API calls
+  if (isUpdate && existing.updatedAt && updatedAt) {
+    const existingDate = new Date(existing.updatedAt).getTime();
+    const newDate = new Date(updatedAt).getTime();
+
+    // If the article hasn't been modified since last sync, skip expensive processing
+    if (existingDate >= newDate) {
+      console.log(`Article ${postId} unchanged (${existing.updatedAt}), skipping re-analysis`);
+      return res.status(200).json({
+        success: true,
+        action: 'skipped',
+        postId,
+        reason: 'Article has not been modified since last sync',
+        lastSynced: existing.updatedAt
+      });
+    }
+  }
+
   // Auto-analyze with Claude if metadata is missing
   // This makes the system fully intelligent without needing WordPress metadata
   let analyzedData = {};

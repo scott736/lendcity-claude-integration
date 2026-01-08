@@ -711,6 +711,7 @@ function lendcity_sync_single_item() {
 
     wp_send_json_success([
         'postId' => $post_id,
+        'action' => isset($result['action']) ? $result['action'] : 'synced',
         'result' => $result
     ]);
 }
