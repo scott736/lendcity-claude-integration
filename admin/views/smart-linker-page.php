@@ -185,6 +185,35 @@ $total_links = $smart_linker->get_total_link_count();
                 </div>
                 <p style="margin: 0; font-size: 11px; opacity: 0.6;">How many links to add when auto-linking new posts.</p>
             </div>
+
+            <!-- Bulk Link Card -->
+            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px; color: white;">🔗 Bulk Link All Posts</h3>
+                <p style="margin: 0 0 10px; font-size: 13px; opacity: 0.8;">Add internal links to all posts using vector matching.</p>
+                <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; cursor: pointer;">
+                    <input type="checkbox" id="skip-posts-with-links" checked>
+                    <span>Skip posts that already have links</span>
+                </label>
+                <button type="button" id="start-bulk-queue-btn" class="button button-large" style="background: #81c784; color: #1b5e20; border: none; font-weight: bold; width: 100%;">
+                    🚀 Start Bulk Linking
+                </button>
+                <div id="bulk-link-status" style="margin-top: 10px; display: none;">
+                    <div style="background: rgba(255,255,255,0.2); height: 8px; border-radius: 4px; overflow: hidden;">
+                        <div id="queue-progress-bar" style="background: #81c784; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                    </div>
+                    <p id="queue-progress-text" style="margin: 8px 0 0; font-size: 12px;">0 / 0 (0%)</p>
+                    <div style="margin-top: 8px; font-size: 11px; display: flex; gap: 15px; flex-wrap: wrap;">
+                        <span>Links: <strong id="queue-links-created">0</strong></span>
+                        <span>Skipped: <strong id="queue-skipped">0</strong></span>
+                        <span>Errors: <strong id="queue-errors">0</strong></span>
+                    </div>
+                    <div style="margin-top: 8px;">
+                        <button type="button" id="pause-queue-btn" class="button" style="font-size: 11px; padding: 2px 8px;">Pause</button>
+                        <button type="button" id="resume-queue-btn" class="button" style="font-size: 11px; padding: 2px 8px; display: none;">Resume</button>
+                        <button type="button" id="stop-queue-btn" class="button" style="font-size: 11px; padding: 2px 8px; color: #dc3545;">Stop</button>
+                    </div>
+                </div>
+            </div>
         </div>
 
         <!-- Audit Results Panel (hidden by default) -->
@@ -221,104 +250,7 @@ $total_links = $smart_linker->get_total_link_count();
     </div>
     <?php endif; ?>
 
-    <!-- Auto Linker (Legacy - uses local catalog or Pinecone) -->
-    <div style="background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
-        <h2 style="margin-top: 0; color: white;">🔗 Auto Linker (Legacy)</h2>
-        <p>Process posts using the legacy linking system. For best results, use the Vector Smart Linker above instead.</p>
-
-        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-            <button type="button" id="start-bulk-queue-btn" class="button button-large" style="background: white; color: #764ba2; border: none; font-weight: bold;">
-                Start Bulk Processing
-            </button>
-            <button type="button" id="review-mode-btn" class="button button-large" style="background: rgba(255,255,255,0.9); color: #764ba2; border: none;">
-                Review Mode — Approve Each
-            </button>
-            <button type="button" id="clear-queue-btn" class="button" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid white;">Clear Queue</button>
-        </div>
-        
-        <!-- Processing Options -->
-        <div style="margin-top: 15px; background: rgba(255,255,255,0.2); padding: 10px 15px; border-radius: 4px;">
-            <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: white; margin-bottom: 8px;">
-                <input type="checkbox" id="skip-posts-with-links" checked>
-                <strong>Skip posts that already have links</strong>
-                <span style="opacity: 0.8; font-size: 12px;">(only process posts with 0 links)</span>
-            </label>
-        </div>
-        
-        <p style="margin-top: 10px; font-size: 13px; opacity: 0.9;">
-            <strong>Bulk Processing:</strong> Processes in batches of 5. You can close the browser - just come back to check progress and click "Continue" if needed.<br>
-            <strong>Review Mode:</strong> Shows suggested links for each target, you approve/skip each one.
-        </p>
-        
-        <!-- Queue Status Panel -->
-        <div id="queue-status-panel" style="display: <?php echo ($queue_status['state'] ?? '') === 'running' || ($queue_status['state'] ?? '') === 'paused' || ($queue_status['remaining'] ?? 0) > 0 ? 'block' : 'none'; ?>; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <strong id="queue-state-label">
-                    <?php 
-                    $state = $queue_status['state'] ?? 'idle';
-                    if ($state === 'running') echo 'Processing';
-                    elseif ($state === 'paused') echo 'Paused';
-                    elseif ($state === 'complete') echo 'Complete';
-                    else echo 'Queued';
-                    ?>
-                </strong>
-                <div style="display: flex; gap: 5px;">
-                    <button type="button" id="pause-queue-btn" class="button" style="<?php echo $state !== 'running' ? 'display:none;' : ''; ?>">Pause</button>
-                    <button type="button" id="resume-queue-btn" class="button button-primary" style="<?php echo $state !== 'paused' && ($queue_status['remaining'] ?? 0) === 0 ? 'display:none;' : ''; ?>">Continue</button>
-                    <button type="button" id="stop-queue-btn" class="button" style="color: #dc3545;">Stop & Clear</button>
-                </div>
-            </div>
-            
-            <!-- Progress Bar -->
-            <div style="background: #e0e0e0; border-radius: 4px; height: 24px; overflow: hidden; position: relative;">
-                <?php 
-                $total = max(1, $queue_status['total'] ?? 1);
-                $processed = $queue_status['processed'] ?? 0;
-                $percent = round(($processed / $total) * 100);
-                ?>
-                <div id="queue-progress-bar" style="background: linear-gradient(90deg, #667eea, #764ba2); height: 100%; width: <?php echo $percent; ?>%; transition: width 0.3s;"></div>
-                <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; display: flex; align-items: center; justify-content: center; font-weight: bold; color: <?php echo $percent > 50 ? 'white' : '#333'; ?>;">
-                    <span id="queue-progress-text"><?php echo $processed; ?> / <?php echo $total; ?> (<?php echo $percent; ?>%)</span>
-                </div>
-            </div>
-            
-            <!-- Stats -->
-            <div style="margin-top: 10px; display: flex; gap: 20px; flex-wrap: wrap; font-size: 13px;">
-                <span>Post: <strong id="queue-links-created"><?php echo $queue_status['links_created'] ?? 0; ?></strong> links created</span>
-                <span>Skipped: <strong id="queue-skipped"><?php echo $queue_status['skipped'] ?? 0; ?></strong> skipped</span>
-                <span>Errors: <strong id="queue-errors"><?php echo $queue_status['errors'] ?? 0; ?></strong> errors</span>
-                <span>⏳ <strong id="queue-remaining"><?php echo $queue_status['remaining'] ?? 0; ?></strong> remaining</span>
-            </div>
-            
-            <!-- Current Post -->
-            <div id="queue-current-post" style="margin-top: 10px; font-size: 12px; color: #666;">
-                <?php if (!empty($queue_status['current_post'])): ?>
-                    Currently processing: <?php echo esc_html($queue_status['current_post']); ?>
-                <?php endif; ?>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Review Mode Panel (hidden by default) -->
-    <div id="review-panel" style="display: none; background: white; border: 2px solid #667eea; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
-            <h2 style="margin: 0;">Review Mode</h2>
-            <button type="button" id="cancel-review" class="button">✕ Cancel Review</button>
-        </div>
-        <div id="review-progress" style="background: #f0f6fc; padding: 10px; border-radius: 4px; margin-bottom: 15px;">
-            <strong>Target <span id="review-current">0</span> of <span id="review-total">0</span>:</strong> <span id="review-target-name">Loading...</span>
-        </div>
-        <div id="review-suggestions" style="margin-bottom: 15px;">
-            <!-- Suggestions will be loaded here -->
-        </div>
-        <div id="review-actions" style="display: flex; gap: 10px;">
-            <button type="button" id="review-approve-all" class="button button-primary">Approve All Shown</button>
-            <button type="button" id="review-skip" class="button">Skip This Target</button>
-            <button type="button" id="review-stop" class="button" style="color: #dc3545;">Stop Review</button>
-        </div>
-    </div>
-    
-    <!-- STEP 3: Smart SEO Metadata -->
+    <!-- Smart SEO Metadata -->
     <div style="background: linear-gradient(135deg, #f093fb, #f5576c); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
         <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
             <h2 style="margin: 0; color: white;"><span style="background: rgba(255,255,255,0.3); padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 3</span>Smart SEO Metadata</h2>
@@ -1123,131 +1055,6 @@ jQuery(document).ready(function($) {
         });
     });
     
-    // Review Mode
-    var reviewQueue = [];
-    var reviewIndex = 0;
-    var currentSuggestions = [];
-    
-    $('#review-mode-btn').on('click', function() {
-        // Build queue of all catalog items
-        reviewQueue = [];
-        <?php foreach ($catalog as $id => $entry): ?>
-        reviewQueue.push({id: <?php echo $id; ?>, title: <?php echo json_encode($entry['title']); ?>, isPage: <?php echo !empty($entry['is_page']) ? 'true' : 'false'; ?>});
-        <?php endforeach; ?>
-        
-        if (reviewQueue.length === 0) {
-            alert('No items in catalog');
-            return;
-        }
-        
-        reviewIndex = 0;
-        $('#review-panel').show();
-        $('#review-total').text(reviewQueue.length);
-        processReviewItem();
-    });
-    
-    $('#cancel-review, #review-stop').on('click', function() {
-        $('#review-panel').hide();
-        reviewQueue = [];
-    });
-    
-    $('#review-skip').on('click', function() {
-        reviewIndex++;
-        if (reviewIndex >= reviewQueue.length) {
-            alert('Review complete!');
-            $('#review-panel').hide();
-            location.reload();
-        } else {
-            processReviewItem();
-        }
-    });
-    
-    function processReviewItem() {
-        var item = reviewQueue[reviewIndex];
-        $('#review-current').text(reviewIndex + 1);
-        $('#review-target-name').html((item.isPage ? 'Page: ' : 'Post: ') + item.title);
-        $('#review-suggestions').html('<p style="color: #666;">🔍 Finding link suggestions...</p>');
-        $('#review-approve-all').prop('disabled', true);
-        
-        $.post(ajaxurl, {
-            action: 'lendcity_action', sub_action: 'get_link_suggestions',
-            nonce: nonce,
-            target_id: item.id
-        }, function(r) {
-            if (r.success && r.data.suggestions && r.data.suggestions.length > 0) {
-                currentSuggestions = r.data.suggestions;
-                var html = '<table class="wp-list-table widefat striped"><thead><tr>';
-                html += '<th style="width: 30px;"><input type="checkbox" id="select-all-suggestions" checked></th>';
-                html += '<th>Source Post</th><th>Anchor Text</th></tr></thead><tbody>';
-                
-                r.data.suggestions.forEach(function(s, i) {
-                    html += '<tr><td><input type="checkbox" class="suggestion-check" data-index="' + i + '" checked></td>';
-                    html += '<td>' + s.source_title + '</td>';
-                    html += '<td><input type="text" class="suggestion-anchor" data-index="' + i + '" value="' + s.anchor_text + '" style="width: 100%;"></td></tr>';
-                });
-                
-                html += '</tbody></table>';
-                html += '<p style="color: #666; margin-top: 10px;">✏️ You can edit anchor text before approving</p>';
-                $('#review-suggestions').html(html);
-                $('#review-approve-all').prop('disabled', false);
-            } else {
-                $('#review-suggestions').html('<p style="color: #666;">No link opportunities found for this target.</p>');
-                currentSuggestions = [];
-            }
-        }).fail(function() {
-            $('#review-suggestions').html('<p style="color: #dc3545;">Error fetching suggestions</p>');
-        });
-    }
-    
-    // Select all toggle
-    $(document).on('change', '#select-all-suggestions', function() {
-        $('.suggestion-check').prop('checked', $(this).is(':checked'));
-    });
-    
-    // Approve selected
-    $('#review-approve-all').on('click', function() {
-        var selected = [];
-        $('.suggestion-check:checked').each(function() {
-            var idx = $(this).data('index');
-            var anchor = $('.suggestion-anchor[data-index="' + idx + '"]').val();
-            selected.push({
-                source_id: currentSuggestions[idx].source_id,
-                anchor_text: anchor
-            });
-        });
-        
-        if (selected.length === 0) {
-            alert('No links selected');
-            return;
-        }
-        
-        var item = reviewQueue[reviewIndex];
-        var $btn = $(this).prop('disabled', true).text('Inserting...');
-        
-        $.post(ajaxurl, {
-            action: 'lendcity_action', sub_action: 'insert_approved_links',
-            nonce: nonce,
-            target_id: item.id,
-            links: JSON.stringify(selected)
-        }, function(r) {
-            $btn.text('Approve All Shown');
-            if (r.success) {
-                // Move to next
-                reviewIndex++;
-                if (reviewIndex >= reviewQueue.length) {
-                    alert('Review complete! ' + r.data.inserted + ' links inserted for this target.');
-                    $('#review-panel').hide();
-                    location.reload();
-                } else {
-                    processReviewItem();
-                }
-            } else {
-                alert('Error: ' + r.data);
-                $btn.prop('disabled', false);
-            }
-        });
-    });
-    
     // ========== BACKGROUND QUEUE PROCESSING ==========
     var queueProcessing = false;
     var refreshInterval = null;
@@ -1260,7 +1067,7 @@ jQuery(document).ready(function($) {
             return;
         }
         
-        var $btn = $(this).prop('disabled', true).text('Initializing...');
+        var $btn = $(this).prop('disabled', true).html('Initializing...');
         
         // Initialize the queue
         $.post(ajaxurl, {
@@ -1268,8 +1075,8 @@ jQuery(document).ready(function($) {
             nonce: nonce,
             skip_with_links: skipWithLinks
         }, function(r) {
-            $btn.prop('disabled', false).text('Start Bulk Processing');
-            
+            $btn.prop('disabled', false).html('🚀 Start Bulk Linking');
+
             if (r.success) {
                 if (r.data.queued === 0) {
                     if (r.data.skipped > 0) {
@@ -1279,9 +1086,9 @@ jQuery(document).ready(function($) {
                     }
                     return;
                 }
-                
+
                 // Show status panel and start processing
-                $('#queue-status-panel').show();
+                $('#bulk-link-status').show();
                 updateQueueUI(r.data.queued, 0, 0, 0, r.data.skipped, r.data.queued, 'running', '');
                 
                 // Start processing
@@ -1290,7 +1097,7 @@ jQuery(document).ready(function($) {
                 alert('Error: ' + (r.data || 'Unknown error'));
             }
         }).fail(function() {
-            $btn.prop('disabled', false).text('Start Bulk Processing');
+            $btn.prop('disabled', false).html('🚀 Start Bulk Linking');
             alert('Failed to initialize queue');
         });
     });
@@ -1399,43 +1206,35 @@ jQuery(document).ready(function($) {
     
     function updateQueueUI(total, processed, links, errors, skipped, remaining, state, currentPost) {
         var percent = total > 0 ? Math.round((processed / total) * 100) : 0;
-        
+
         $('#queue-progress-bar').css('width', percent + '%');
         $('#queue-progress-text').text(processed + ' / ' + total + ' (' + percent + '%)');
         $('#queue-links-created').text(links);
         $('#queue-errors').text(errors);
         $('#queue-skipped').text(skipped);
-        $('#queue-remaining').text(remaining);
-        
-        if (currentPost) {
-            $('#queue-current-post').text('Currently processing: ' + currentPost);
-        } else {
-            $('#queue-current-post').text('');
-        }
-        
-        // Update state label
+
+        // Update button visibility based on state
         if (state === 'running') {
-            $('#queue-state-label').text('Processing');
+            $('#pause-queue-btn').show();
+            $('#resume-queue-btn').hide();
         } else if (state === 'paused') {
-            $('#queue-state-label').text('Paused');
+            $('#pause-queue-btn').hide();
+            $('#resume-queue-btn').show();
         } else if (state === 'complete') {
-            $('#queue-state-label').text('Complete!');
+            $('#pause-queue-btn').hide();
+            $('#resume-queue-btn').hide();
+            $('#queue-progress-text').text('Complete! ' + links + ' links created');
         }
     }
     
     // Auto-refresh status if queue is active on page load
     <?php if (($queue_status['state'] ?? '') === 'running'): ?>
     $(function() {
-        // Resume processing if it was running
+        // Show status and resume processing if it was running
+        $('#bulk-link-status').show();
         startQueueProcessing();
     });
     <?php endif; ?>
-    
-    // Clear Queue
-    $('#clear-queue-btn').on('click', function() {
-        if (!confirm('Clear the queue?')) return;
-        $.post(ajaxurl, {action: 'lendcity_action', sub_action: 'clear_link_queue', nonce: nonce}, function() { location.reload(); });
-    });
     
     // Update URLs
     $('#update-urls-btn').on('click', function() {
