@@ -517,8 +517,8 @@ $total_links = $smart_linker->get_total_link_count();
                     </tr>
                 </thead>
                 <tbody id="links-tbody">
-                    <?php foreach (array_slice($all_links, 0, 25) as $link): ?>
-                        <tr data-link-id="<?php echo esc_attr($link['link_id']); ?>" 
+                    <?php foreach (array_slice($all_links, 0, 25) as $idx => $link): ?>
+                        <tr data-link-id="<?php echo esc_attr($link['link_id'] ?? $link['source_post_id'] . '-' . $idx); ?>" 
                             data-source-id="<?php echo esc_attr($link['source_post_id']); ?>" 
                             data-current-url="<?php echo esc_attr($link['url']); ?>"
                             data-source-title="<?php echo esc_attr(strtolower($link['source_post_title'])); ?>"
