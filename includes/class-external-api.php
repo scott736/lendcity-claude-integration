@@ -49,6 +49,7 @@ class LendCity_External_API {
      */
     private function request($endpoint, $data = [], $method = 'POST') {
         if (!$this->is_configured()) {
+            error_log('LendCity Sync Error: External API not configured');
             return new WP_Error('not_configured', 'External API not configured');
         }
 
@@ -70,16 +71,21 @@ class LendCity_External_API {
         $response = wp_remote_request($url, $args);
 
         if (is_wp_error($response)) {
+            error_log('LendCity Sync Error: ' . $response->get_error_message() . ' - URL: ' . $url);
             return $response;
         }
 
         $status_code = wp_remote_retrieve_response_code($response);
-        $body = json_decode(wp_remote_retrieve_body($response), true);
+        $body_raw = wp_remote_retrieve_body($response);
+        $body = json_decode($body_raw, true);
 
         if ($status_code >= 400) {
+            $error_msg = $body['error'] ?? $body['message'] ?? 'API request failed';
+            error_log('LendCity Sync Error: HTTP ' . $status_code . ' - ' . $error_msg . ' - URL: ' . $url);
+            error_log('LendCity Sync Response: ' . substr($body_raw, 0, 500));
             return new WP_Error(
                 'api_error',
-                $body['error'] ?? 'API request failed',
+                $error_msg,
                 ['status' => $status_code, 'response' => $body]
             );
         }
@@ -647,8 +653,13 @@ function lendcity_rebuild_catalog() {
 
     $api = new LendCity_External_API();
     if (!$api->is_configured()) {
-        wp_send_json_error(['message' => 'External API not configured']);
+        error_log('LendCity Bulk Sync: External API not configured - check Settings page');
+        wp_send_json_error(['message' => 'External API not configured. Please check External Vector API settings.']);
     }
+
+    // Log the API URL being used (without the key)
+    $api_url = get_option('lendcity_external_api_url', '');
+    error_log('LendCity Bulk Sync: Starting sync to ' . $api_url);
 
     $results = [
         'pillars' => ['total' => 0, 'success' => 0, 'failed' => 0],
