@@ -1,6 +1,6 @@
 const { upsertArticle, deleteArticle, getArticle } = require('../lib/pinecone');
 const { generateArticleEmbedding } = require('../lib/embeddings');
-const { generateSummary, extractKeywords } = require('../lib/claude');
+const { generateSummary, extractKeywords, autoAnalyzeArticle } = require('../lib/claude');
 
 /**
  * Catalog Sync Endpoint
@@ -84,6 +84,36 @@ async function handleSync(req, res) {
   const existing = await getArticle(postId);
   const isUpdate = !!existing;
 
+  // Auto-analyze with Claude if metadata is missing
+  // This makes the system fully intelligent without needing WordPress metadata
+  let analyzedData = {};
+  let wasAutoAnalyzed = false;
+
+  const needsAnalysis = !topicCluster || topicCluster === 'general' ||
+                        !funnelStage || !targetPersona;
+
+  if (needsAnalysis) {
+    console.log(`Auto-analyzing article ${postId}: "${title}"`);
+    analyzedData = await autoAnalyzeArticle(title, content);
+    wasAutoAnalyzed = true;
+    console.log(`Auto-analysis complete:`, analyzedData);
+  }
+
+  // Use analyzed values if WordPress didn't provide them
+  const finalTopicCluster = (topicCluster && topicCluster !== 'general')
+    ? topicCluster : (analyzedData.topicCluster || 'general');
+  const finalRelatedClusters = relatedClusters.length > 0
+    ? relatedClusters : (analyzedData.relatedClusters || []);
+  const finalFunnelStage = funnelStage || analyzedData.funnelStage || 'awareness';
+  const finalTargetPersona = targetPersona || analyzedData.targetPersona || 'general';
+  const finalDifficultyLevel = (difficultyLevel !== 'intermediate' ? difficultyLevel : null)
+    || analyzedData.difficultyLevel || 'intermediate';
+  const finalQualityScore = qualityScore !== 50
+    ? qualityScore : (analyzedData.qualityScore || 50);
+  const finalContentLifespan = contentLifespan !== 'evergreen'
+    ? contentLifespan : (analyzedData.contentLifespan || 'evergreen');
+  const finalIsPillar = isPillar || analyzedData.isPillar || false;
+
   // Generate embedding
   const embedding = await generateArticleEmbedding({
     title,
@@ -103,21 +133,21 @@ async function handleSync(req, res) {
     keywords = await extractKeywords(content);
   }
 
-  // Prepare article data
+  // Prepare article data with auto-analyzed values
   const articleData = {
     postId,
     title,
     url,
     slug: slug || url.split('/').pop(),
     contentType,
-    topicCluster,
-    relatedClusters,
-    funnelStage,
-    targetPersona,
-    difficultyLevel,
-    qualityScore,
-    contentLifespan,
-    isPillar,
+    topicCluster: finalTopicCluster,
+    relatedClusters: finalRelatedClusters,
+    funnelStage: finalFunnelStage,
+    targetPersona: finalTargetPersona,
+    difficultyLevel: finalDifficultyLevel,
+    qualityScore: finalQualityScore,
+    contentLifespan: finalContentLifespan,
+    isPillar: finalIsPillar,
     summary: articleSummary,
     mainTopics: keywords.mainTopics,
     semanticKeywords: keywords.semanticKeywords,
@@ -137,7 +167,16 @@ async function handleSync(req, res) {
     postId,
     vectorId: result.id,
     generatedSummary: !summary,
-    generatedKeywords: !mainTopics || mainTopics.length === 0
+    generatedKeywords: !mainTopics || mainTopics.length === 0,
+    autoAnalyzed: wasAutoAnalyzed,
+    metadata: wasAutoAnalyzed ? {
+      topicCluster: finalTopicCluster,
+      funnelStage: finalFunnelStage,
+      targetPersona: finalTargetPersona,
+      difficultyLevel: finalDifficultyLevel,
+      qualityScore: finalQualityScore,
+      isPillar: finalIsPillar
+    } : null
   });
 }
 

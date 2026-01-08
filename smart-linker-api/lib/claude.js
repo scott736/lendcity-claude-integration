@@ -243,11 +243,69 @@ Return JSON:
   }
 }
 
+/**
+ * Auto-analyze article to detect metadata (cluster, funnel, persona, etc.)
+ * This makes the system fully intelligent without needing WordPress metadata
+ */
+async function autoAnalyzeArticle(title, content) {
+  const client = getClient();
+
+  const prompt = `You are analyzing a real estate investment education article for a Canadian audience.
+
+TITLE: ${title}
+
+CONTENT (first 3000 chars):
+${content.slice(0, 3000)}
+
+Analyze this article and return JSON with:
+
+{
+  "topicCluster": "one of: brrrr-strategy, private-lending, rent-to-own, market-analysis, financing-mortgages, tax-legal, property-management, beginner-basics, case-studies, general",
+  "relatedClusters": ["array of 1-2 related clusters from the list above"],
+  "funnelStage": "one of: awareness (educational, what-is), consideration (how-to, comparison), decision (specific tactics, case studies)",
+  "targetPersona": "one of: new-investor, experienced-investor, private-lender, rent-to-own-buyer, general",
+  "difficultyLevel": "one of: beginner, intermediate, advanced",
+  "contentLifespan": "one of: evergreen, timely, seasonal",
+  "isPillar": true/false (is this a comprehensive guide/pillar page?),
+  "qualityScore": 1-100 (based on depth, actionability, uniqueness)
+}
+
+Return ONLY valid JSON, no explanation.`;
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 400,
+    messages: [{ role: 'user', content: prompt }]
+  });
+
+  try {
+    const text = response.content[0].text.trim();
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      return JSON.parse(jsonMatch[0]);
+    }
+    return JSON.parse(text);
+  } catch (e) {
+    // Return defaults if parsing fails
+    return {
+      topicCluster: 'general',
+      relatedClusters: [],
+      funnelStage: 'awareness',
+      targetPersona: 'general',
+      difficultyLevel: 'intermediate',
+      contentLifespan: 'evergreen',
+      isPillar: false,
+      qualityScore: 50
+    };
+  }
+}
+
 module.exports = {
   getClient,
   generateAnchorText,
   generateMeta,
   analyzeContentForLinking,
   generateSummary,
-  extractKeywords
+  extractKeywords,
+  autoAnalyzeArticle
 };
