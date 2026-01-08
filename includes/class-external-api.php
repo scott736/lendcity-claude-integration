@@ -336,7 +336,7 @@ class LendCity_External_API {
      */
     private function update_wp_catalog($post_id, $sync_result) {
         global $wpdb;
-        $table_name = $wpdb->prefix . 'lendcity_catalog';
+        $table_name = $wpdb->prefix . 'lendcity_smart_linker_catalog';
 
         $data = [
             'post_id' => $post_id,
@@ -371,7 +371,7 @@ class LendCity_External_API {
         // Remove from WordPress catalog too
         if (!is_wp_error($result)) {
             global $wpdb;
-            $table_name = $wpdb->prefix . 'lendcity_catalog';
+            $table_name = $wpdb->prefix . 'lendcity_smart_linker_catalog';
             $wpdb->delete($table_name, ['post_id' => $post_id]);
         }
 
