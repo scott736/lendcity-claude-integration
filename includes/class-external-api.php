@@ -638,6 +638,99 @@ function lendcity_delete_on_remove($post_id) {
 }
 
 /**
+ * AJAX handler for getting sync items (first step of batched sync)
+ */
+add_action('wp_ajax_lendcity_get_sync_items', 'lendcity_get_sync_items');
+
+function lendcity_get_sync_items() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    // Get pillar pages first
+    $pillar_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'fields' => 'ids',
+        'meta_query' => [
+            ['key' => '_lendcity_is_pillar', 'value' => '1', 'compare' => '=']
+        ]
+    ]);
+
+    // Get other pages
+    $other_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'fields' => 'ids',
+        'post__not_in' => !empty($pillar_pages) ? $pillar_pages : [0]
+    ]);
+
+    // Get all posts
+    $posts = get_posts([
+        'post_type' => 'post',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'fields' => 'ids'
+    ]);
+
+    // Return ordered list: pillars first, then pages, then posts
+    $items = array_merge(
+        array_map(function($id) { return ['id' => $id, 'type' => 'pillar']; }, $pillar_pages),
+        array_map(function($id) { return ['id' => $id, 'type' => 'page']; }, $other_pages),
+        array_map(function($id) { return ['id' => $id, 'type' => 'post']; }, $posts)
+    );
+
+    wp_send_json_success([
+        'items' => $items,
+        'total' => count($items),
+        'pillars' => count($pillar_pages),
+        'pages' => count($other_pages),
+        'posts' => count($posts)
+    ]);
+}
+
+/**
+ * AJAX handler for syncing a single item
+ */
+add_action('wp_ajax_lendcity_sync_single_item', 'lendcity_sync_single_item');
+
+function lendcity_sync_single_item() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $post_id = isset($_POST['post_id']) ? intval($_POST['post_id']) : 0;
+    if (!$post_id) {
+        wp_send_json_error(['message' => 'No post ID provided']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'External API not configured']);
+    }
+
+    $result = $api->sync_to_catalog($post_id);
+
+    if (is_wp_error($result)) {
+        wp_send_json_error([
+            'message' => $result->get_error_message(),
+            'postId' => $post_id
+        ]);
+    }
+
+    wp_send_json_success([
+        'postId' => $post_id,
+        'result' => $result
+    ]);
+}
+
+/**
  * AJAX handler for rebuilding catalog (pillars first, then content)
  * This ensures pillar pages are in Pinecone before posts get cluster-matched
  */
