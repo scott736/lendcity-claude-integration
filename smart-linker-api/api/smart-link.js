@@ -44,7 +44,8 @@ module.exports = async function handler(req, res) {
       minScore = 40,
       excludeIds = [],
       useClaudeAnalysis = true,
-      autoInsert = false
+      autoInsert = false,
+      strictSilo = false  // Only link within same cluster
     } = req.body;
 
     // Validate required fields
@@ -89,7 +90,7 @@ module.exports = async function handler(req, res) {
     const { recommendations, totalCandidates, passedFilter, averageScore } = getRecommendations(
       sourceArticle,
       candidates,
-      { minScore, maxResults: maxLinks * 2 } // Get extra for Claude to filter
+      { minScore, maxResults: maxLinks * 2, strictSilo } // Get extra for Claude to filter
     );
 
     if (recommendations.length === 0) {

@@ -66,9 +66,10 @@ function calculateHybridScore(source, candidate, options = {}) {
   const qualityScore = calculateQualityScore(candidate);
   const freshnessScore = calculateFreshnessScore(candidate);
   const linkBalanceScore = calculateLinkBalanceScore(candidate);
+  const clickDepthScore = calculateClickDepthScore(candidate);
   const pillarBonus = candidate.isPillar ? 15 : 0;
 
-  // Total business rules score (0-200)
+  // Total business rules score (0-225)
   const businessRulesScore =
     clusterScore +      // 0-50
     funnelScore +       // 0-25
@@ -76,10 +77,11 @@ function calculateHybridScore(source, candidate, options = {}) {
     qualityScore +      // 0-30
     freshnessScore +    // 0-20
     linkBalanceScore +  // 0-25
+    clickDepthScore +   // 0-25 (boost deep/orphan pages)
     pillarBonus;        // 0-15
 
   // Normalize business score to 0-100
-  const normalizedBusinessScore = Math.max(0, Math.min(100, (businessRulesScore / 200) * 100));
+  const normalizedBusinessScore = Math.max(0, Math.min(100, (businessRulesScore / 225) * 100));
 
   // Combined weighted score
   const totalScore = (vectorScore * vectorWeight) + (normalizedBusinessScore * businessWeight);
@@ -95,6 +97,7 @@ function calculateHybridScore(source, candidate, options = {}) {
       quality: qualityScore,
       freshness: freshnessScore,
       linkBalance: linkBalanceScore,
+      clickDepth: clickDepthScore,
       pillarBonus
     },
     candidate: {
@@ -275,6 +278,55 @@ function calculateLinkBalanceScore(candidate) {
 }
 
 /**
+ * Click depth score - favor deep/orphan pages (0-25)
+ * Deep pages get higher scores to encourage linking to them
+ */
+function calculateClickDepthScore(candidate) {
+  const depth = candidate.clickDepth;
+  const inboundLinks = candidate.inboundLinkCount || 0;
+
+  // If no click depth calculated, estimate from inbound links
+  if (depth === undefined || depth === null) {
+    if (inboundLinks === 0) return 25;  // Orphaned
+    if (inboundLinks < 2) return 20;    // Likely deep
+    if (inboundLinks < 5) return 10;
+    return 5;
+  }
+
+  // Based on actual click depth
+  if (depth >= 99) return 25;  // Orphaned/unreachable - highest priority
+  if (depth >= 5) return 20;   // Very deep
+  if (depth >= 4) return 15;   // Deep
+  if (depth >= 3) return 10;   // Medium
+  if (depth >= 2) return 5;    // Shallow
+  return 0;                     // Homepage or 1 click away
+}
+
+/**
+ * Check if candidate passes silo filter
+ * Used for strict silo enforcement mode
+ */
+function passesSiloFilter(source, candidate, strict = false) {
+  const sourceCluster = source.topicCluster;
+  const candidateCluster = candidate.topicCluster;
+
+  if (!sourceCluster || !candidateCluster) return true;
+
+  // Same cluster always passes
+  if (sourceCluster === candidateCluster) return true;
+
+  // In strict mode, only same cluster allowed
+  if (strict) return false;
+
+  // In normal mode, related clusters also pass
+  const sourceRelated = source.relatedClusters || [];
+  const clusterRelations = CLUSTER_RELATIONSHIPS[sourceCluster] || [];
+
+  return sourceRelated.includes(candidateCluster) ||
+         clusterRelations.includes(candidateCluster);
+}
+
+/**
  * Apply scoring to a list of candidates
  */
 function scoreAllCandidates(source, candidates, options = {}) {
@@ -293,19 +345,29 @@ function scoreAllCandidates(source, candidates, options = {}) {
 /**
  * Filter candidates based on minimum thresholds
  */
-function filterCandidates(scoredCandidates, options = {}) {
+function filterCandidates(scoredCandidates, source, options = {}) {
   const {
     minScore = 40,
     minVectorScore = 30,
     maxResults = 10,
-    requireSameCluster = false
+    requireSameCluster = false,
+    strictSilo = false  // Only allow same cluster links
   } = options;
 
-  return scoredCandidates
+  let filtered = scoredCandidates
     .filter(c => c.totalScore >= minScore)
-    .filter(c => c.vectorScore >= minVectorScore)
-    .filter(c => !requireSameCluster || c.breakdown.cluster >= 40)
-    .slice(0, maxResults);
+    .filter(c => c.vectorScore >= minVectorScore);
+
+  // Apply silo filter if enabled
+  if (strictSilo && source) {
+    filtered = filtered.filter(c =>
+      passesSiloFilter(source, c.candidate, true)
+    );
+  } else if (requireSameCluster) {
+    filtered = filtered.filter(c => c.breakdown.cluster >= 40);
+  }
+
+  return filtered.slice(0, maxResults);
 }
 
 /**
@@ -313,7 +375,7 @@ function filterCandidates(scoredCandidates, options = {}) {
  */
 function getRecommendations(source, candidates, options = {}) {
   const scored = scoreAllCandidates(source, candidates, options);
-  const filtered = filterCandidates(scored, options);
+  const filtered = filterCandidates(scored, source, options);
 
   return {
     recommendations: filtered,
@@ -333,6 +395,8 @@ module.exports = {
   calculateQualityScore,
   calculateFreshnessScore,
   calculateLinkBalanceScore,
+  calculateClickDepthScore,
+  passesSiloFilter,
   scoreAllCandidates,
   filterCandidates,
   getRecommendations,
