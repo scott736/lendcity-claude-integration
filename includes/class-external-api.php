@@ -1042,7 +1042,9 @@ function lendcity_audit_chunk() {
                         'postTitle' => $post->post_title,
                         'anchor' => $sub['anchor'],
                         'currentTarget' => $sub['currentTarget']['title'] ?? '',
-                        'betterOption' => $sub['betterOptions'][0]['title'] ?? ''
+                        'currentUrl' => $sub['currentTarget']['url'] ?? '',
+                        'betterOption' => $sub['betterOptions'][0]['title'] ?? '',
+                        'betterUrl' => $sub['betterOptions'][0]['url'] ?? ''
                     ];
                 }
             }
@@ -1050,4 +1052,82 @@ function lendcity_audit_chunk() {
     }
 
     wp_send_json_success($results);
+}
+
+/**
+ * AJAX handler: Fix a link issue (remove broken link or swap to better target)
+ */
+add_action('wp_ajax_lendcity_fix_link', 'lendcity_fix_link');
+
+function lendcity_fix_link() {
+    check_ajax_referer('lendcity_link_audit', 'nonce');
+
+    if (!current_user_can('edit_posts')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $post_id = isset($_POST['post_id']) ? intval($_POST['post_id']) : 0;
+    $action_type = isset($_POST['fix_type']) ? sanitize_text_field($_POST['fix_type']) : '';
+    $anchor = isset($_POST['anchor']) ? wp_unslash($_POST['anchor']) : '';
+    $old_url = isset($_POST['old_url']) ? esc_url_raw($_POST['old_url']) : '';
+    $new_url = isset($_POST['new_url']) ? esc_url_raw($_POST['new_url']) : '';
+
+    if (!$post_id || !$action_type || !$anchor) {
+        wp_send_json_error(['message' => 'Missing required parameters']);
+    }
+
+    $post = get_post($post_id);
+    if (!$post) {
+        wp_send_json_error(['message' => 'Post not found']);
+    }
+
+    $content = $post->post_content;
+    $updated = false;
+
+    if ($action_type === 'remove_broken') {
+        // Remove the broken link but keep the anchor text
+        // Match: <a href="old_url"...>anchor</a> and replace with just anchor
+        $pattern = '/<a\s+[^>]*href=["\']' . preg_quote($old_url, '/') . '["\'][^>]*>' . preg_quote($anchor, '/') . '<\/a>/i';
+        $new_content = preg_replace($pattern, $anchor, $content);
+
+        if ($new_content !== $content) {
+            $updated = true;
+            $content = $new_content;
+        }
+    } elseif ($action_type === 'swap_link') {
+        // Swap the link to a better target
+        if (!$new_url) {
+            wp_send_json_error(['message' => 'New URL required for swap']);
+        }
+
+        // Match the anchor link and replace the href
+        $pattern = '/(<a\s+[^>]*href=["\'])' . preg_quote($old_url, '/') . '(["\'][^>]*>' . preg_quote($anchor, '/') . '<\/a>)/i';
+        $replacement = '${1}' . $new_url . '${2}';
+        $new_content = preg_replace($pattern, $replacement, $content);
+
+        if ($new_content !== $content) {
+            $updated = true;
+            $content = $new_content;
+        }
+    } elseif ($action_type === 'ignore') {
+        // Just mark as acknowledged - no changes needed
+        wp_send_json_success(['message' => 'Issue ignored', 'changed' => false]);
+    } else {
+        wp_send_json_error(['message' => 'Unknown action type']);
+    }
+
+    if ($updated) {
+        $result = wp_update_post([
+            'ID' => $post_id,
+            'post_content' => $content
+        ], true);
+
+        if (is_wp_error($result)) {
+            wp_send_json_error(['message' => 'Failed to update post: ' . $result->get_error_message()]);
+        }
+
+        wp_send_json_success(['message' => 'Link fixed successfully', 'changed' => true]);
+    } else {
+        wp_send_json_error(['message' => 'Could not find the link to fix. The content may have changed.']);
+    }
 }
