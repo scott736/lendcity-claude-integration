@@ -1,6 +1,6 @@
 const { upsertArticle, deleteArticle, getArticle, getPillarPages } = require('../lib/pinecone');
 const { generateArticleEmbedding } = require('../lib/embeddings');
-const { generateSummary, extractKeywords, autoAnalyzeArticle } = require('../lib/claude');
+const { generateSummary, extractKeywords, autoAnalyzeArticle, generateAnchorSuggestions, extractQuestionsAnswered } = require('../lib/claude');
 
 /**
  * Catalog Sync Endpoint
@@ -145,6 +145,16 @@ async function handleSync(req, res) {
     keywords = await extractKeywords(content);
   }
 
+  // Generate anchor suggestions (phrases that work when linking TO this article)
+  console.log(`Generating anchor suggestions for "${title}"`);
+  const suggestedAnchors = await generateAnchorSuggestions(title, content);
+  console.log(`Generated ${suggestedAnchors.length} anchor suggestions`);
+
+  // Extract key questions this article answers
+  console.log(`Extracting questions answered for "${title}"`);
+  const questionsAnswered = await extractQuestionsAnswered(title, content);
+  console.log(`Extracted ${questionsAnswered.length} questions`);
+
   // Prepare article data with auto-analyzed values
   const articleData = {
     postId,
@@ -164,6 +174,8 @@ async function handleSync(req, res) {
     mainTopics: keywords.mainTopics,
     semanticKeywords: keywords.semanticKeywords,
     anchorPhrases,
+    suggestedAnchors,
+    questionsAnswered,
     inboundLinkCount: existing?.inboundLinkCount || 0,
     publishedAt: publishedAt || new Date().toISOString(),
     updatedAt: updatedAt || new Date().toISOString(),

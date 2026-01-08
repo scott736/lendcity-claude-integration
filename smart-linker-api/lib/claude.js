@@ -163,8 +163,10 @@ async function analyzeContentForLinking(content, candidates, options = {}) {
     const summary = c.summary ? `\n   Summary: ${c.summary}` : '';
     const topics = c.mainTopics?.length ? `\n   Topics: ${c.mainTopics.join(', ')}` : '';
     const keywords = c.semanticKeywords?.length ? `\n   Keywords: ${c.semanticKeywords.slice(0, 10).join(', ')}` : '';
+    const anchors = c.suggestedAnchors?.length ? `\n   Good anchor phrases: ${c.suggestedAnchors.slice(0, 8).join(', ')}` : '';
+    const questions = c.questionsAnswered?.length ? `\n   Questions answered: ${c.questionsAnswered.slice(0, 3).join('; ')}` : '';
     return `${i}. "${c.title}" (${c.url})
-   Cluster: ${c.topicCluster || 'general'} | Funnel: ${c.funnelStage || 'awareness'} | Score: ${c.score}${summary}${topics}${keywords}`;
+   Cluster: ${c.topicCluster || 'general'} | Funnel: ${c.funnelStage || 'awareness'} | Score: ${c.score}${summary}${topics}${keywords}${anchors}${questions}`;
   }).join('\n\n');
 
   const existingList = existingLinks.length > 0
@@ -185,10 +187,12 @@ ${candidateList}
 
 TASK: Select up to ${maxLinks} articles to link from this content.
 
-USE THE SUMMARIES AND TOPICS to understand what each target article covers. Choose links where:
-1. The target article's content genuinely expands on what's mentioned in the source
-2. The anchor phrase relates to the target's summary/topics
-3. The link would help readers learn more about that specific topic
+USE ALL THE CONTEXT PROVIDED to make intelligent linking decisions:
+1. SUMMARY: Understand what each target article covers in depth
+2. GOOD ANCHOR PHRASES: Look for these phrases (or similar) in your source content
+3. QUESTIONS ANSWERED: If your source mentions something the target article answers, that's a great link
+4. Choose links where the target genuinely expands on what's mentioned in the source
+5. The link should help readers learn more about that specific topic
 
 CRITICAL REQUIREMENT - ANCHOR TEXT MUST BE EXACT PHRASES:
 - The anchorText MUST be an EXACT phrase that already exists VERBATIM in the article content above
@@ -264,17 +268,21 @@ IMPORTANT: Before returning, verify each anchorText appears EXACTLY in the conte
  */
 async function generateSummary(content, options = {}) {
   const client = getClient();
-  const { maxLength = 800 } = options;
+  const { maxLength = 1200 } = options;
 
   const prompt = `Summarize this real estate article in ${maxLength} characters or less.
 
-Include:
-1. Main topic and thesis
-2. Key strategies, concepts, or advice covered
-3. Target audience (new investors, experienced investors, etc.)
-4. Specific subtopics discussed (e.g., financing, cash flow, markets mentioned)
+Include ALL of the following for smart internal linking:
+1. Main topic and central thesis
+2. Specific strategies, methods, or frameworks covered (name them exactly)
+3. Target audience (new investors, experienced investors, Canadians, Americans, etc.)
+4. Concrete examples, numbers, or case studies mentioned
+5. Geographic markets or locations discussed
+6. Financial concepts (cash flow, appreciation, financing types, down payments, etc.)
+7. Property types covered (single-family, multifamily, commercial, BRRRR, etc.)
+8. Key advice or actionable takeaways
 
-This summary will be used for smart internal linking, so include specific details that help match this article to related content.
+Be specific and use the actual terms from the article. This summary helps match related content.
 
 FULL ARTICLE CONTENT:
 ${content}
@@ -283,7 +291,7 @@ Return only the summary, no quotes or labels.`;
 
   const response = await client.messages.create({
     model: 'claude-sonnet-4-20250514',
-    max_tokens: 300,
+    max_tokens: 500,
     messages: [{ role: 'user', content: prompt }]
   });
 
@@ -418,6 +426,88 @@ Return ONLY valid JSON, no explanation.`;
   }
 }
 
+/**
+ * Generate suggested anchor phrases for linking TO this article
+ * These are phrases that would work well as anchor text when other articles link here
+ */
+async function generateAnchorSuggestions(title, content, options = {}) {
+  const client = getClient();
+  const { maxSuggestions = 10 } = options;
+
+  const prompt = `You are generating anchor text suggestions for internal linking.
+
+This article will be linked TO from other articles. Generate ${maxSuggestions} phrases that would make good anchor text when linking TO this article.
+
+ARTICLE TITLE: ${title}
+
+ARTICLE CONTENT:
+${content.slice(0, 8000)}
+
+Generate anchor phrases that:
+1. Describe what the article covers (2-6 words each)
+2. Are natural phrases someone might write (not keyword-stuffed)
+3. Vary from general to specific
+4. Include the main concepts, strategies, or topics covered
+5. Could naturally appear in related articles
+
+Return JSON array of strings only:
+["phrase 1", "phrase 2", ...]
+
+Example for a BRRRR article: ["BRRRR strategy", "buy rehab rent refinance", "recycling equity", "forced appreciation", "refinance rental property", "building a rental portfolio"]`;
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 300,
+    messages: [{ role: 'user', content: prompt }]
+  });
+
+  try {
+    const text = response.content[0].text.trim();
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    return jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
+  } catch (e) {
+    return [title.toLowerCase()];
+  }
+}
+
+/**
+ * Extract key questions this article answers
+ * Helps match "how to..." phrases in source articles to target articles
+ */
+async function extractQuestionsAnswered(title, content, options = {}) {
+  const client = getClient();
+  const { maxQuestions = 5 } = options;
+
+  const prompt = `What questions does this real estate article answer?
+
+ARTICLE TITLE: ${title}
+
+ARTICLE CONTENT:
+${content.slice(0, 8000)}
+
+Generate ${maxQuestions} questions that someone might search for or ask that this article answers.
+Format as natural questions a real estate investor would ask.
+
+Return JSON array of strings only:
+["How do I...?", "What is...?", ...]
+
+Example: ["How do I get started with the BRRRR strategy?", "What financing options work for BRRRR?", "How do I calculate ARV for a rehab?"]`;
+
+  const response = await client.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 300,
+    messages: [{ role: 'user', content: prompt }]
+  });
+
+  try {
+    const text = response.content[0].text.trim();
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    return jsonMatch ? JSON.parse(jsonMatch[0]) : JSON.parse(text);
+  } catch (e) {
+    return [];
+  }
+}
+
 module.exports = {
   getClient,
   generateAnchorText,
@@ -425,5 +515,7 @@ module.exports = {
   analyzeContentForLinking,
   generateSummary,
   extractKeywords,
-  autoAnalyzeArticle
+  autoAnalyzeArticle,
+  generateAnchorSuggestions,
+  extractQuestionsAnswered
 };
