@@ -414,6 +414,95 @@ class LendCity_External_API {
 
         return json_decode(wp_remote_retrieve_body($response), true);
     }
+
+    /**
+     * Get Pinecone catalog stats
+     * Returns count of vectorized pages, posts, clusters, etc.
+     *
+     * @return array|WP_Error Stats or error
+     */
+    public function get_catalog_stats() {
+        if (!$this->is_configured()) {
+            return new WP_Error('not_configured', 'External API not configured');
+        }
+
+        $url = trailingslashit($this->api_url) . 'api/catalog-stats';
+
+        $response = wp_remote_get($url, [
+            'timeout' => 30,
+            'headers' => [
+                'Authorization' => 'Bearer ' . $this->api_key
+            ]
+        ]);
+
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        $status_code = wp_remote_retrieve_response_code($response);
+        $body = json_decode(wp_remote_retrieve_body($response), true);
+
+        if ($status_code >= 400) {
+            return new WP_Error(
+                'api_error',
+                $body['error'] ?? 'Failed to get catalog stats',
+                ['status' => $status_code]
+            );
+        }
+
+        return $body;
+    }
+
+    /**
+     * Generate meta with full context (links, clusters, funnel, persona)
+     * Enhanced version that passes all content structure data to Claude
+     *
+     * @param int $post_id Post ID
+     * @param array $options Additional options including internalLinks, relatedClusters, etc.
+     * @return array|WP_Error Meta data or error
+     */
+    public function generate_meta_with_context($post_id, $options = []) {
+        $post = get_post($post_id);
+        if (!$post) {
+            return new WP_Error('invalid_post', 'Post not found');
+        }
+
+        // Get catalog data for this post
+        $catalog_entry = $this->get_catalog_entry($post_id);
+
+        // Get smart links stored for this post
+        $smart_links = get_post_meta($post_id, '_lendcity_smart_links', true) ?: [];
+        $internal_links = array_map(function($link) {
+            // Get target post info for cluster context
+            $target_id = $link['target_id'] ?? 0;
+            $target_cluster = '';
+            if ($target_id) {
+                $target_cluster = get_post_meta($target_id, 'topic_cluster', true) ?: '';
+            }
+            return [
+                'anchorText' => $link['anchor'] ?? '',
+                'title' => get_the_title($target_id) ?: ($link['anchor'] ?? ''),
+                'topicCluster' => $target_cluster,
+                'url' => $link['url'] ?? ''
+            ];
+        }, $smart_links);
+
+        $data = [
+            'postId' => $post_id,
+            'title' => $post->post_title,
+            'content' => $post->post_content,
+            'summary' => $catalog_entry['summary'] ?? get_post_meta($post_id, 'summary', true) ?: '',
+            'topicCluster' => $catalog_entry['topic_cluster'] ?? get_post_meta($post_id, 'topic_cluster', true) ?: '',
+            'focusKeyword' => $options['focus_keyword'] ?? null,
+            // Full context (new)
+            'internalLinks' => $internal_links,
+            'relatedClusters' => $catalog_entry['related_clusters'] ?? [],
+            'funnelStage' => $catalog_entry['funnel_stage'] ?? get_post_meta($post_id, 'funnel_stage', true) ?: '',
+            'targetPersona' => $catalog_entry['target_persona'] ?? get_post_meta($post_id, 'target_persona', true) ?: ''
+        ];
+
+        return $this->request('api/meta-generate', $data);
+    }
 }
 
 /**
@@ -608,6 +697,32 @@ function lendcity_rebuild_catalog() {
     $results['failed'] = $results['pillars']['failed'] + $results['pages']['failed'] + $results['posts']['failed'];
 
     wp_send_json_success($results);
+}
+
+/**
+ * AJAX handler for getting Pinecone catalog stats
+ */
+add_action('wp_ajax_lendcity_get_pinecone_stats', 'lendcity_get_pinecone_stats');
+
+function lendcity_get_pinecone_stats() {
+    check_ajax_referer('lendcity_claude_nonce', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'External API not configured. Set up Vercel API URL and key in Settings.']);
+    }
+
+    $result = $api->get_catalog_stats();
+
+    if (is_wp_error($result)) {
+        wp_send_json_error(['message' => $result->get_error_message()]);
+    }
+
+    wp_send_json_success($result);
 }
 
 /**
