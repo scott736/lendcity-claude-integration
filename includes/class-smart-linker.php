@@ -48,9 +48,8 @@ class LendCity_Smart_Linker {
     const DB_VERSION_OPTION = 'lendcity_catalog_db_version';
 
     // v5.0 Semantic Enhancement Options
-    private $anchor_usage_option = 'lendcity_anchor_usage_stats';
-    private $keyword_frequency_option = 'lendcity_keyword_frequency';
-    private $synonym_map_option = 'lendcity_synonym_map';
+    // v12.6.1: Removed anchor_usage_option and synonym_map_option (never used)
+    private $keyword_frequency_option = 'lendcity_keyword_frequency'; // Still used for TF-IDF scoring
 
     // Parallel processing settings
     private $parallel_batch_size = 5; // Posts per parallel request
@@ -976,12 +975,12 @@ class LendCity_Smart_Linker {
 
     /**
      * v5.0: Clear all semantic enhancement indexes
+     * v12.6.1: Simplified - only clears TF-IDF index (others removed as unused)
      */
     public function clear_semantic_indexes() {
         delete_option($this->keyword_frequency_option);
-        delete_option($this->synonym_map_option);
-        delete_option($this->anchor_usage_option);
-        $this->debug_log('Cleared v5.0 semantic indexes');
+        // v12.6.1: Removed synonym_map and anchor_usage options (were never used)
+        $this->debug_log('Cleared semantic indexes');
     }
 
     /**
