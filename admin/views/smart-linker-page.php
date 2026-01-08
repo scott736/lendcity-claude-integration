@@ -248,8 +248,8 @@ $total_links = $smart_linker->get_total_link_count();
         <div style="display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 15px;">
             <?php if (!empty($catalog)): ?>
                 <div style="background: #d4edda; padding: 15px; border-radius: 4px;">
-                    <strong style="font-size: 24px;"><?php echo $catalog_stats['total']; ?></strong> items<br>
-                    <small><?php echo $catalog_stats['pages']; ?> pages + <?php echo $catalog_stats['posts']; ?> posts</small>
+                    <strong style="font-size: 24px;"><?php echo $catalog_stats['total'] ?? 0; ?></strong> items<br>
+                    <small><?php echo $catalog_stats['pages'] ?? 0; ?> pages + <?php echo $catalog_stats['posts'] ?? 0; ?> posts</small>
                 </div>
             <?php else: ?>
                 <div style="background: #fff3cd; padding: 15px; border-radius: 4px;">⚠️ Catalog not built</div>
@@ -270,7 +270,7 @@ $total_links = $smart_linker->get_total_link_count();
     <!-- STEP 2: Auto Linker (v12.2.2 - Ownership Map Removed) -->
     <div style="background: linear-gradient(135deg, #667eea, #764ba2); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
         <h2 style="margin-top: 0; color: white;"><span style="background: rgba(255,255,255,0.3); padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 2</span>Auto Linker</h2>
-        <p>Process all <?php echo $catalog_stats['posts']; ?> posts in your catalog. Scales to 1000+ posts without timeout!</p>
+        <p>Process all <?php echo $catalog_stats['posts'] ?? $catalog_stats['total'] ?? 0; ?> posts in your catalog. Scales to 1000+ posts without timeout!</p>
         
         <div style="display: flex; gap: 10px; flex-wrap: wrap;">
             <button type="button" id="start-bulk-queue-btn" class="button button-large" style="background: white; color: #764ba2; border: none; font-weight: bold;" <?php echo empty($catalog) ? 'disabled' : ''; ?>>
