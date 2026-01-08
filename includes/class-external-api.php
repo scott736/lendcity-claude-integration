@@ -50,6 +50,20 @@ class LendCity_External_API {
     }
 
     /**
+     * Get API URL
+     */
+    public function get_api_url() {
+        return $this->api_url;
+    }
+
+    /**
+     * Get API Key
+     */
+    public function get_api_key() {
+        return $this->api_key;
+    }
+
+    /**
      * Make API request
      */
     private function request($endpoint, $data = [], $method = 'POST', $timeout = null) {
@@ -569,6 +583,9 @@ function lendcity_sync_chunk() {
             $errors[] = ['postId' => $post_id, 'error' => $result->get_error_message()];
         } else {
             $success++;
+            // Mark as synced for skip functionality
+            update_post_meta($post_id, '_lendcity_pinecone_synced', '1');
+            update_post_meta($post_id, '_lendcity_pinecone_synced_at', current_time('mysql'));
         }
     }
 
@@ -1130,4 +1147,165 @@ function lendcity_fix_link() {
     } else {
         wp_send_json_error(['message' => 'Could not find the link to fix. The content may have changed.']);
     }
+}
+
+/**
+ * AJAX handler: Get Pinecone catalog stats
+ */
+add_action('wp_ajax_lendcity_get_pinecone_stats', 'lendcity_get_pinecone_stats');
+
+function lendcity_get_pinecone_stats() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'API not configured']);
+    }
+
+    // Get stats from Pinecone via our API
+    $response = wp_remote_get(
+        rtrim($api->get_api_url(), '/') . '/api/stats',
+        [
+            'timeout' => 15,
+            'headers' => [
+                'Authorization' => 'Bearer ' . $api->get_api_key(),
+                'Content-Type' => 'application/json'
+            ]
+        ]
+    );
+
+    if (is_wp_error($response)) {
+        // Fall back to counting WordPress posts with sync meta
+        $synced_count = 0;
+        $posts = get_posts([
+            'post_type' => ['post', 'page'],
+            'post_status' => 'publish',
+            'numberposts' => -1,
+            'meta_query' => [
+                [
+                    'key' => '_lendcity_pinecone_synced',
+                    'value' => '1'
+                ]
+            ]
+        ]);
+        $synced_count = count($posts);
+
+        $total_posts = wp_count_posts('post')->publish + wp_count_posts('page')->publish;
+
+        wp_send_json_success([
+            'catalogued' => $synced_count,
+            'total_wp' => $total_posts,
+            'source' => 'wordpress_meta'
+        ]);
+    }
+
+    $body = json_decode(wp_remote_retrieve_body($response), true);
+
+    if (isset($body['vectorCount'])) {
+        $total_posts = wp_count_posts('post')->publish + wp_count_posts('page')->publish;
+
+        wp_send_json_success([
+            'catalogued' => $body['vectorCount'],
+            'total_wp' => $total_posts,
+            'source' => 'pinecone'
+        ]);
+    } else {
+        // Fall back to WordPress meta count
+        $posts = get_posts([
+            'post_type' => ['post', 'page'],
+            'post_status' => 'publish',
+            'numberposts' => -1,
+            'meta_query' => [
+                [
+                    'key' => '_lendcity_pinecone_synced',
+                    'value' => '1'
+                ]
+            ]
+        ]);
+
+        $total_posts = wp_count_posts('post')->publish + wp_count_posts('page')->publish;
+
+        wp_send_json_success([
+            'catalogued' => count($posts),
+            'total_wp' => $total_posts,
+            'source' => 'wordpress_meta'
+        ]);
+    }
+}
+
+/**
+ * AJAX handler: Get sync list with optional skip for already synced
+ */
+add_action('wp_ajax_lendcity_get_sync_list_filtered', 'lendcity_get_sync_list_filtered');
+
+function lendcity_get_sync_list_filtered() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $skip_synced = isset($_POST['skip_synced']) && $_POST['skip_synced'] === 'true';
+
+    $items = [];
+
+    // Get pillar pages first
+    $pillar_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'meta_query' => [
+            [
+                'key' => '_lendcity_is_pillar',
+                'value' => '1'
+            ]
+        ]
+    ]);
+
+    foreach ($pillar_pages as $page) {
+        if ($skip_synced && get_post_meta($page->ID, '_lendcity_pinecone_synced', true) === '1') {
+            continue;
+        }
+        $items[] = ['id' => $page->ID, 'title' => $page->post_title, 'type' => 'pillar'];
+    }
+
+    // Get other pages
+    $pillar_ids = wp_list_pluck($pillar_pages, 'ID');
+    $other_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'post__not_in' => !empty($pillar_ids) ? $pillar_ids : [0]
+    ]);
+
+    foreach ($other_pages as $page) {
+        if ($skip_synced && get_post_meta($page->ID, '_lendcity_pinecone_synced', true) === '1') {
+            continue;
+        }
+        $items[] = ['id' => $page->ID, 'title' => $page->post_title, 'type' => 'page'];
+    }
+
+    // Get posts
+    $posts = get_posts([
+        'post_type' => 'post',
+        'post_status' => 'publish',
+        'numberposts' => -1
+    ]);
+
+    foreach ($posts as $post) {
+        if ($skip_synced && get_post_meta($post->ID, '_lendcity_pinecone_synced', true) === '1') {
+            continue;
+        }
+        $items[] = ['id' => $post->ID, 'title' => $post->post_title, 'type' => 'post'];
+    }
+
+    wp_send_json_success([
+        'items' => $items,
+        'total' => count($items),
+        'skipped_synced' => $skip_synced
+    ]);
 }
