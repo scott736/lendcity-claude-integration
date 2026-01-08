@@ -1,6 +1,6 @@
 <?php
 /**
- * Settings Page - v9.9.6 - Added debug mode toggle
+ * Settings Page - v12.5.1 - Added failed articles tracking and retry functionality
  */
 
 if (!defined('ABSPATH')) {
@@ -119,12 +119,17 @@ $nonce = wp_create_nonce('lendcity_claude_nonce');
                 <th scope="row">Sync Catalog to Pinecone</th>
                 <td>
                     <button type="button" class="button button-primary" id="sync-catalog-btn">Sync All Articles to Pinecone</button>
+                    <button type="button" class="button" id="retry-failed-btn" style="display:none; margin-left: 5px;">Retry Failed</button>
                     <span id="sync-catalog-result" style="margin-left: 10px;"></span>
                     <div id="sync-progress" style="display:none; margin-top: 10px;">
                         <div style="background: #f0f0f0; border-radius: 4px; overflow: hidden; height: 20px;">
                             <div id="sync-progress-bar" style="background: #0073aa; height: 100%; width: 0%; transition: width 0.3s;"></div>
                         </div>
                         <p id="sync-progress-text" style="margin: 5px 0;">Syncing...</p>
+                    </div>
+                    <div id="failed-articles" style="display:none; margin-top: 10px; padding: 10px; background: #fff8e5; border-left: 4px solid #ffb900;">
+                        <strong>Failed Articles:</strong>
+                        <ul id="failed-articles-list" style="margin: 5px 0 0 20px;"></ul>
                     </div>
                     <p class="description">This will sync all your published posts and pages to Pinecone for vector-based smart linking. Run this once after initial setup.</p>
                 </td>
@@ -353,6 +358,124 @@ jQuery(document).ready(function($) {
         });
     });
 
+    // Track failed articles globally for retry
+    var failedItems = [];
+    var allItems = [];
+
+    // Sync function that can work with any list of items
+    function runSync(items, isRetry) {
+        var $btn = $('#sync-catalog-btn');
+        var $retryBtn = $('#retry-failed-btn');
+        var $result = $('#sync-catalog-result');
+        var $progress = $('#sync-progress');
+        var $progressBar = $('#sync-progress-bar');
+        var $progressText = $('#sync-progress-text');
+        var $failedDiv = $('#failed-articles');
+        var $failedList = $('#failed-articles-list');
+
+        $btn.prop('disabled', true).text('Syncing...');
+        $retryBtn.hide();
+        $result.html('');
+        $failedDiv.hide();
+        $failedList.html('');
+        $progress.show();
+        $progressBar.css('width', '5%');
+
+        var total = items.length;
+        var processed = 0;
+        var succeeded = 0;
+        var failed = 0;
+        var chunkSize = 3;
+        failedItems = []; // Reset failed items
+
+        $progressText.text((isRetry ? 'Retrying' : 'Syncing') + ' 0 of ' + total + '...');
+
+        function processChunk() {
+            if (processed >= total) {
+                // Done!
+                $progressBar.css('width', '100%');
+                $progressText.text('Complete!');
+                $result.html('<span style="color: green;">Synced ' + succeeded + ' of ' + total + ' articles to Pinecone</span>');
+
+                if (failed > 0) {
+                    $result.append('<br><span style="color: orange;">' + failed + ' article(s) failed</span>');
+
+                    // Show failed articles list
+                    $failedList.html('');
+                    failedItems.forEach(function(item) {
+                        var editUrl = '<?php echo admin_url('post.php?action=edit&post='); ?>' + item.id;
+                        $failedList.append('<li><a href="' + editUrl + '" target="_blank">' + item.title + '</a> (ID: ' + item.id + ')<br><small style="color: #666;">' + item.error + '</small></li>');
+                    });
+                    $failedDiv.show();
+                    $retryBtn.show();
+                }
+
+                $btn.prop('disabled', false).text('Sync All Articles to Pinecone');
+                return;
+            }
+
+            var chunk = items.slice(processed, processed + chunkSize);
+            var chunkIds = chunk.map(function(item) { return item.id; });
+
+            $.post(ajaxurl, {
+                action: 'lendcity_sync_chunk',
+                nonce: '<?php echo wp_create_nonce('lendcity_bulk_sync'); ?>',
+                post_ids: chunkIds
+            }, function(chunkResponse) {
+                if (chunkResponse.success) {
+                    succeeded += chunkResponse.data.success || 0;
+                    failed += chunkResponse.data.failed || 0;
+
+                    // Track which specific articles failed
+                    if (chunkResponse.data.errors && chunkResponse.data.errors.length > 0) {
+                        chunkResponse.data.errors.forEach(function(err) {
+                            // Find the item title from our items list
+                            var item = items.find(function(i) { return i.id === err.postId; });
+                            failedItems.push({
+                                id: err.postId,
+                                title: item ? item.title : 'Unknown',
+                                error: err.error || 'Unknown error'
+                            });
+                        });
+                    }
+                } else {
+                    // Whole chunk failed
+                    failed += chunk.length;
+                    chunk.forEach(function(item) {
+                        failedItems.push({
+                            id: item.id,
+                            title: item.title,
+                            error: chunkResponse.data && chunkResponse.data.message ? chunkResponse.data.message : 'Request failed'
+                        });
+                    });
+                }
+                processed += chunk.length;
+
+                var percent = Math.round((processed / total) * 100);
+                $progressBar.css('width', percent + '%');
+                $progressText.text((isRetry ? 'Retrying' : 'Syncing') + ' ' + processed + ' of ' + total + '...');
+
+                // Process next chunk
+                setTimeout(processChunk, 500);
+            }).fail(function() {
+                // AJAX request failed
+                chunk.forEach(function(item) {
+                    failedItems.push({
+                        id: item.id,
+                        title: item.title,
+                        error: 'Network request failed'
+                    });
+                });
+                failed += chunk.length;
+                processed += chunk.length;
+                setTimeout(processChunk, 500);
+            });
+        }
+
+        // Start processing
+        processChunk();
+    }
+
     // Sync Catalog to Pinecone - CHUNKED to avoid timeout
     $('#sync-catalog-btn').on('click', function() {
         var $btn = $(this);
@@ -383,65 +506,33 @@ jQuery(document).ready(function($) {
                 return;
             }
 
-            var items = response.data.items;
-            var total = items.length;
-            var processed = 0;
-            var succeeded = 0;
-            var failed = 0;
-            var chunkSize = 3; // Process 3 at a time to stay under timeout
-
-            $progressText.text('Syncing 0 of ' + total + '...');
-
-            function processChunk() {
-                if (processed >= total) {
-                    // Done!
-                    $progressBar.css('width', '100%');
-                    $progressText.text('Complete!');
-                    $result.html('<span style="color: green;">Synced ' + succeeded + ' of ' + total + ' articles to Pinecone</span>');
-                    if (failed > 0) {
-                        $result.append('<br><span style="color: orange;">' + failed + ' articles failed.</span>');
-                    }
-                    $btn.prop('disabled', false).text('Sync All Articles to Pinecone');
-                    return;
-                }
-
-                var chunk = items.slice(processed, processed + chunkSize);
-                var chunkIds = chunk.map(function(item) { return item.id; });
-
-                $.post(ajaxurl, {
-                    action: 'lendcity_sync_chunk',
-                    nonce: '<?php echo wp_create_nonce('lendcity_bulk_sync'); ?>',
-                    post_ids: chunkIds
-                }, function(chunkResponse) {
-                    if (chunkResponse.success) {
-                        succeeded += chunkResponse.data.success || 0;
-                        failed += chunkResponse.data.failed || 0;
-                    } else {
-                        failed += chunk.length;
-                    }
-                    processed += chunk.length;
-
-                    var percent = Math.round((processed / total) * 100);
-                    $progressBar.css('width', percent + '%');
-                    $progressText.text('Syncing ' + processed + ' of ' + total + '...');
-
-                    // Process next chunk
-                    setTimeout(processChunk, 500);
-                }).fail(function() {
-                    failed += chunk.length;
-                    processed += chunk.length;
-                    setTimeout(processChunk, 500);
-                });
-            }
-
-            // Start processing
-            processChunk();
+            allItems = response.data.items;
+            runSync(allItems, false);
         }).fail(function() {
             $progressBar.css('width', '0%');
             $progressText.text('Failed');
             $result.html('<span style="color: red;">Failed to get content list</span>');
             $btn.prop('disabled', false).text('Sync All Articles to Pinecone');
         });
+    });
+
+    // Retry Failed button
+    $('#retry-failed-btn').on('click', function() {
+        if (failedItems.length === 0) {
+            alert('No failed articles to retry.');
+            return;
+        }
+
+        if (!confirm('Retry syncing ' + failedItems.length + ' failed article(s)?')) {
+            return;
+        }
+
+        // Convert failedItems to the format expected by runSync
+        var retryItems = failedItems.map(function(item) {
+            return { id: item.id, title: item.title };
+        });
+
+        runSync(retryItems, true);
     });
 });
 </script>
