@@ -329,6 +329,70 @@ class LendCity_External_API {
     }
 
     /**
+     * Audit existing links in a post
+     * Checks for broken, suboptimal, and missing links
+     *
+     * @param int $post_id Post ID
+     * @return array|WP_Error Audit results or error
+     */
+    public function audit_links($post_id) {
+        $post = get_post($post_id);
+        if (!$post) {
+            return new WP_Error('invalid_post', 'Post not found');
+        }
+
+        // Extract existing links from content
+        $existing_links = $this->extract_links_from_content($post->post_content);
+
+        // Get catalog data
+        $catalog_entry = $this->get_catalog_entry($post_id);
+
+        $data = [
+            'postId' => $post_id,
+            'content' => $post->post_content,
+            'title' => $post->post_title,
+            'existingLinks' => $existing_links,
+            'topicCluster' => $catalog_entry['topic_cluster'] ?? '',
+            'maxSuggestions' => 5
+        ];
+
+        return $this->request('api/link-audit', $data);
+    }
+
+    /**
+     * Extract internal links from post content
+     *
+     * @param string $content Post content
+     * @return array Array of links with anchor, url, targetId
+     */
+    private function extract_links_from_content($content) {
+        $links = [];
+        $site_url = home_url();
+
+        // Match all anchor tags
+        preg_match_all('/<a[^>]+href=["\']([^"\']+)["\'][^>]*>([^<]+)<\/a>/i', $content, $matches, PREG_SET_ORDER);
+
+        foreach ($matches as $match) {
+            $url = $match[1];
+            $anchor = strip_tags($match[2]);
+
+            // Only process internal links
+            if (strpos($url, $site_url) === 0 || strpos($url, '/') === 0) {
+                // Try to get post ID from URL
+                $target_id = url_to_postid($url);
+
+                $links[] = [
+                    'anchor' => $anchor,
+                    'url' => $url,
+                    'targetId' => $target_id ?: 0
+                ];
+            }
+        }
+
+        return $links;
+    }
+
+    /**
      * Check API health
      *
      * @return array|WP_Error Health status or error
@@ -542,6 +606,136 @@ function lendcity_rebuild_catalog() {
     $results['total'] = $results['pillars']['total'] + $results['pages']['total'] + $results['posts']['total'];
     $results['success'] = $results['pillars']['success'] + $results['pages']['success'] + $results['posts']['success'];
     $results['failed'] = $results['pillars']['failed'] + $results['pages']['failed'] + $results['posts']['failed'];
+
+    wp_send_json_success($results);
+}
+
+/**
+ * AJAX handler for auditing links in a single post
+ */
+add_action('wp_ajax_lendcity_audit_post_links', 'lendcity_audit_post_links');
+
+function lendcity_audit_post_links() {
+    check_ajax_referer('lendcity_link_audit', 'nonce');
+
+    if (!current_user_can('edit_posts')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $post_id = isset($_POST['post_id']) ? intval($_POST['post_id']) : 0;
+    if (!$post_id) {
+        wp_send_json_error(['message' => 'Post ID required']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'External API not configured']);
+    }
+
+    $result = $api->audit_links($post_id);
+
+    if (is_wp_error($result)) {
+        wp_send_json_error(['message' => $result->get_error_message()]);
+    }
+
+    wp_send_json_success($result);
+}
+
+/**
+ * AJAX handler for bulk link audit across all posts
+ */
+add_action('wp_ajax_lendcity_bulk_audit_links', 'lendcity_bulk_audit_links');
+
+function lendcity_bulk_audit_links() {
+    check_ajax_referer('lendcity_link_audit', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'External API not configured']);
+    }
+
+    // Get all published posts
+    $posts = get_posts([
+        'post_type' => ['post', 'page'],
+        'post_status' => 'publish',
+        'numberposts' => -1
+    ]);
+
+    $results = [
+        'total' => count($posts),
+        'audited' => 0,
+        'issues' => [],
+        'summary' => [
+            'totalLinks' => 0,
+            'brokenLinks' => 0,
+            'suboptimalLinks' => 0,
+            'missingOpportunities' => 0
+        ]
+    ];
+
+    foreach ($posts as $post) {
+        $audit = $api->audit_links($post->ID);
+
+        if (is_wp_error($audit)) {
+            continue;
+        }
+
+        $results['audited']++;
+
+        // Aggregate stats
+        if (isset($audit['audit']['stats'])) {
+            $stats = $audit['audit']['stats'];
+            $results['summary']['totalLinks'] += $stats['totalLinks'] ?? 0;
+            $results['summary']['brokenLinks'] += $stats['brokenLinks'] ?? 0;
+            $results['summary']['suboptimalLinks'] += $stats['suboptimalLinks'] ?? 0;
+            $results['summary']['missingOpportunities'] += $stats['missingOpportunities'] ?? 0;
+        }
+
+        // Collect issues
+        if (isset($audit['audit'])) {
+            $a = $audit['audit'];
+
+            // Broken links
+            if (!empty($a['existing']['broken'])) {
+                foreach ($a['existing']['broken'] as $broken) {
+                    $results['issues'][] = [
+                        'type' => 'broken',
+                        'postId' => $post->ID,
+                        'postTitle' => $post->post_title,
+                        'anchor' => $broken['anchor'],
+                        'url' => $broken['url'],
+                        'issue' => $broken['issue']
+                    ];
+                }
+            }
+
+            // Suboptimal links
+            if (!empty($a['existing']['suboptimal'])) {
+                foreach ($a['existing']['suboptimal'] as $sub) {
+                    $results['issues'][] = [
+                        'type' => 'suboptimal',
+                        'postId' => $post->ID,
+                        'postTitle' => $post->post_title,
+                        'anchor' => $sub['anchor'],
+                        'currentTarget' => $sub['currentTarget']['title'] ?? '',
+                        'betterOption' => $sub['betterOptions'][0]['title'] ?? ''
+                    ];
+                }
+            }
+        }
+    }
+
+    // Calculate overall health score
+    if ($results['summary']['totalLinks'] > 0) {
+        $healthyLinks = $results['summary']['totalLinks'] - $results['summary']['brokenLinks'] - $results['summary']['suboptimalLinks'];
+        $results['summary']['overallHealthScore'] = round(($healthyLinks / $results['summary']['totalLinks']) * 100);
+    } else {
+        $results['summary']['overallHealthScore'] = 100;
+    }
 
     wp_send_json_success($results);
 }
