@@ -150,6 +150,98 @@ $total_links = $smart_linker->get_total_link_count();
         </form>
     </div>
 
+    <!-- Vector API (Pinecone) Section -->
+    <?php
+    $external_api = new LendCity_External_API();
+    $external_api_configured = $external_api->is_configured();
+    $max_links = get_option('lendcity_max_links_per_article', 5);
+    ?>
+    <?php if ($external_api_configured): ?>
+    <div style="background: linear-gradient(135deg, #0f0c29, #302b63, #24243e); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+            <h2 style="margin: 0; color: white;">🧠 Vector Smart Linker</h2>
+            <span style="background: #00c853; padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">PINECONE CONNECTED</span>
+        </div>
+        <p style="margin: 0 0 15px; opacity: 0.9;">AI-powered linking using semantic vectors. Pillars define clusters, posts auto-link to best matches.</p>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px; margin-bottom: 15px;">
+            <!-- Rebuild Catalog Card -->
+            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px; color: white;">📚 Rebuild Catalog</h3>
+                <p style="margin: 0 0 15px; font-size: 13px; opacity: 0.8;">Sync all content to Pinecone. Pillars first, then pages, then posts.</p>
+                <button type="button" id="rebuild-pinecone-catalog" class="button button-large" style="background: #4fc3f7; color: #0f0c29; border: none; font-weight: bold; width: 100%;">
+                    🔄 Rebuild Catalog
+                </button>
+                <div id="rebuild-catalog-status" style="margin-top: 10px; display: none;">
+                    <div style="background: rgba(255,255,255,0.2); height: 8px; border-radius: 4px; overflow: hidden;">
+                        <div id="rebuild-catalog-bar" style="background: #4fc3f7; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                    </div>
+                    <p id="rebuild-catalog-text" style="margin: 8px 0 0; font-size: 12px;"></p>
+                </div>
+            </div>
+
+            <!-- Audit Links Card -->
+            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px; color: white;">🔍 Audit All Links</h3>
+                <p style="margin: 0 0 15px; font-size: 13px; opacity: 0.8;">Check existing links for broken, suboptimal, or missing opportunities.</p>
+                <button type="button" id="audit-all-links" class="button button-large" style="background: #ff7043; color: white; border: none; font-weight: bold; width: 100%;">
+                    🔍 Audit Links
+                </button>
+                <div id="audit-links-status" style="margin-top: 10px; display: none;">
+                    <div style="background: rgba(255,255,255,0.2); height: 8px; border-radius: 4px; overflow: hidden;">
+                        <div id="audit-links-bar" style="background: #ff7043; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                    </div>
+                    <p id="audit-links-text" style="margin: 8px 0 0; font-size: 12px;"></p>
+                </div>
+            </div>
+
+            <!-- Settings Card -->
+            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px; color: white;">⚙️ Link Settings</h3>
+                <p style="margin: 0 0 10px; font-size: 13px; opacity: 0.8;">Configure auto-linking behavior.</p>
+                <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px;">
+                    <label style="font-size: 13px;">Max links per article:</label>
+                    <input type="number" id="max-links-setting" value="<?php echo esc_attr($max_links); ?>" min="1" max="20" style="width: 60px; padding: 5px;">
+                    <button type="button" id="save-max-links" class="button" style="background: rgba(255,255,255,0.2); color: white; border: 1px solid rgba(255,255,255,0.3);">Save</button>
+                </div>
+                <p style="margin: 0; font-size: 11px; opacity: 0.6;">How many links to add when auto-linking new posts.</p>
+            </div>
+        </div>
+
+        <!-- Audit Results Panel (hidden by default) -->
+        <div id="audit-results-panel" style="display: none; background: rgba(255,255,255,0.95); padding: 20px; border-radius: 8px; color: #333; margin-top: 15px;">
+            <h3 style="margin: 0 0 15px;">Link Audit Results</h3>
+            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 15px; margin-bottom: 15px;">
+                <div style="text-align: center; padding: 15px; background: #e8f5e9; border-radius: 8px;">
+                    <div id="audit-health-score" style="font-size: 32px; font-weight: bold; color: #2e7d32;">-</div>
+                    <div style="font-size: 12px; color: #666;">Health Score</div>
+                </div>
+                <div style="text-align: center; padding: 15px; background: #e3f2fd; border-radius: 8px;">
+                    <div id="audit-total-links" style="font-size: 32px; font-weight: bold; color: #1565c0;">-</div>
+                    <div style="font-size: 12px; color: #666;">Total Links</div>
+                </div>
+                <div style="text-align: center; padding: 15px; background: #ffebee; border-radius: 8px;">
+                    <div id="audit-broken-links" style="font-size: 32px; font-weight: bold; color: #c62828;">-</div>
+                    <div style="font-size: 12px; color: #666;">Broken</div>
+                </div>
+                <div style="text-align: center; padding: 15px; background: #fff3e0; border-radius: 8px;">
+                    <div id="audit-suboptimal-links" style="font-size: 32px; font-weight: bold; color: #ef6c00;">-</div>
+                    <div style="font-size: 12px; color: #666;">Suboptimal</div>
+                </div>
+                <div style="text-align: center; padding: 15px; background: #f3e5f5; border-radius: 8px;">
+                    <div id="audit-missing-opps" style="font-size: 32px; font-weight: bold; color: #7b1fa2;">-</div>
+                    <div style="font-size: 12px; color: #666;">Missing Opportunities</div>
+                </div>
+            </div>
+            <div id="audit-issues-list" style="max-height: 300px; overflow-y: auto;"></div>
+        </div>
+    </div>
+    <?php else: ?>
+    <div style="background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px; padding: 15px; margin-bottom: 20px;">
+        <strong>⚠️ Vector API not configured.</strong> Add your Vercel API URL and key in <a href="<?php echo admin_url('admin.php?page=lendcity-tools'); ?>">LendCity Tools Settings</a> to enable AI-powered smart linking.
+    </div>
+    <?php endif; ?>
+
     <!-- STEP 1: Catalog -->
     <div style="background: white; border: 1px solid #ccd0d4; border-radius: 4px; padding: 20px; margin-bottom: 20px;">
         <h2 style="margin-top: 0;"><span style="background: #2271b1; color: white; padding: 2px 10px; border-radius: 12px; font-size: 14px; margin-right: 10px;">Step 1</span>Build Catalog</h2>
@@ -559,6 +651,142 @@ $total_links = $smart_linker->get_total_link_count();
 <script>
 jQuery(document).ready(function($) {
     var nonce = '<?php echo wp_create_nonce('lendcity_claude_nonce'); ?>';
+    var bulkSyncNonce = '<?php echo wp_create_nonce('lendcity_bulk_sync'); ?>';
+    var linkAuditNonce = '<?php echo wp_create_nonce('lendcity_link_audit'); ?>';
+
+    // ========== VECTOR SMART LINKER (Pinecone) ==========
+
+    // Rebuild Catalog Button
+    $('#rebuild-pinecone-catalog').on('click', function() {
+        var $btn = $(this);
+        var $status = $('#rebuild-catalog-status');
+        var $bar = $('#rebuild-catalog-bar');
+        var $text = $('#rebuild-catalog-text');
+
+        $btn.prop('disabled', true).text('Rebuilding...');
+        $status.show();
+        $bar.css('width', '10%');
+        $text.text('Syncing pillars first, then pages, then posts...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_rebuild_catalog',
+            nonce: bulkSyncNonce
+        }, function(response) {
+            if (response.success) {
+                var data = response.data;
+                $bar.css('width', '100%');
+                $text.html(
+                    '<strong>Complete!</strong> ' +
+                    data.pillars.success + ' pillars, ' +
+                    data.pages.success + ' pages, ' +
+                    data.posts.success + ' posts synced. ' +
+                    (data.failed > 0 ? '<span style="color: #ff5252;">' + data.failed + ' failed</span>' : '')
+                );
+                $btn.prop('disabled', false).text('🔄 Rebuild Catalog');
+            } else {
+                $bar.css('width', '0%');
+                $text.text('Error: ' + (response.data?.message || 'Unknown error'));
+                $btn.prop('disabled', false).text('🔄 Rebuild Catalog');
+            }
+        }).fail(function() {
+            $text.text('Request failed. Check console for details.');
+            $btn.prop('disabled', false).text('🔄 Rebuild Catalog');
+        });
+    });
+
+    // Audit All Links Button
+    $('#audit-all-links').on('click', function() {
+        var $btn = $(this);
+        var $status = $('#audit-links-status');
+        var $bar = $('#audit-links-bar');
+        var $text = $('#audit-links-text');
+        var $results = $('#audit-results-panel');
+
+        $btn.prop('disabled', true).text('Auditing...');
+        $status.show();
+        $results.hide();
+        $bar.css('width', '20%');
+        $text.text('Checking all posts for link issues...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_bulk_audit_links',
+            nonce: linkAuditNonce
+        }, function(response) {
+            if (response.success) {
+                var data = response.data;
+                var summary = data.summary;
+                $bar.css('width', '100%');
+                $text.text('Audit complete! ' + data.audited + ' posts checked.');
+
+                // Update results panel
+                $('#audit-health-score').text(summary.overallHealthScore + '%');
+                $('#audit-total-links').text(summary.totalLinks);
+                $('#audit-broken-links').text(summary.brokenLinks);
+                $('#audit-suboptimal-links').text(summary.suboptimalLinks);
+                $('#audit-missing-opps').text(summary.missingOpportunities);
+
+                // Build issues list
+                var issuesHtml = '';
+                if (data.issues.length > 0) {
+                    issuesHtml = '<table style="width: 100%; border-collapse: collapse; font-size: 13px;">';
+                    issuesHtml += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Type</th><th style="padding: 8px; text-align: left;">Post</th><th style="padding: 8px; text-align: left;">Details</th></tr>';
+                    data.issues.slice(0, 50).forEach(function(issue) {
+                        var typeColor = issue.type === 'broken' ? '#c62828' : '#ef6c00';
+                        var details = issue.type === 'broken'
+                            ? 'Anchor: "' + issue.anchor + '" → ' + issue.url
+                            : 'Current: ' + issue.currentTarget + ' → Better: ' + issue.betterOption;
+                        issuesHtml += '<tr style="border-bottom: 1px solid #eee;">';
+                        issuesHtml += '<td style="padding: 8px;"><span style="color: ' + typeColor + '; font-weight: bold;">' + issue.type.toUpperCase() + '</span></td>';
+                        issuesHtml += '<td style="padding: 8px;"><a href="post.php?post=' + issue.postId + '&action=edit" target="_blank">' + issue.postTitle + '</a></td>';
+                        issuesHtml += '<td style="padding: 8px; font-size: 12px;">' + details + '</td>';
+                        issuesHtml += '</tr>';
+                    });
+                    issuesHtml += '</table>';
+                    if (data.issues.length > 50) {
+                        issuesHtml += '<p style="color: #666; font-size: 12px;">Showing first 50 of ' + data.issues.length + ' issues.</p>';
+                    }
+                } else {
+                    issuesHtml = '<p style="color: #2e7d32; text-align: center; padding: 20px;">✅ No issues found! All links are healthy.</p>';
+                }
+                $('#audit-issues-list').html(issuesHtml);
+
+                $results.show();
+                $btn.prop('disabled', false).text('🔍 Audit Links');
+            } else {
+                $text.text('Error: ' + (response.data?.message || 'Unknown error'));
+                $btn.prop('disabled', false).text('🔍 Audit Links');
+            }
+        }).fail(function() {
+            $text.text('Request failed. Check console for details.');
+            $btn.prop('disabled', false).text('🔍 Audit Links');
+        });
+    });
+
+    // Save Max Links Setting
+    $('#save-max-links').on('click', function() {
+        var $btn = $(this);
+        var maxLinks = parseInt($('#max-links-setting').val()) || 5;
+
+        $btn.prop('disabled', true).text('Saving...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_save_max_links',
+            nonce: nonce,
+            max_links: maxLinks
+        }, function(response) {
+            if (response.success) {
+                $btn.text('✓ Saved').css('background', '#4caf50');
+                setTimeout(function() {
+                    $btn.prop('disabled', false).text('Save').css('background', '');
+                }, 2000);
+            } else {
+                $btn.prop('disabled', false).text('Save');
+                alert('Failed to save: ' + (response.data?.message || 'Unknown error'));
+            }
+        }).fail(function() {
+            $btn.prop('disabled', false).text('Save');
+        });
+    });
 
     // ========== BUILD ALL ==========
     $('#build-all-btn').on('click', function() {

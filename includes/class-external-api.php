@@ -611,6 +611,26 @@ function lendcity_rebuild_catalog() {
 }
 
 /**
+ * AJAX handler for saving max links setting
+ */
+add_action('wp_ajax_lendcity_save_max_links', 'lendcity_save_max_links');
+
+function lendcity_save_max_links() {
+    check_ajax_referer('lendcity_claude_nonce', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $max_links = isset($_POST['max_links']) ? intval($_POST['max_links']) : 5;
+    $max_links = max(1, min(20, $max_links)); // Clamp between 1-20
+
+    update_option('lendcity_max_links_per_article', $max_links);
+
+    wp_send_json_success(['max_links' => $max_links]);
+}
+
+/**
  * AJAX handler for auditing links in a single post
  */
 add_action('wp_ajax_lendcity_audit_post_links', 'lendcity_audit_post_links');
