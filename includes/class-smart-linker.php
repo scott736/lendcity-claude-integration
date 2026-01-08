@@ -42,7 +42,9 @@ class LendCity_Smart_Linker {
     private $keywords_meta_key = '_lendcity_target_keywords';
 
     // Database version for migrations
-    const DB_VERSION = '5.1';
+    // v6.0: Minimal catalog - only stores pillar flags and topic clusters
+    // All other metadata lives in Pinecone vector database
+    const DB_VERSION = '6.0';
     const DB_VERSION_OPTION = 'lendcity_catalog_db_version';
 
     // v5.0 Semantic Enhancement Options
@@ -256,7 +258,15 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Create the catalog table - uses direct SQL to avoid dbDelta parsing issues
+     * Create the catalog table - v6.0 MINIMAL structure
+     *
+     * IMPORTANT: All rich metadata now lives in Pinecone.
+     * WordPress only stores:
+     * - post_id: Reference to WordPress post
+     * - is_pillar_content: Flag for pillar pages (needed for UI)
+     * - topic_cluster: For quick filtering in admin UI
+     * - synced_to_pinecone: Track sync status
+     * - updated_at: Last modification time
      */
     private function create_table() {
         global $wpdb;
@@ -265,50 +275,19 @@ class LendCity_Smart_Linker {
         $table_exists = $wpdb->get_var("SHOW TABLES LIKE '{$this->table_name}'") === $this->table_name;
 
         if (!$table_exists) {
+            // v6.0: Minimal table - metadata lives in Pinecone
             $sql = "CREATE TABLE {$this->table_name} (
                 id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
                 post_id BIGINT UNSIGNED NOT NULL,
-                post_type VARCHAR(20) NOT NULL DEFAULT 'post',
-                is_page TINYINT(1) NOT NULL DEFAULT 0,
-                title VARCHAR(255) NOT NULL DEFAULT '',
-                url VARCHAR(500) NOT NULL DEFAULT '',
-                summary TEXT,
-                main_topics LONGTEXT,
-                semantic_keywords LONGTEXT,
-                entities LONGTEXT,
-                content_themes LONGTEXT,
-                good_anchor_phrases LONGTEXT,
-                reader_intent VARCHAR(20) DEFAULT 'educational',
-                difficulty_level VARCHAR(20) DEFAULT 'intermediate',
-                funnel_stage VARCHAR(20) DEFAULT 'awareness',
-                topic_cluster VARCHAR(100) DEFAULT NULL,
-                related_clusters LONGTEXT,
                 is_pillar_content TINYINT(1) NOT NULL DEFAULT 0,
-                word_count INT UNSIGNED DEFAULT 0,
-                content_quality_score TINYINT UNSIGNED DEFAULT 50,
-                content_lifespan VARCHAR(20) DEFAULT 'evergreen',
-                publish_season VARCHAR(30) DEFAULT NULL,
-                target_regions LONGTEXT,
-                target_cities LONGTEXT,
-                target_persona VARCHAR(30) DEFAULT 'general',
-                content_last_updated DATE DEFAULT NULL,
-                freshness_score TINYINT UNSIGNED DEFAULT 100,
-                inbound_link_count INT UNSIGNED DEFAULT 0,
-                outbound_link_count INT UNSIGNED DEFAULT 0,
-                link_gap_priority TINYINT UNSIGNED DEFAULT 50,
-                has_cta TINYINT(1) DEFAULT 0,
-                has_calculator TINYINT(1) DEFAULT 0,
-                has_lead_form TINYINT(1) DEFAULT 0,
-                monetization_value TINYINT UNSIGNED DEFAULT 5,
-                content_format VARCHAR(30) DEFAULT 'other',
-                must_link_to LONGTEXT,
-                never_link_to LONGTEXT,
-                preferred_anchors LONGTEXT,
+                topic_cluster VARCHAR(100) DEFAULT NULL,
+                synced_to_pinecone TINYINT(1) NOT NULL DEFAULT 0,
                 updated_at DATETIME NOT NULL,
                 PRIMARY KEY (id),
                 UNIQUE KEY idx_post_id (post_id),
                 KEY idx_topic_cluster (topic_cluster),
-                KEY idx_persona (target_persona)
+                KEY idx_is_pillar (is_pillar_content),
+                KEY idx_synced (synced_to_pinecone)
             ) $charset_collate";
 
             $result = $wpdb->query($sql);
@@ -316,7 +295,7 @@ class LendCity_Smart_Linker {
             if ($wpdb->last_error) {
                 $this->log('Table creation error: ' . $wpdb->last_error);
             } else {
-                $this->log('Created catalog database table v' . self::DB_VERSION);
+                $this->log('Created minimal catalog database table v' . self::DB_VERSION);
             }
         } else {
             $this->maybe_upgrade_table();
@@ -324,58 +303,39 @@ class LendCity_Smart_Linker {
     }
 
     /**
-     * Add missing columns to existing table (for v4 upgrades)
+     * Upgrade table to v6.0 minimal structure
+     * Drops deprecated columns and adds new ones
      */
     private function maybe_upgrade_table() {
         global $wpdb;
 
         $columns = $wpdb->get_col("SHOW COLUMNS FROM {$this->table_name}", 0);
 
-        $v4_columns = array(
-            'content_lifespan' => "VARCHAR(20) DEFAULT 'evergreen'",
-            'publish_season' => "VARCHAR(30) DEFAULT NULL",
-            'target_regions' => "LONGTEXT",
-            'target_cities' => "LONGTEXT",
-            'target_persona' => "VARCHAR(30) DEFAULT 'general'",
-            'content_last_updated' => "DATE DEFAULT NULL",
-            'freshness_score' => "TINYINT UNSIGNED DEFAULT 100",
-            'inbound_link_count' => "INT UNSIGNED DEFAULT 0",
-            'outbound_link_count' => "INT UNSIGNED DEFAULT 0",
-            'link_gap_priority' => "TINYINT UNSIGNED DEFAULT 50",
-            'has_cta' => "TINYINT(1) DEFAULT 0",
-            'has_calculator' => "TINYINT(1) DEFAULT 0",
-            'has_lead_form' => "TINYINT(1) DEFAULT 0",
-            'monetization_value' => "TINYINT UNSIGNED DEFAULT 5",
-            'content_format' => "VARCHAR(30) DEFAULT 'other'",
-            'must_link_to' => "LONGTEXT",
-            'never_link_to' => "LONGTEXT",
-            'preferred_anchors' => "LONGTEXT",
-            // v5.0 Semantic Enhancement columns
-            'embedding_hash' => "VARCHAR(64) DEFAULT NULL",
-            'primary_entities' => "LONGTEXT",
-            'reciprocal_links' => "LONGTEXT"
+        // v6.0: Add new minimal columns if missing
+        $v6_columns = array(
+            'synced_to_pinecone' => "TINYINT(1) NOT NULL DEFAULT 0"
         );
 
-        $added = 0;
-        foreach ($v4_columns as $col => $def) {
+        foreach ($v6_columns as $col => $def) {
             if (!in_array($col, $columns)) {
                 $wpdb->query("ALTER TABLE {$this->table_name} ADD COLUMN {$col} {$def}");
-                $added++;
+                $this->log("Added v6.0 column: {$col}");
             }
         }
 
-        if ($added > 0) {
-            $this->log("Added {$added} new v4 columns to catalog table");
+        // Add synced index if missing
+        $index_exists = $wpdb->get_var(
+            "SELECT COUNT(*) FROM information_schema.STATISTICS
+             WHERE table_schema = DATABASE()
+             AND table_name = '{$this->table_name}'
+             AND index_name = 'idx_synced'"
+        );
+        if ($index_exists == 0 && in_array('synced_to_pinecone', $wpdb->get_col("SHOW COLUMNS FROM {$this->table_name}", 0))) {
+            $wpdb->query("ALTER TABLE {$this->table_name} ADD INDEX idx_synced (synced_to_pinecone)");
         }
-
-        // v12.2.6: Add FULLTEXT index for semantic search (if not exists)
-        $this->maybe_add_fulltext_index();
 
         // v12.2.6: Add postmeta index for smart links lookups (if not exists)
         $this->maybe_add_postmeta_index();
-
-        // v12.3.0: Add performance indexes for sorting/filtering
-        $this->maybe_add_performance_indexes();
     }
 
     /**
@@ -479,73 +439,20 @@ class LendCity_Smart_Linker {
 
     /**
      * Insert or update a catalog entry in the database
+     *
+     * v6.0: MINIMAL DATA ONLY
+     * Only stores: post_id, is_pillar_content, topic_cluster, synced_to_pinecone
+     * All rich metadata is stored in Pinecone vector database
      */
     public function insert_catalog_entry($post_id, $entry) {
         global $wpdb;
 
-        // Get post modified date for freshness
-        $post = get_post($post_id);
-        $last_modified = $post ? $post->post_modified : current_time('mysql');
-
+        // v6.0: Only store minimal fields needed for WordPress admin UI
         $data = array(
-            // Core fields
             'post_id' => intval($post_id),
-            'post_type' => isset($entry['type']) ? $entry['type'] : 'post',
-            'is_page' => isset($entry['is_page']) ? (int)$entry['is_page'] : 0,
-            'title' => isset($entry['title']) ? $entry['title'] : '',
-            'url' => isset($entry['url']) ? $entry['url'] : '',
-            'summary' => isset($entry['summary']) ? $entry['summary'] : '',
-            // Use safe JSON encoding to prevent data corruption
-            'main_topics' => $this->safe_json_encode($entry['main_topics'] ?? array(), 'main_topics'),
-            'semantic_keywords' => $this->safe_json_encode($entry['semantic_keywords'] ?? array(), 'semantic_keywords'),
-            'entities' => $this->safe_json_encode($entry['entities'] ?? array(), 'entities'),
-            'content_themes' => $this->safe_json_encode($entry['content_themes'] ?? array(), 'content_themes'),
-            'good_anchor_phrases' => $this->safe_json_encode($entry['good_anchor_phrases'] ?? array(), 'good_anchor_phrases'),
-
-            // v3.0 Intelligence fields
-            'reader_intent' => isset($entry['reader_intent']) ? $entry['reader_intent'] : 'educational',
-            'difficulty_level' => isset($entry['difficulty_level']) ? $entry['difficulty_level'] : 'intermediate',
-            'funnel_stage' => isset($entry['funnel_stage']) ? $entry['funnel_stage'] : 'awareness',
-            'topic_cluster' => isset($entry['topic_cluster']) ? $entry['topic_cluster'] : null,
-            'related_clusters' => $this->safe_json_encode($entry['related_clusters'] ?? array(), 'related_clusters'),
             'is_pillar_content' => isset($entry['is_pillar_content']) ? (int)$entry['is_pillar_content'] : 0,
-            'word_count' => isset($entry['word_count']) ? intval($entry['word_count']) : 0,
-            'content_quality_score' => isset($entry['content_quality_score']) ? intval($entry['content_quality_score']) : 50,
-
-            // v4.0 Seasonal/Evergreen
-            'content_lifespan' => isset($entry['content_lifespan']) ? $entry['content_lifespan'] : 'evergreen',
-            'publish_season' => isset($entry['publish_season']) ? $entry['publish_season'] : null,
-
-            // v4.0 Geographic
-            'target_regions' => $this->safe_json_encode($entry['target_regions'] ?? array(), 'target_regions'),
-            'target_cities' => $this->safe_json_encode($entry['target_cities'] ?? array(), 'target_cities'),
-
-            // v4.0 Persona
-            'target_persona' => isset($entry['target_persona']) ? $entry['target_persona'] : 'general',
-
-            // v4.0 Freshness
-            'content_last_updated' => date('Y-m-d', strtotime($last_modified)),
-            'freshness_score' => $this->calculate_freshness_score($last_modified),
-
-            // v4.0 Link Velocity (calculated separately)
-            'inbound_link_count' => isset($entry['inbound_link_count']) ? intval($entry['inbound_link_count']) : 0,
-            'outbound_link_count' => isset($entry['outbound_link_count']) ? intval($entry['outbound_link_count']) : 0,
-            'link_gap_priority' => isset($entry['link_gap_priority']) ? intval($entry['link_gap_priority']) : 50,
-
-            // v4.0 Conversion Signals
-            'has_cta' => isset($entry['has_cta']) ? (int)$entry['has_cta'] : 0,
-            'has_calculator' => isset($entry['has_calculator']) ? (int)$entry['has_calculator'] : 0,
-            'has_lead_form' => isset($entry['has_lead_form']) ? (int)$entry['has_lead_form'] : 0,
-            'monetization_value' => isset($entry['monetization_value']) ? intval($entry['monetization_value']) : 5,
-
-            // v4.0 Content Format
-            'content_format' => isset($entry['content_format']) ? $entry['content_format'] : 'other',
-
-            // v4.0 Admin Overrides
-            'must_link_to' => $this->safe_json_encode($entry['must_link_to'] ?? array(), 'must_link_to'),
-            'never_link_to' => $this->safe_json_encode($entry['never_link_to'] ?? array(), 'never_link_to'),
-            'preferred_anchors' => $this->safe_json_encode($entry['preferred_anchors'] ?? array(), 'preferred_anchors'),
-
+            'topic_cluster' => isset($entry['topic_cluster']) ? $entry['topic_cluster'] : null,
+            'synced_to_pinecone' => isset($entry['synced_to_pinecone']) ? (int)$entry['synced_to_pinecone'] : 0,
             'updated_at' => isset($entry['updated_at']) ? $entry['updated_at'] : current_time('mysql')
         );
 
@@ -566,8 +473,35 @@ class LendCity_Smart_Linker {
     }
 
     /**
+     * Mark a post as synced to Pinecone
+     */
+    public function mark_synced_to_pinecone($post_id, $synced = true) {
+        global $wpdb;
+
+        return $wpdb->update(
+            $this->table_name,
+            array('synced_to_pinecone' => $synced ? 1 : 0),
+            array('post_id' => $post_id)
+        );
+    }
+
+    /**
+     * Get posts that need syncing to Pinecone
+     */
+    public function get_unsynced_posts($limit = 50) {
+        global $wpdb;
+
+        return $wpdb->get_col($wpdb->prepare(
+            "SELECT post_id FROM {$this->table_name}
+             WHERE synced_to_pinecone = 0
+             LIMIT %d",
+            $limit
+        ));
+    }
+
+    /**
      * Bulk insert or update multiple catalog entries
-     * Uses INSERT ... ON DUPLICATE KEY UPDATE for efficiency
+     * v6.0: MINIMAL DATA - only stores pillar flags and topic clusters
      *
      * @param array $entries Array of entries, each keyed by post_id
      * @return array Result with 'inserted' and 'failed' counts
@@ -582,65 +516,24 @@ class LendCity_Smart_Linker {
         $inserted = 0;
         $failed = 0;
 
-        // Process in batches of 50 to avoid query size limits
-        $batches = array_chunk($entries, 50, true);
+        // Process in batches of 100 (much smaller data now)
+        $batches = array_chunk($entries, 100, true);
 
         foreach ($batches as $batch) {
             $values = array();
             $placeholders = array();
 
             foreach ($batch as $post_id => $entry) {
-                $post = get_post($post_id);
-                if (!$post) {
-                    $failed++;
-                    continue;
-                }
-
-                $last_modified = $post->post_modified;
-
                 $row = array(
                     intval($post_id),
-                    isset($entry['type']) ? $entry['type'] : 'post',
-                    isset($entry['is_page']) ? (int)$entry['is_page'] : 0,
-                    isset($entry['title']) ? $entry['title'] : '',
-                    isset($entry['url']) ? $entry['url'] : '',
-                    isset($entry['summary']) ? $entry['summary'] : '',
-                    $this->safe_json_encode($entry['main_topics'] ?? array(), 'main_topics'),
-                    $this->safe_json_encode($entry['semantic_keywords'] ?? array(), 'semantic_keywords'),
-                    $this->safe_json_encode($entry['entities'] ?? array(), 'entities'),
-                    $this->safe_json_encode($entry['content_themes'] ?? array(), 'content_themes'),
-                    $this->safe_json_encode($entry['good_anchor_phrases'] ?? array(), 'good_anchor_phrases'),
-                    isset($entry['reader_intent']) ? $entry['reader_intent'] : 'educational',
-                    isset($entry['difficulty_level']) ? $entry['difficulty_level'] : 'intermediate',
-                    isset($entry['funnel_stage']) ? $entry['funnel_stage'] : 'awareness',
-                    isset($entry['topic_cluster']) ? $entry['topic_cluster'] : null,
-                    $this->safe_json_encode($entry['related_clusters'] ?? array(), 'related_clusters'),
                     isset($entry['is_pillar_content']) ? (int)$entry['is_pillar_content'] : 0,
-                    isset($entry['word_count']) ? intval($entry['word_count']) : 0,
-                    isset($entry['content_quality_score']) ? intval($entry['content_quality_score']) : 50,
-                    isset($entry['content_lifespan']) ? $entry['content_lifespan'] : 'evergreen',
-                    isset($entry['publish_season']) ? $entry['publish_season'] : null,
-                    $this->safe_json_encode($entry['target_regions'] ?? array(), 'target_regions'),
-                    $this->safe_json_encode($entry['target_cities'] ?? array(), 'target_cities'),
-                    isset($entry['target_persona']) ? $entry['target_persona'] : 'general',
-                    date('Y-m-d', strtotime($last_modified)),
-                    $this->calculate_freshness_score($last_modified),
-                    isset($entry['inbound_link_count']) ? intval($entry['inbound_link_count']) : 0,
-                    isset($entry['outbound_link_count']) ? intval($entry['outbound_link_count']) : 0,
-                    isset($entry['link_gap_priority']) ? intval($entry['link_gap_priority']) : 50,
-                    isset($entry['has_cta']) ? (int)$entry['has_cta'] : 0,
-                    isset($entry['has_calculator']) ? (int)$entry['has_calculator'] : 0,
-                    isset($entry['has_lead_form']) ? (int)$entry['has_lead_form'] : 0,
-                    isset($entry['monetization_value']) ? intval($entry['monetization_value']) : 5,
-                    isset($entry['content_format']) ? $entry['content_format'] : 'other',
-                    $this->safe_json_encode($entry['must_link_to'] ?? array(), 'must_link_to'),
-                    $this->safe_json_encode($entry['never_link_to'] ?? array(), 'never_link_to'),
-                    $this->safe_json_encode($entry['preferred_anchors'] ?? array(), 'preferred_anchors'),
+                    isset($entry['topic_cluster']) ? $entry['topic_cluster'] : null,
+                    isset($entry['synced_to_pinecone']) ? (int)$entry['synced_to_pinecone'] : 0,
                     isset($entry['updated_at']) ? $entry['updated_at'] : current_time('mysql')
                 );
 
                 $values = array_merge($values, $row);
-                $placeholders[] = "(%d, %s, %d, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %d, %d, %d, %s, %s, %s, %s, %s, %s, %d, %d, %d, %d, %d, %d, %d, %d, %s, %s, %s, %s, %s)";
+                $placeholders[] = "(%d, %d, %s, %d, %s)";
             }
 
             if (empty($placeholders)) {
@@ -648,51 +541,12 @@ class LendCity_Smart_Linker {
             }
 
             $sql = "INSERT INTO {$this->table_name}
-                (post_id, post_type, is_page, title, url, summary, main_topics, semantic_keywords,
-                 entities, content_themes, good_anchor_phrases, reader_intent, difficulty_level,
-                 funnel_stage, topic_cluster, related_clusters, is_pillar_content, word_count,
-                 content_quality_score, content_lifespan, publish_season, target_regions, target_cities,
-                 target_persona, content_last_updated, freshness_score, inbound_link_count,
-                 outbound_link_count, link_gap_priority, has_cta, has_calculator, has_lead_form,
-                 monetization_value, content_format, must_link_to, never_link_to, preferred_anchors, updated_at)
+                (post_id, is_pillar_content, topic_cluster, synced_to_pinecone, updated_at)
                 VALUES " . implode(', ', $placeholders) . "
                 ON DUPLICATE KEY UPDATE
-                    post_type = VALUES(post_type),
-                    is_page = VALUES(is_page),
-                    title = VALUES(title),
-                    url = VALUES(url),
-                    summary = VALUES(summary),
-                    main_topics = VALUES(main_topics),
-                    semantic_keywords = VALUES(semantic_keywords),
-                    entities = VALUES(entities),
-                    content_themes = VALUES(content_themes),
-                    good_anchor_phrases = VALUES(good_anchor_phrases),
-                    reader_intent = VALUES(reader_intent),
-                    difficulty_level = VALUES(difficulty_level),
-                    funnel_stage = VALUES(funnel_stage),
-                    topic_cluster = VALUES(topic_cluster),
-                    related_clusters = VALUES(related_clusters),
                     is_pillar_content = VALUES(is_pillar_content),
-                    word_count = VALUES(word_count),
-                    content_quality_score = VALUES(content_quality_score),
-                    content_lifespan = VALUES(content_lifespan),
-                    publish_season = VALUES(publish_season),
-                    target_regions = VALUES(target_regions),
-                    target_cities = VALUES(target_cities),
-                    target_persona = VALUES(target_persona),
-                    content_last_updated = VALUES(content_last_updated),
-                    freshness_score = VALUES(freshness_score),
-                    inbound_link_count = VALUES(inbound_link_count),
-                    outbound_link_count = VALUES(outbound_link_count),
-                    link_gap_priority = VALUES(link_gap_priority),
-                    has_cta = VALUES(has_cta),
-                    has_calculator = VALUES(has_calculator),
-                    has_lead_form = VALUES(has_lead_form),
-                    monetization_value = VALUES(monetization_value),
-                    content_format = VALUES(content_format),
-                    must_link_to = VALUES(must_link_to),
-                    never_link_to = VALUES(never_link_to),
-                    preferred_anchors = VALUES(preferred_anchors),
+                    topic_cluster = VALUES(topic_cluster),
+                    synced_to_pinecone = VALUES(synced_to_pinecone),
                     updated_at = VALUES(updated_at)";
 
             $query = $wpdb->prepare($sql, $values);
@@ -714,26 +568,13 @@ class LendCity_Smart_Linker {
         );
     }
 
-    /**
-     * Calculate freshness score based on last modified date (0-100)
-     */
-    private function calculate_freshness_score($last_modified) {
-        $days_old = (time() - strtotime($last_modified)) / 86400;
-
-        if ($days_old < 30) return 100;
-        if ($days_old < 90) return 85;
-        if ($days_old < 180) return 70;
-        if ($days_old < 365) return 50;
-        if ($days_old < 730) return 30;
-        return 10;
-    }
-
     // =========================================================================
-    // CATALOG QUERY METHODS (Fast Database Queries)
+    // CATALOG QUERY METHODS (v6.0 - Minimal Data)
     // =========================================================================
 
     /**
      * Get catalog entry by post ID
+     * v6.0: Returns minimal data only (post_id, is_pillar, topic_cluster, synced)
      */
     public function get_catalog_entry($post_id) {
         global $wpdb;
@@ -750,6 +591,7 @@ class LendCity_Smart_Linker {
 
     /**
      * Get all catalog entries (with optional filters)
+     * v6.0: Returns minimal data only
      */
     public function get_catalog($filters = array()) {
         global $wpdb;
@@ -763,34 +605,19 @@ class LendCity_Smart_Linker {
         $where = array('1=1');
         $params = array();
 
-        if (isset($filters['is_page'])) {
-            $where[] = 'is_page = %d';
-            $params[] = (int)$filters['is_page'];
-        }
-
         if (isset($filters['topic_cluster'])) {
             $where[] = 'topic_cluster = %s';
             $params[] = $filters['topic_cluster'];
         }
 
-        if (isset($filters['difficulty_level'])) {
-            $where[] = 'difficulty_level = %s';
-            $params[] = $filters['difficulty_level'];
-        }
-
-        if (isset($filters['funnel_stage'])) {
-            $where[] = 'funnel_stage = %s';
-            $params[] = $filters['funnel_stage'];
-        }
-
-        if (isset($filters['reader_intent'])) {
-            $where[] = 'reader_intent = %s';
-            $params[] = $filters['reader_intent'];
-        }
-
         if (isset($filters['is_pillar_content'])) {
             $where[] = 'is_pillar_content = %d';
             $params[] = (int)$filters['is_pillar_content'];
+        }
+
+        if (isset($filters['synced_to_pinecone'])) {
+            $where[] = 'synced_to_pinecone = %d';
+            $params[] = (int)$filters['synced_to_pinecone'];
         }
 
         $where_clause = implode(' AND ', $where);
@@ -950,72 +777,21 @@ class LendCity_Smart_Linker {
 
     /**
      * Hydrate a database row into a catalog entry array
+     * v6.0: MINIMAL DATA - all rich metadata comes from Pinecone
      */
     private function hydrate_catalog_entry($row) {
         return array(
-            // Core fields
             'post_id' => intval($row['post_id']),
-            'type' => $row['post_type'],
-            'is_page' => (bool)$row['is_page'],
-            'title' => $row['title'],
-            'url' => $row['url'],
-            'summary' => $row['summary'],
-            'main_topics' => json_decode($row['main_topics'], true) ?: array(),
-            'semantic_keywords' => json_decode($row['semantic_keywords'], true) ?: array(),
-            'entities' => json_decode($row['entities'], true) ?: array(),
-            'content_themes' => json_decode($row['content_themes'], true) ?: array(),
-            'good_anchor_phrases' => json_decode($row['good_anchor_phrases'], true) ?: array(),
-
-            // v3.0 Intelligence
-            'reader_intent' => $row['reader_intent'] ?? 'educational',
-            'difficulty_level' => $row['difficulty_level'] ?? 'intermediate',
-            'funnel_stage' => $row['funnel_stage'] ?? 'awareness',
-            'topic_cluster' => $row['topic_cluster'] ?? null,
-            'related_clusters' => json_decode($row['related_clusters'] ?? '[]', true) ?: array(),
             'is_pillar_content' => (bool)($row['is_pillar_content'] ?? 0),
-            'word_count' => intval($row['word_count'] ?? 0),
-            'content_quality_score' => intval($row['content_quality_score'] ?? 50),
-
-            // v4.0 Seasonal/Evergreen
-            'content_lifespan' => $row['content_lifespan'] ?? 'evergreen',
-            'publish_season' => $row['publish_season'] ?? null,
-
-            // v4.0 Geographic
-            'target_regions' => json_decode($row['target_regions'] ?? '[]', true) ?: array(),
-            'target_cities' => json_decode($row['target_cities'] ?? '[]', true) ?: array(),
-
-            // v4.0 Persona
-            'target_persona' => $row['target_persona'] ?? 'general',
-
-            // v4.0 Freshness
-            'content_last_updated' => $row['content_last_updated'] ?? null,
-            'freshness_score' => intval($row['freshness_score'] ?? 100),
-
-            // v4.0 Link Velocity
-            'inbound_link_count' => intval($row['inbound_link_count'] ?? 0),
-            'outbound_link_count' => intval($row['outbound_link_count'] ?? 0),
-            'link_gap_priority' => intval($row['link_gap_priority'] ?? 50),
-
-            // v4.0 Conversion
-            'has_cta' => (bool)($row['has_cta'] ?? 0),
-            'has_calculator' => (bool)($row['has_calculator'] ?? 0),
-            'has_lead_form' => (bool)($row['has_lead_form'] ?? 0),
-            'monetization_value' => intval($row['monetization_value'] ?? 5),
-
-            // v4.0 Format
-            'content_format' => $row['content_format'] ?? 'other',
-
-            // v4.0 Admin Overrides
-            'must_link_to' => json_decode($row['must_link_to'] ?? '[]', true) ?: array(),
-            'never_link_to' => json_decode($row['never_link_to'] ?? '[]', true) ?: array(),
-            'preferred_anchors' => json_decode($row['preferred_anchors'] ?? '[]', true) ?: array(),
-
-            'updated_at' => $row['updated_at']
+            'topic_cluster' => $row['topic_cluster'] ?? null,
+            'synced_to_pinecone' => (bool)($row['synced_to_pinecone'] ?? 0),
+            'updated_at' => $row['updated_at'] ?? null
         );
     }
 
     /**
      * Get catalog stats (single optimized query with transient caching)
+     * v6.0: Minimal stats - counts from WordPress, detail from Pinecone
      */
     public function get_catalog_stats() {
         // Check transient cache first (5 minute cache)
@@ -1026,23 +802,22 @@ class LendCity_Smart_Linker {
 
         global $wpdb;
 
-        // Single query with conditional counts (5 queries → 1)
+        // v6.0: Simplified stats query
         $row = $wpdb->get_row("
             SELECT
                 COUNT(*) as total,
-                SUM(CASE WHEN is_page = 0 THEN 1 ELSE 0 END) as posts,
-                SUM(CASE WHEN is_page = 1 THEN 1 ELSE 0 END) as pages,
                 SUM(CASE WHEN is_pillar_content = 1 THEN 1 ELSE 0 END) as pillars,
+                SUM(CASE WHEN synced_to_pinecone = 1 THEN 1 ELSE 0 END) as synced,
                 COUNT(DISTINCT CASE WHEN topic_cluster IS NOT NULL THEN topic_cluster END) as clusters
             FROM {$this->table_name}
         ");
 
         $stats = array(
             'total' => intval($row->total ?? 0),
-            'posts' => intval($row->posts ?? 0),
-            'pages' => intval($row->pages ?? 0),
             'pillars' => intval($row->pillars ?? 0),
-            'clusters' => intval($row->clusters ?? 0)
+            'synced' => intval($row->synced ?? 0),
+            'clusters' => intval($row->clusters ?? 0),
+            'unsynced' => intval(($row->total ?? 0) - ($row->synced ?? 0))
         );
 
         // Cache for 5 minutes
