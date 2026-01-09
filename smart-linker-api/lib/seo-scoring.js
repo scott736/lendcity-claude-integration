@@ -1409,12 +1409,32 @@ async function getSitewideSEOMetrics() {
 
 /**
  * Filter candidates by content type rules
+ *
+ * IMPORTANT: This now filters out ALL pages from suggestions:
+ * 1. If source is a page - return empty (pages don't get auto-suggestions)
+ * 2. Filter out any candidates that are pages - posts should only link to posts
+ *    (pages are manually managed and shouldn't appear as link targets)
  */
 function filterByContentType(candidates, sourceType) {
+  // Pages don't receive automatic link suggestions
   if (sourceType?.toLowerCase() === 'page') {
     return [];
   }
-  return candidates;
+
+  // Filter out page TARGETS from suggestions
+  // Posts should only link to other posts, not pages
+  // Pages are manually managed and should not appear as link suggestions
+  return candidates.filter(candidate => {
+    const metadata = candidate.metadata || candidate;
+    const targetType = (metadata.contentType || 'post').toLowerCase();
+
+    // Block pages from appearing as link targets
+    if (targetType === 'page') {
+      return false;
+    }
+
+    return true;
+  });
 }
 
 // ============================================================================

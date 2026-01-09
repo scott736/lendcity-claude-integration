@@ -12,7 +12,7 @@ const {
 } = require('../lib/seo-scoring');
 
 /**
- * SEO-optimized anchor text finder (Expert Level)
+ * SEO-optimized anchor text finder (Expert Level v2)
  *
  * Smart linking strategies:
  * 1. Avoids generic phrases that could match multiple targets
@@ -23,8 +23,9 @@ const {
  * 6. Semantic partial matching - finds phrases with multiple target words
  * 7. Position-based scoring for optimal link placement
  * 8. Exact match penalty - avoids over-optimization
- * 9. Word boundary matching - ensures clean word breaks
+ * 9. STRICT word boundary matching - ensures complete words (no cutting)
  * 10. Natural language preference - prefers readable anchors
+ * 11. Filter anchors starting/ending with conjunctions, prepositions
  *
  * @param {string} content - HTML content of source article
  * @param {string} contentLower - Lowercase version for searching
@@ -35,6 +36,7 @@ const {
 function findAnchorInContent(content, contentLower, target, usedAnchors = new Set()) {
   // Target title normalized for exact match detection
   const targetTitleLower = (target.title || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
+
   // Generic phrases that match too many pages - BLACKLIST
   const genericPhrases = new Set([
     'mortgage financing', 'real estate', 'investment property', 'property investment',
@@ -46,6 +48,26 @@ function findAnchorInContent(content, contentLower, target, usedAnchors = new Se
     'property financing', 'real estate financing', 'investment financing',
     'mortgage lender', 'lending company', 'loan provider', 'property management',
     'investment strategy', 'financing guide', 'loan guide', 'mortgage guide'
+  ]);
+
+  // Words that should NEVER start or end an anchor text
+  // These create awkward, unnatural-sounding links
+  const badStartEndWords = new Set([
+    // Conjunctions
+    'and', 'or', 'but', 'nor', 'yet', 'so', 'for',
+    // Prepositions
+    'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by', 'from', 'as',
+    'into', 'onto', 'upon', 'within', 'without', 'through', 'during',
+    'before', 'after', 'above', 'below', 'between', 'among', 'under',
+    // Articles
+    'the', 'a', 'an',
+    // Pronouns (when starting)
+    'it', 'its', 'their', 'our', 'your', 'his', 'her', 'my',
+    // Other weak words
+    'also', 'both', 'each', 'either', 'neither', 'such', 'very',
+    'just', 'only', 'even', 'still', 'then', 'than', 'that', 'which',
+    // Fragments that indicate cut-off
+    'including', 'especially', 'particularly', 'specifically'
   ]);
 
   // Stopwords for distinctive word detection
@@ -61,6 +83,70 @@ function findAnchorInContent(content, contentLower, target, usedAnchors = new Se
     'very', 'just', 'also', 'now', 'here', 'there', 'then', 'once', 'about',
     'mortgage', 'financing', 'property', 'investment', 'loan', 'lending', 'real', 'estate'
   ]);
+
+  /**
+   * Check if an anchor text has valid start/end words
+   * Rejects anchors starting or ending with conjunctions, prepositions, etc.
+   */
+  function hasValidBoundaries(text) {
+    const words = text.trim().toLowerCase().split(/\s+/);
+    if (words.length === 0) return false;
+
+    const firstWord = words[0].replace(/[^\w]/g, '');
+    const lastWord = words[words.length - 1].replace(/[^\w]/g, '');
+
+    // Check start word
+    if (badStartEndWords.has(firstWord)) {
+      return false;
+    }
+
+    // Check end word
+    if (badStartEndWords.has(lastWord)) {
+      return false;
+    }
+
+    return true;
+  }
+
+  /**
+   * Extract a clean phrase from content at given position
+   * Ensures complete words (no cutting mid-word)
+   */
+  function extractCleanPhrase(text, startPos, endPos) {
+    // Expand backwards to word boundary
+    while (startPos > 0 && /\w/.test(text[startPos - 1])) {
+      startPos--;
+    }
+
+    // Expand forwards to word boundary
+    while (endPos < text.length && /\w/.test(text[endPos])) {
+      endPos++;
+    }
+
+    // Extract and clean
+    let phrase = text.substring(startPos, endPos).trim();
+
+    // Remove leading/trailing punctuation but keep internal punctuation
+    phrase = phrase.replace(/^[^\w]+/, '').replace(/[^\w]+$/, '');
+
+    return phrase;
+  }
+
+  /**
+   * Find all word-boundary positions in text
+   */
+  function getWordBoundaries(text) {
+    const boundaries = [0];
+    for (let i = 1; i < text.length; i++) {
+      const prev = /\w/.test(text[i - 1]);
+      const curr = /\w/.test(text[i]);
+      if (prev !== curr) {
+        boundaries.push(i);
+      }
+    }
+    boundaries.push(text.length);
+    return boundaries;
+  }
 
   // Extract distinctive words from target title (THE KEY to specificity)
   const distinctiveWords = [];
@@ -80,7 +166,7 @@ function findAnchorInContent(content, contentLower, target, usedAnchors = new Se
 
   // Remove existing links and strip HTML for searching
   const contentWithoutLinks = content.replace(/<a[^>]*>.*?<\/a>/gi, '');
-  const plainText = contentWithoutLinks.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ');
+  const plainText = contentWithoutLinks.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
   const plainLower = plainText.toLowerCase();
 
   // Determine content length for position scoring
@@ -98,10 +184,17 @@ function findAnchorInContent(content, contentLower, target, usedAnchors = new Se
     const sentenceLower = sentence.toLowerCase();
 
     // Count how many distinctive words appear in this sentence
-    const matchingWords = distinctiveWords.filter(w => sentenceLower.includes(w));
+    const matchingWords = distinctiveWords.filter(w => {
+      // Ensure word boundary match (not partial word)
+      const regex = new RegExp(`\\b${w}\\b`, 'i');
+      return regex.test(sentenceLower);
+    });
 
     if (matchingWords.length >= 2) {
-      // Good candidate! Check if already used
+      // Check boundary validity
+      if (!hasValidBoundaries(sentence)) continue;
+
+      // Check if already used
       const normalizedSentence = sentenceLower.trim();
       if (usedAnchors.has(normalizedSentence)) continue;
 
@@ -147,13 +240,19 @@ function findAnchorInContent(content, contentLower, target, usedAnchors = new Se
         if (phrase.length < 12) continue;
         if (genericPhrases.has(phraseLower)) continue;
         if (usedAnchors.has(phraseLower)) continue;
+        if (!hasValidBoundaries(phrase)) continue;
 
         // Must contain at least one distinctive word
         const hasDistinctive = distinctiveWords.some(w => phraseLower.includes(w));
         if (!hasDistinctive) continue;
 
-        const pos = plainLower.indexOf(phraseLower);
-        if (pos === -1) continue;
+        // Use word boundary regex to find in content
+        const escapedPhrase = phraseLower.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const phraseRegex = new RegExp(`\\b${escapedPhrase}\\b`, 'i');
+        const match = phraseRegex.exec(plainLower);
+        if (!match) continue;
+
+        const pos = match.index;
 
         // Position scoring
         let positionScore = 1;
@@ -169,8 +268,11 @@ function findAnchorInContent(content, contentLower, target, usedAnchors = new Se
         // Longer phrases are more specific = higher score
         const lengthBonus = len / 3;
 
+        // Extract the actual text from content (preserves original case)
+        const extractedText = plainText.substring(pos, pos + phrase.length);
+
         candidates.push({
-          text: plainText.substring(pos, pos + phrase.length),
+          text: extractedText,
           type: 'phrase',
           position: positionLabel,
           score: 80 * positionScore * lengthBonus,
@@ -181,18 +283,75 @@ function findAnchorInContent(content, contentLower, target, usedAnchors = new Se
   }
 
   // STRATEGY 3: Find contextual phrases with distinctive words nearby
+  // IMPROVED: Use word boundaries and smart expansion
   for (const distinctWord of distinctiveWords) {
-    const regex = new RegExp(`\\b[\\w\\s]{0,30}${distinctWord}[\\w\\s]{0,30}\\b`, 'gi');
-    let match;
-    while ((match = regex.exec(plainText)) !== null) {
-      const phrase = match[0].trim();
+    // Find all occurrences of the distinctive word with word boundaries
+    const wordRegex = new RegExp(`\\b${distinctWord}\\b`, 'gi');
+    let wordMatch;
+
+    while ((wordMatch = wordRegex.exec(plainLower)) !== null) {
+      const wordPos = wordMatch.index;
+
+      // Find the start of this word's sentence/clause
+      let clauseStart = wordPos;
+      let commaCount = 0;
+
+      // Go backwards to find clause start (stop at period, or after 2 commas)
+      for (let i = wordPos - 1; i >= 0 && i >= wordPos - 80; i--) {
+        if ('.!?'.includes(plainText[i])) {
+          clauseStart = i + 1;
+          break;
+        }
+        if (plainText[i] === ',') {
+          commaCount++;
+          if (commaCount >= 2) {
+            clauseStart = i + 1;
+            break;
+          }
+        }
+        clauseStart = i;
+      }
+
+      // Go forwards to find clause end
+      let clauseEnd = wordPos + distinctWord.length;
+      commaCount = 0;
+
+      for (let i = wordPos + distinctWord.length; i < plainText.length && i <= wordPos + 80; i++) {
+        if ('.!?'.includes(plainText[i])) {
+          clauseEnd = i;
+          break;
+        }
+        if (plainText[i] === ',') {
+          commaCount++;
+          if (commaCount >= 2) {
+            clauseEnd = i;
+            break;
+          }
+        }
+        clauseEnd = i + 1;
+      }
+
+      // Extract clean phrase with proper word boundaries
+      const phrase = extractCleanPhrase(plainText, clauseStart, clauseEnd);
       const phraseLower = phrase.toLowerCase();
 
+      // Length checks
       if (phrase.length < 15 || phrase.length > 80) continue;
+
+      // Check word count (2-8 words ideal)
+      const wordCount = phrase.split(/\s+/).length;
+      if (wordCount < 2 || wordCount > 10) continue;
+
+      // Check boundaries
+      if (!hasValidBoundaries(phrase)) continue;
+
       if (usedAnchors.has(phraseLower)) continue;
 
       // Count distinctive words in this phrase
-      const matchingWords = distinctiveWords.filter(w => phraseLower.includes(w));
+      const matchingWords = distinctiveWords.filter(w => {
+        const regex = new RegExp(`\\b${w}\\b`, 'i');
+        return regex.test(phraseLower);
+      });
       if (matchingWords.length < 1) continue;
 
       // Skip if too generic
@@ -205,13 +364,12 @@ function findAnchorInContent(content, contentLower, target, usedAnchors = new Se
       }
       if (isGeneric) continue;
 
-      const pos = match.index;
       let positionScore = 1;
       let positionLabel = 'body';
-      if (pos < introEnd) {
+      if (wordPos < introEnd) {
         positionScore = 1.5;
         positionLabel = 'intro';
-      } else if (pos > conclusionStart) {
+      } else if (wordPos > conclusionStart) {
         positionScore = 1.3;
         positionLabel = 'conclusion';
       }
@@ -249,6 +407,12 @@ function findAnchorInContent(content, contentLower, target, usedAnchors = new Se
     const hasBrandSignal = brandSignals.some(b => candLower.includes(b));
     if (hasBrandSignal) {
       candidate.score *= 1.15; // 15% bonus for brand/geo signals
+    }
+
+    // PENALTY: Starts/ends with numbers only (partial content)
+    const words = candidate.text.trim().split(/\s+/);
+    if (/^\d+$/.test(words[0]) || /^\d+$/.test(words[words.length - 1])) {
+      candidate.score *= 0.5; // 50% penalty
     }
   }
 
