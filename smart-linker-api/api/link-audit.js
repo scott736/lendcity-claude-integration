@@ -142,7 +142,7 @@ module.exports = async function handler(req, res) {
         url: rec.candidate.url,
         topicCluster: rec.candidate.topicCluster,
         score: rec.totalScore,
-        reason: `High relevance (${Math.round(rec.breakdown.vectorScore)}% semantic match)`
+        reason: `High relevance (${Math.round(rec.vectorScore || 0)}% semantic match)`
       }));
     }
 
