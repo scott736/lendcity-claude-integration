@@ -1029,11 +1029,34 @@ function lendcity_rebuild_catalog() {
 
 /**
  * Helper: Batch sync with chunking and retry logic
+ * v6.2: Changed default to 1 article at a time for full semantic enrichment
  */
-function lendcity_batch_sync_with_retry($api, $post_ids, $batch_size = 20) {
+function lendcity_batch_sync_with_retry($api, $post_ids, $batch_size = 1) {
     $results = ['success' => 0, 'failed' => 0, 'errors' => []];
 
-    // Process in batches
+    // v6.2: When batch_size is 1, use single sync (has full AI enrichment)
+    // This is slower but provides maximum SEO value per article
+    if ($batch_size === 1) {
+        foreach ($post_ids as $post_id) {
+            error_log("LendCity: Syncing article $post_id with full enrichment...");
+            $result = $api->sync_to_catalog($post_id);
+            if (is_wp_error($result)) {
+                $results['failed']++;
+                $post = get_post($post_id);
+                $results['errors'][] = [
+                    'type' => 'post',
+                    'postId' => $post_id,
+                    'title' => $post ? $post->post_title : 'Unknown',
+                    'error' => $result->get_error_message()
+                ];
+            } else {
+                $results['success']++;
+            }
+        }
+        return $results;
+    }
+
+    // Process in batches (for batch_size > 1, uses light enrichment)
     $batches = array_chunk($post_ids, $batch_size);
 
     foreach ($batches as $batch) {
