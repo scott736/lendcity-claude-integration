@@ -28,9 +28,29 @@ function getIndex() {
 
 /**
  * Upsert article to Pinecone catalog
+ * Enhanced with semantic enrichment data (v2.0)
  */
 async function upsertArticle(article) {
   const index = getIndex();
+
+  // Prepare anchor phrases for storage (handle both old and new formats)
+  let anchorPhrasesForStorage = [];
+  if (article.anchorPhrases) {
+    if (Array.isArray(article.anchorPhrases)) {
+      anchorPhrasesForStorage = article.anchorPhrases.map(p =>
+        typeof p === 'string' ? p : (p.phrase || p.anchorPhrase || '')
+      ).filter(Boolean);
+    }
+  }
+
+  // Prepare linkable moments for storage (extract just the phrases)
+  let linkableMomentsForStorage = [];
+  if (article.linkableMoments) {
+    linkableMomentsForStorage = article.linkableMoments
+      .slice(0, 10) // Limit to 10
+      .map(m => m.anchorPhrase || m.matchedText || '')
+      .filter(Boolean);
+  }
 
   await index.upsert([{
     id: `article-${article.postId}`,
@@ -56,20 +76,115 @@ async function upsertArticle(article) {
 
       // Linking data
       inboundLinkCount: article.inboundLinkCount || 0,
-      anchorPhrases: article.anchorPhrases || [],
+      anchorPhrases: anchorPhrasesForStorage,
+      primaryAnchor: article.primaryAnchor || '',
 
       // SEO data
       summary: article.summary || '',
       mainTopics: article.mainTopics || [],
       semanticKeywords: article.semanticKeywords || [],
 
+      // === NEW: Semantic Enrichment Data (v2.0) ===
+
+      // LSI Keywords - semantically related terms Google associates with content
+      lsiKeywords: (article.lsiKeywords || []).slice(0, 25),
+      questionKeywords: (article.questionKeywords || []).slice(0, 10),
+
+      // Content Structure Analysis
+      hasTable: article.contentStructure?.hasTable || false,
+      hasFaq: article.contentStructure?.hasFaq || false,
+      hasVideo: article.contentStructure?.hasVideo || false,
+      hasCalculator: article.contentStructure?.hasCalculator || false,
+      hasDownloads: article.contentStructure?.hasDownloads || false,
+      contentFormat: article.contentStructure?.contentFormat || 'standard-article',
+      structureScore: article.contentStructure?.structureScore || 50,
+
+      // H2 Topics (section headers for matching)
+      h2Topics: (article.h2Topics || []).slice(0, 15),
+
+      // Linkable Moments (pre-identified link insertion opportunities)
+      linkableMoments: linkableMomentsForStorage,
+
+      // Content Comprehensiveness
+      wordCount: article.comprehensiveness?.wordCount || 0,
+      comprehensivenessScore: article.comprehensiveness?.totalScore || 50,
+      comprehensivenessLevel: article.comprehensiveness?.level || 'adequate',
+
+      // E-E-A-T Scores
+      eeatScore: article.eeatAnalysis?.totalScore || 50,
+      eeatLevel: article.eeatAnalysis?.level || 'adequate',
+      experienceScore: article.eeatAnalysis?.breakdown?.experience || 0,
+      expertiseScore: article.eeatAnalysis?.breakdown?.expertise || 0,
+      authoritativenessScore: article.eeatAnalysis?.breakdown?.authoritativeness || 0,
+      trustworthinessScore: article.eeatAnalysis?.breakdown?.trustworthiness || 0,
+
+      // Topical Authority
+      topicalAuthorityScore: article.topicalAuthority?.totalScore || 0,
+      topicalAuthorityLevel: article.topicalAuthority?.level || 'basic',
+
+      // Search Intent (from voice-search integration)
+      searchIntent: article.searchIntent || 'informational',
+
       // Dates
       publishedAt: article.publishedAt,
-      updatedAt: article.updatedAt || new Date().toISOString()
+      updatedAt: article.updatedAt || new Date().toISOString(),
+      enrichedAt: article.enrichedAt || null
     }
   }]);
 
+  // Store section embeddings separately if provided (for advanced matching)
+  if (article.sections && article.sections.length > 0) {
+    await storeSectionEmbeddings(article.postId, article.sections);
+  }
+
   return { success: true, id: `article-${article.postId}` };
+}
+
+/**
+ * Store section-level embeddings for an article
+ * Uses a separate ID pattern: section-{postId}-{sectionIndex}
+ */
+async function storeSectionEmbeddings(postId, sections) {
+  const index = getIndex();
+
+  const sectionVectors = sections
+    .filter(s => s.embedding && s.embedding.length > 0)
+    .map((section, idx) => ({
+      id: `section-${postId}-${idx}`,
+      values: section.embedding,
+      metadata: {
+        parentPostId: postId,
+        sectionIndex: idx,
+        sectionHeader: section.header || '',
+        sectionType: section.type || 'section',
+        contentPreview: (section.content || '').slice(0, 500)
+      }
+    }));
+
+  if (sectionVectors.length > 0) {
+    await index.upsert(sectionVectors);
+  }
+
+  return { success: true, sectionsStored: sectionVectors.length };
+}
+
+/**
+ * Query similar sections (for precise content matching)
+ */
+async function querySimilarSections(embedding, options = {}) {
+  const index = getIndex();
+  const { topK = 20, excludePostIds = [] } = options;
+
+  const results = await index.query({
+    vector: embedding,
+    topK,
+    filter: {
+      parentPostId: { $nin: excludePostIds }
+    },
+    includeMetadata: true
+  });
+
+  return results.matches || [];
 }
 
 /**
@@ -311,6 +426,8 @@ module.exports = {
   getIndex,
   upsertArticle,
   querySimilar,
+  querySimilarSections,
+  storeSectionEmbeddings,
   getArticle,
   deleteArticle,
   getAllArticles,
