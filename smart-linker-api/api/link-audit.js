@@ -3,6 +3,85 @@ const { generateEmbedding, extractBodyText } = require('../lib/embeddings');
 const { getRecommendations } = require('../lib/scoring');
 
 /**
+ * Find potential anchor text in content that could link to the target article
+ * Returns { text, context } or null if no suitable anchor found
+ */
+function findAnchorInContent(content, contentLower, target) {
+  // Remove existing links from consideration
+  const contentWithoutLinks = content.replace(/<a[^>]*>.*?<\/a>/gi, '');
+  const cleanLower = contentWithoutLinks.toLowerCase();
+
+  // Build list of potential anchor phrases from target
+  const potentialAnchors = [];
+
+  // 1. Full title (unlikely but check)
+  if (target.title) potentialAnchors.push(target.title);
+
+  // 2. Generate n-grams from title (2-5 words)
+  if (target.title) {
+    const titleWords = target.title
+      .replace(/[^\w\s]/g, '') // Remove punctuation
+      .split(/\s+/)
+      .filter(w => w.length > 2); // Skip tiny words
+
+    for (let len = Math.min(5, titleWords.length); len >= 2; len--) {
+      for (let i = 0; i <= titleWords.length - len; i++) {
+        const phrase = titleWords.slice(i, i + len).join(' ');
+        if (phrase.length >= 8) { // Min 8 chars for anchor
+          potentialAnchors.push(phrase);
+        }
+      }
+    }
+  }
+
+  // 3. Add semantic keywords if available
+  if (target.semanticKeywords && Array.isArray(target.semanticKeywords)) {
+    for (const kw of target.semanticKeywords.slice(0, 10)) {
+      if (kw && kw.length >= 5) potentialAnchors.push(kw);
+    }
+  }
+
+  // 4. Add topic cluster as potential anchor
+  if (target.topicCluster) {
+    const clusterPhrase = target.topicCluster.replace(/-/g, ' ');
+    potentialAnchors.push(clusterPhrase);
+  }
+
+  // Search for each potential anchor in content
+  for (const anchor of potentialAnchors) {
+    if (!anchor) continue;
+    const anchorLower = anchor.toLowerCase();
+    const pos = cleanLower.indexOf(anchorLower);
+
+    if (pos !== -1) {
+      // Found! Get the exact case from original content
+      const exactText = contentWithoutLinks.substring(pos, pos + anchor.length);
+
+      // Verify it's not inside an HTML tag
+      const before = contentWithoutLinks.substring(Math.max(0, pos - 50), pos);
+
+      // Skip if inside a tag attribute
+      if (before.includes('<') && !before.includes('>')) continue;
+
+      // Get surrounding context for preview
+      const contextStart = Math.max(0, pos - 30);
+      const contextEnd = Math.min(contentWithoutLinks.length, pos + anchor.length + 30);
+      let context = contentWithoutLinks.substring(contextStart, contextEnd);
+      context = context.replace(/<[^>]+>/g, '').trim(); // Strip tags from context
+      if (contextStart > 0) context = '...' + context;
+      if (contextEnd < contentWithoutLinks.length) context = context + '...';
+
+      return {
+        text: exactText,
+        context: context
+      };
+    }
+  }
+
+  return null; // No anchor found
+}
+
+/**
  * Link Audit Endpoint
  * Analyzes existing links in content and suggests improvements
  *
@@ -116,14 +195,15 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // Step 2: Find missing link opportunities
+    // Step 2: Find missing link opportunities (only where anchor text exists in content)
     const contentText = extractBodyText(content);
+    const contentLower = content.toLowerCase();
     const contentEmbedding = await generateEmbedding(`${title || ''} ${contentText}`);
 
     // Get all candidate articles
     const excludeIds = [postId, ...existingLinks.map(l => l.targetId)];
     const candidates = await querySimilar(contentEmbedding, {
-      topK: 20,
+      topK: 30, // Get more candidates since we'll filter by anchor availability
       excludeIds
     });
 
@@ -133,17 +213,32 @@ module.exports = async function handler(req, res) {
       const { recommendations } = getRecommendations(
         sourceArticle,
         candidates,
-        { minScore: 50, maxResults: maxSuggestions }
+        { minScore: 40, maxResults: 50 } // Lower threshold, more results - we'll filter by anchor
       );
 
-      audit.suggestions.missing = recommendations.map(rec => ({
-        postId: rec.candidate.postId,
-        title: rec.candidate.title,
-        url: rec.candidate.url,
-        topicCluster: rec.candidate.topicCluster,
-        score: rec.totalScore,
-        reason: `High relevance (${Math.round(rec.vectorScore || 0)}% semantic match)`
-      }));
+      // Filter to only opportunities where anchor text exists in content
+      const opportunitiesWithAnchors = [];
+
+      for (const rec of recommendations) {
+        const anchor = findAnchorInContent(content, contentLower, rec.candidate);
+        if (anchor) {
+          opportunitiesWithAnchors.push({
+            postId: rec.candidate.postId,
+            title: rec.candidate.title,
+            url: rec.candidate.url,
+            topicCluster: rec.candidate.topicCluster,
+            score: rec.totalScore,
+            anchorText: anchor.text,
+            anchorContext: anchor.context,
+            reason: `Found linkable text: "${anchor.text}"`
+          });
+
+          // Stop once we have enough
+          if (opportunitiesWithAnchors.length >= maxSuggestions) break;
+        }
+      }
+
+      audit.suggestions.missing = opportunitiesWithAnchors;
     }
 
     // Step 3: Check for redundant links (multiple links to same cluster)

@@ -735,11 +735,17 @@ jQuery(document).ready(function($) {
                     actions = '<button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="swap_link" style="background: #28a745; color: white; border: none;">Accept Better</button>';
                     actions += ' <button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="ignore" style="background: #6c757d; color: white; border: none;">Ignore</button>';
                 } else if (issue.type === 'missing') {
-                    details = 'Add link to: <strong>' + escapeHtml(issue.targetTitle) + '</strong>';
+                    details = 'Link to: <strong>' + escapeHtml(issue.targetTitle) + '</strong>';
                     if (issue.topicCluster) {
                         details += ' <span style="background: #e8f5e9; padding: 2px 6px; border-radius: 3px; font-size: 11px;">' + escapeHtml(issue.topicCluster) + '</span>';
                     }
-                    details += '<br><span style="color: #666; font-size: 11px;">' + escapeHtml(issue.reason) + '</span>';
+                    // Show the anchor text that will be used
+                    if (issue.anchorText) {
+                        details += '<br><span style="color: #1565c0; font-size: 12px;">Anchor: "<strong>' + escapeHtml(issue.anchorText) + '</strong>"</span>';
+                    }
+                    if (issue.anchorContext) {
+                        details += '<br><span style="color: #888; font-size: 11px; font-style: italic;">' + escapeHtml(issue.anchorContext) + '</span>';
+                    }
                     actions = '<button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="accept_opportunity" style="background: #7b1fa2; color: white; border: none;">Accept</button>';
                     actions += ' <button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="decline_opportunity" style="background: #6c757d; color: white; border: none;">Decline</button>';
                 }
@@ -1012,7 +1018,8 @@ jQuery(document).ready(function($) {
                 post_id: item.issue.postId,
                 target_post_id: item.issue.targetPostId,
                 target_url: item.issue.targetUrl,
-                target_title: item.issue.targetTitle
+                target_title: item.issue.targetTitle,
+                anchor_text: item.issue.anchorText || ''
             }, function(response) {
                 if (response.success) {
                     succeeded++;
@@ -1058,7 +1065,8 @@ jQuery(document).ready(function($) {
         } else if (action === 'ignore') {
             confirmMsg = 'Ignore this issue?';
         } else if (action === 'accept_opportunity') {
-            confirmMsg = 'Add a link to "' + issue.targetTitle + '" in this post?\n\nThis will trigger smart linking to find the best anchor text.';
+            var anchorPreview = issue.anchorText ? '"' + issue.anchorText + '"' : '(no anchor found)';
+            confirmMsg = 'Add link to "' + issue.targetTitle + '"?\n\nAnchor text: ' + anchorPreview;
         } else if (action === 'decline_opportunity') {
             confirmMsg = 'Decline this suggestion?';
         }
@@ -1077,7 +1085,8 @@ jQuery(document).ready(function($) {
                 post_id: issue.postId,
                 target_post_id: issue.targetPostId,
                 target_url: issue.targetUrl,
-                target_title: issue.targetTitle
+                target_title: issue.targetTitle,
+                anchor_text: issue.anchorText || ''
             }, function(response) {
                 var $row = $('#issue-row-' + index);
                 if (response.success) {
