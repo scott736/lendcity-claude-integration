@@ -915,8 +915,8 @@ class LendCity_Smart_Linker {
             'unsynced' => intval(($row->total ?? 0) - ($row->synced ?? 0))
         );
 
-        // Cache for 5 minutes
-        set_transient('lendcity_catalog_stats', $stats, 5 * MINUTE_IN_SECONDS);
+        // Cache for 30 minutes (catalog stats rarely change)
+        set_transient('lendcity_catalog_stats', $stats, 30 * MINUTE_IN_SECONDS);
 
         return $stats;
     }
@@ -2613,8 +2613,9 @@ class LendCity_Smart_Linker {
         // Generate unique link ID
         $link_id = 'cl_' . $post_id . '_' . $target_id . '_' . time();
 
-        // Create link HTML
-        $link_html = '<a href="' . esc_url($target_url) . '" data-claude-link="1" data-link-id="' . $link_id . '">' . '$1' . '</a>';
+        // Create link HTML with Schema.org markup (v2.1 - SEO enhancement)
+        // itemprop="relatedLink" signals semantic relationship to search engines
+        $link_html = '<a href="' . esc_url($target_url) . '" data-claude-link="1" data-link-id="' . $link_id . '" itemprop="relatedLink">' . '$1' . '</a>';
 
         // Replace first occurrence
         $new_content = preg_replace($pattern, $link_html, $content, 1);
@@ -3719,8 +3720,8 @@ class LendCity_Smart_Linker {
             'over_ten' => $over_ten
         );
 
-        // Cache for 5 minutes
-        set_transient('lendcity_link_stats', $stats, 5 * MINUTE_IN_SECONDS);
+        // Cache for 15 minutes (link stats change more frequently than catalog)
+        set_transient('lendcity_link_stats', $stats, 15 * MINUTE_IN_SECONDS);
 
         return $stats;
     }

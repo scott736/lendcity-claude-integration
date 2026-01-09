@@ -145,7 +145,7 @@ async function getAllArticles(options = {}) {
     // Use list operation with pagination
     do {
       const listOptions = {
-        limit: Math.min(limit - articles.length, 100), // Max 100 per request
+        limit: Math.min(limit - articles.length, 1000), // Increased from 100 to 1000 for better performance
         prefix: 'article-' // All our IDs start with 'article-'
       };
 

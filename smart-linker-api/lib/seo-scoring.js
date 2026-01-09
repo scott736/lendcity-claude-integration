@@ -195,6 +195,24 @@ let seoCache = {
   linkGraph: {},             // { sourceId: [targetId1, targetId2] }
   articleMetadata: {},       // { postId: { updatedAt, topicCluster, ... } } - for decay scoring
   competitorGaps: {},        // { keyword: { ranking: 5, potentialBoost: [...postIds] } }
+  // v2.1: Link velocity tracking
+  linkVelocity: {            // Tracks linking rate to prevent over-optimization
+    daily: [],               // [{ date: '2024-01-09', count: 15 }]
+    weekly: [],              // [{ week: '2024-W02', count: 45 }]
+    byPost: {}               // { postId: { linksAddedThisWeek: 5, lastLinkDate: '...' } }
+  },
+  // v2.1: E-E-A-T signal tracking
+  eeatSignals: {
+    authorPages: {},         // { authorSlug: { postId, expertise: [], articleCount: 0 } }
+    expertiseByTopic: {},    // { topicCluster: { authorSlug: articleCount } }
+    authorityLinks: []       // Links to/from author pages
+  },
+  // v2.1: Semantic clustering for link intent
+  semanticClusters: {
+    awareness: [],           // Articles for awareness stage
+    consideration: [],       // Articles for consideration stage
+    decision: []             // Articles for decision stage
+  },
   lastRefresh: null,
   lastIncrementalUpdate: null
 };
@@ -1081,6 +1099,462 @@ function getLinkContextScore(content, anchorText) {
   };
 }
 
+// ============================================================================
+// LINK VELOCITY TRACKING (v2.1)
+// ============================================================================
+
+/**
+ * Track a new link for velocity monitoring
+ * Call this when a new link is inserted
+ */
+function trackLinkVelocity(sourceId, targetId) {
+  const today = new Date().toISOString().split('T')[0];
+  const weekNum = getISOWeek(new Date());
+  const weekKey = `${new Date().getFullYear()}-W${weekNum.toString().padStart(2, '0')}`;
+
+  // Track daily
+  let dailyEntry = seoCache.linkVelocity.daily.find(d => d.date === today);
+  if (!dailyEntry) {
+    dailyEntry = { date: today, count: 0 };
+    seoCache.linkVelocity.daily.push(dailyEntry);
+    // Keep only last 30 days
+    if (seoCache.linkVelocity.daily.length > 30) {
+      seoCache.linkVelocity.daily.shift();
+    }
+  }
+  dailyEntry.count++;
+
+  // Track weekly
+  let weeklyEntry = seoCache.linkVelocity.weekly.find(w => w.week === weekKey);
+  if (!weeklyEntry) {
+    weeklyEntry = { week: weekKey, count: 0 };
+    seoCache.linkVelocity.weekly.push(weeklyEntry);
+    // Keep only last 12 weeks
+    if (seoCache.linkVelocity.weekly.length > 12) {
+      seoCache.linkVelocity.weekly.shift();
+    }
+  }
+  weeklyEntry.count++;
+
+  // Track per post
+  if (!seoCache.linkVelocity.byPost[sourceId]) {
+    seoCache.linkVelocity.byPost[sourceId] = { linksAddedThisWeek: 0, lastLinkDate: null };
+  }
+  seoCache.linkVelocity.byPost[sourceId].linksAddedThisWeek++;
+  seoCache.linkVelocity.byPost[sourceId].lastLinkDate = today;
+}
+
+/**
+ * Get ISO week number
+ */
+function getISOWeek(date) {
+  const d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  const dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return Math.ceil((((d - yearStart) / 86400000) + 1) / 7);
+}
+
+/**
+ * Get link velocity score - penalizes over-optimization
+ * High velocity = lower score (risk of appearing manipulative to Google)
+ */
+function getLinkVelocityScore(sourceId) {
+  const weekKey = `${new Date().getFullYear()}-W${getISOWeek(new Date()).toString().padStart(2, '0')}`;
+  const weeklyEntry = seoCache.linkVelocity.weekly.find(w => w.week === weekKey);
+  const weeklyCount = weeklyEntry?.count || 0;
+  const postData = seoCache.linkVelocity.byPost[sourceId];
+  const postWeeklyCount = postData?.linksAddedThisWeek || 0;
+
+  let score = 20; // Default healthy
+  let status = 'healthy';
+  let recommendation = null;
+
+  // Site-wide velocity checks
+  if (weeklyCount > 100) {
+    score -= 15;
+    status = 'warning';
+    recommendation = 'Site adding >100 links/week - slow down to avoid Google penalty';
+  } else if (weeklyCount > 50) {
+    score -= 8;
+    status = 'caution';
+    recommendation = 'High link velocity - consider spreading links over time';
+  } else if (weeklyCount > 25) {
+    score -= 3;
+  }
+
+  // Per-post velocity checks
+  if (postWeeklyCount > 10) {
+    score -= 10;
+    status = 'warning';
+    recommendation = `Post has ${postWeeklyCount} links added this week - too aggressive`;
+  } else if (postWeeklyCount > 5) {
+    score -= 5;
+    status = status === 'healthy' ? 'caution' : status;
+  }
+
+  return {
+    score: Math.max(0, score),
+    status,
+    weeklyTotal: weeklyCount,
+    postWeeklyCount,
+    recommendation
+  };
+}
+
+/**
+ * Get link velocity report for dashboard
+ */
+function getLinkVelocityReport() {
+  const weekKey = `${new Date().getFullYear()}-W${getISOWeek(new Date()).toString().padStart(2, '0')}`;
+  const today = new Date().toISOString().split('T')[0];
+
+  const todayEntry = seoCache.linkVelocity.daily.find(d => d.date === today);
+  const weeklyEntry = seoCache.linkVelocity.weekly.find(w => w.week === weekKey);
+
+  // Calculate 7-day average
+  const last7Days = seoCache.linkVelocity.daily.slice(-7);
+  const avg7Day = last7Days.length > 0
+    ? Math.round(last7Days.reduce((sum, d) => sum + d.count, 0) / last7Days.length)
+    : 0;
+
+  // Find posts with highest velocity
+  const hotPosts = Object.entries(seoCache.linkVelocity.byPost)
+    .map(([postId, data]) => ({ postId: parseInt(postId), ...data }))
+    .filter(p => p.linksAddedThisWeek > 3)
+    .sort((a, b) => b.linksAddedThisWeek - a.linksAddedThisWeek)
+    .slice(0, 10);
+
+  return {
+    today: todayEntry?.count || 0,
+    thisWeek: weeklyEntry?.count || 0,
+    average7Day: avg7Day,
+    trend: seoCache.linkVelocity.daily.slice(-14),
+    hotPosts,
+    status: weeklyEntry?.count > 50 ? 'warning' : weeklyEntry?.count > 25 ? 'caution' : 'healthy'
+  };
+}
+
+// ============================================================================
+// E-E-A-T SIGNAL TRACKING (v2.1)
+// ============================================================================
+
+/**
+ * Register an author page for E-E-A-T tracking
+ */
+function registerAuthorPage(authorSlug, postId, expertise = []) {
+  seoCache.eeatSignals.authorPages[authorSlug] = {
+    postId,
+    expertise,
+    articleCount: 0,
+    registeredAt: new Date().toISOString()
+  };
+}
+
+/**
+ * Track author's article for expertise building
+ */
+function trackAuthorExpertise(authorSlug, topicCluster) {
+  // Update author article count
+  if (seoCache.eeatSignals.authorPages[authorSlug]) {
+    seoCache.eeatSignals.authorPages[authorSlug].articleCount++;
+  }
+
+  // Track expertise by topic
+  if (!seoCache.eeatSignals.expertiseByTopic[topicCluster]) {
+    seoCache.eeatSignals.expertiseByTopic[topicCluster] = {};
+  }
+  if (!seoCache.eeatSignals.expertiseByTopic[topicCluster][authorSlug]) {
+    seoCache.eeatSignals.expertiseByTopic[topicCluster][authorSlug] = 0;
+  }
+  seoCache.eeatSignals.expertiseByTopic[topicCluster][authorSlug]++;
+}
+
+/**
+ * Get E-E-A-T score for a link
+ * Boosts links that enhance expertise signals
+ */
+function getEEATScore(sourceId, targetId, target = {}) {
+  let score = 10; // Base score
+  const factors = [];
+
+  // Check if target is an author page
+  const isAuthorPage = Object.values(seoCache.eeatSignals.authorPages)
+    .some(a => a.postId === targetId);
+
+  if (isAuthorPage) {
+    score += 10;
+    factors.push('Link to author page - boosts E-E-A-T');
+  }
+
+  // Check if source author is expert in target topic
+  const targetCluster = target.topicCluster;
+  if (targetCluster && seoCache.eeatSignals.expertiseByTopic[targetCluster]) {
+    const topExperts = Object.entries(seoCache.eeatSignals.expertiseByTopic[targetCluster])
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 5);
+
+    // Boost if linking within expert's domain
+    if (topExperts.length > 0) {
+      score += 5;
+      factors.push('Target in established expertise area');
+    }
+  }
+
+  // Check for pillar content (authoritative)
+  if (target.isPillar) {
+    score += 5;
+    factors.push('Target is pillar content');
+  }
+
+  // Check content quality
+  if (target.qualityScore && target.qualityScore >= 80) {
+    score += 5;
+    factors.push('High quality target content');
+  }
+
+  return {
+    score: Math.min(30, score),
+    factors,
+    isAuthorPage,
+    recommendation: factors.length === 0 ? 'Consider linking to author/expert pages for E-E-A-T boost' : null
+  };
+}
+
+/**
+ * Get E-E-A-T health report
+ */
+function getEEATReport() {
+  const authorCount = Object.keys(seoCache.eeatSignals.authorPages).length;
+  const topicCoverage = Object.keys(seoCache.eeatSignals.expertiseByTopic).length;
+
+  // Find topics without expert coverage
+  const uncoveredTopics = [];
+  // This would be populated from known topic clusters
+
+  return {
+    authorPagesCount: authorCount,
+    topicsCovered: topicCoverage,
+    uncoveredTopics,
+    authorityLinks: seoCache.eeatSignals.authorityLinks.length,
+    recommendations: [
+      authorCount < 3 ? 'Add more author bio pages' : null,
+      topicCoverage < 5 ? 'Build expertise across more topic clusters' : null
+    ].filter(Boolean)
+  };
+}
+
+// ============================================================================
+// ENHANCED ANCHOR TEXT (v2.1)
+// ============================================================================
+
+/**
+ * Action-oriented anchor suggestions
+ */
+const ACTION_ANCHOR_PATTERNS = {
+  awareness: [
+    'learn about {topic}',
+    'understand {topic}',
+    'discover {topic}',
+    'what is {topic}',
+    'introduction to {topic}'
+  ],
+  consideration: [
+    'compare {topic} options',
+    'evaluate {topic}',
+    'pros and cons of {topic}',
+    '{topic} guide',
+    'how {topic} works'
+  ],
+  decision: [
+    'get started with {topic}',
+    'choose the right {topic}',
+    'apply for {topic}',
+    '{topic} calculator',
+    'start your {topic}'
+  ]
+};
+
+/**
+ * Generate action-oriented anchor suggestions
+ */
+function generateActionAnchors(topic, funnelStage = 'consideration') {
+  const patterns = ACTION_ANCHOR_PATTERNS[funnelStage] || ACTION_ANCHOR_PATTERNS.consideration;
+
+  return patterns.map(pattern => ({
+    anchor: pattern.replace('{topic}', topic),
+    stage: funnelStage,
+    isActionOriented: true
+  }));
+}
+
+/**
+ * Score anchor text for action-orientation
+ * Action-oriented anchors are more likely to get clicks
+ */
+function getActionAnchorScore(anchorText) {
+  const anchorLower = anchorText.toLowerCase();
+
+  // Action words that indicate user intent
+  const actionWords = [
+    'learn', 'discover', 'understand', 'compare', 'evaluate', 'choose',
+    'get started', 'apply', 'calculate', 'find', 'explore', 'master',
+    'how to', 'guide to', 'start', 'begin', 'try'
+  ];
+
+  const hasActionWord = actionWords.some(word => anchorLower.includes(word));
+
+  // Question patterns are also engaging
+  const questionPatterns = ['what is', 'how does', 'why should', 'when to', 'where to'];
+  const isQuestion = questionPatterns.some(q => anchorLower.includes(q));
+
+  let score = 10; // Base
+
+  if (hasActionWord) {
+    score += 10;
+  }
+
+  if (isQuestion) {
+    score += 8;
+  }
+
+  // Length check - good anchors are 2-6 words
+  const wordCount = anchorText.split(/\s+/).length;
+  if (wordCount >= 2 && wordCount <= 6) {
+    score += 5;
+  } else if (wordCount === 1) {
+    score -= 5; // Single word anchors are less engaging
+  }
+
+  return {
+    score: Math.min(25, score),
+    hasActionWord,
+    isQuestion,
+    wordCount,
+    recommendation: !hasActionWord && !isQuestion
+      ? 'Consider adding action words like "learn", "discover", or "how to"'
+      : null
+  };
+}
+
+// ============================================================================
+// SEMANTIC LINK CLUSTERING (v2.1)
+// ============================================================================
+
+/**
+ * Cluster link suggestions by intent
+ * Ensures diverse linking across the funnel
+ */
+function clusterLinksByIntent(candidates) {
+  const clusters = {
+    awareness: [],
+    consideration: [],
+    decision: [],
+    uncategorized: []
+  };
+
+  for (const candidate of candidates) {
+    const meta = candidate.metadata || candidate.candidate || candidate;
+    const stage = meta.funnelStage || 'uncategorized';
+
+    if (clusters[stage]) {
+      clusters[stage].push(candidate);
+    } else {
+      clusters.uncategorized.push(candidate);
+    }
+  }
+
+  return clusters;
+}
+
+/**
+ * Get balanced link recommendations across funnel stages
+ * Prevents over-linking to one stage
+ */
+function getBalancedRecommendations(candidates, options = {}) {
+  const { maxLinks = 5, preferredDistribution = { awareness: 1, consideration: 2, decision: 2 } } = options;
+
+  const clusters = clusterLinksByIntent(candidates);
+  const balanced = [];
+
+  // Pick from each cluster according to distribution
+  for (const [stage, count] of Object.entries(preferredDistribution)) {
+    const clusterCandidates = clusters[stage] || [];
+    const selected = clusterCandidates
+      .sort((a, b) => (b.totalScore || b.score || 0) - (a.totalScore || a.score || 0))
+      .slice(0, count);
+    balanced.push(...selected);
+  }
+
+  // Fill remaining slots with best uncategorized
+  const remaining = maxLinks - balanced.length;
+  if (remaining > 0 && clusters.uncategorized.length > 0) {
+    balanced.push(...clusters.uncategorized.slice(0, remaining));
+  }
+
+  return {
+    recommendations: balanced.slice(0, maxLinks),
+    distribution: {
+      awareness: clusters.awareness.length,
+      consideration: clusters.consideration.length,
+      decision: clusters.decision.length,
+      uncategorized: clusters.uncategorized.length
+    },
+    isBalanced: Object.values(clusters).filter(c => c.length > 0).length >= 2
+  };
+}
+
+/**
+ * Get semantic clustering score
+ * Rewards diverse linking across intent clusters
+ */
+function getSemanticClusterScore(targetFunnelStage, existingLinks = []) {
+  // Count existing links by stage
+  const existingByStage = { awareness: 0, consideration: 0, decision: 0 };
+  for (const link of existingLinks) {
+    const stage = link.funnelStage || 'consideration';
+    if (existingByStage[stage] !== undefined) {
+      existingByStage[stage]++;
+    }
+  }
+
+  const targetStage = targetFunnelStage || 'consideration';
+  const existingInStage = existingByStage[targetStage] || 0;
+
+  let score = 15; // Base score
+
+  // Bonus for first link in a stage
+  if (existingInStage === 0) {
+    score += 10;
+  }
+  // Small bonus for second link
+  else if (existingInStage === 1) {
+    score += 5;
+  }
+  // Penalty for over-represented stage
+  else if (existingInStage >= 3) {
+    score -= 5;
+  }
+
+  // Check overall balance
+  const total = Object.values(existingByStage).reduce((a, b) => a + b, 0);
+  const stageRatio = total > 0 ? existingInStage / total : 0;
+
+  if (stageRatio > 0.6) {
+    score -= 5; // Too many links in one stage
+  }
+
+  return {
+    score: Math.max(0, Math.min(25, score)),
+    targetStage,
+    existingInStage,
+    stageDistribution: existingByStage,
+    recommendation: existingInStage >= 3
+      ? `Consider linking to ${targetStage === 'decision' ? 'awareness' : 'decision'} stage content instead`
+      : null
+  };
+}
+
 /**
  * Check content type linking rules
  */
@@ -1631,6 +2105,123 @@ async function forceRefreshCache() {
   return await refreshSEOCache(true);
 }
 
+/**
+ * Incremental cache update after link insertion
+ * Updates cache without full refresh - much faster for batch operations
+ *
+ * @param {number} sourceId - Source article ID
+ * @param {number} targetId - Target article ID
+ * @param {string} anchorText - The anchor text used
+ * @param {Object} targetMeta - Optional target metadata
+ */
+function incrementalCacheUpdate(sourceId, targetId, anchorText, targetMeta = {}) {
+  const anchorLower = anchorText.toLowerCase().trim();
+  const anchorType = classifyAnchorType(anchorText, targetMeta);
+  const now = new Date().toISOString();
+
+  // Update anchor usage cache
+  if (!seoCache.anchorUsage[anchorLower]) {
+    seoCache.anchorUsage[anchorLower] = {
+      count: 0,
+      targetIds: [],
+      sourceIds: [],
+      type: anchorType,
+      createdAt: now
+    };
+  }
+  seoCache.anchorUsage[anchorLower].count++;
+  if (!seoCache.anchorUsage[anchorLower].targetIds.includes(targetId)) {
+    seoCache.anchorUsage[anchorLower].targetIds.push(targetId);
+  }
+  if (!seoCache.anchorUsage[anchorLower].sourceIds.includes(sourceId)) {
+    seoCache.anchorUsage[anchorLower].sourceIds.push(sourceId);
+  }
+
+  // Update link graph
+  if (!seoCache.linkGraph[sourceId]) {
+    seoCache.linkGraph[sourceId] = [];
+  }
+  if (!seoCache.linkGraph[sourceId].includes(targetId)) {
+    seoCache.linkGraph[sourceId].push(targetId);
+  }
+
+  // Track site-wide first link to target
+  if (!seoCache.firstLinkAnchors[targetId]) {
+    seoCache.firstLinkAnchors[targetId] = {
+      anchor: anchorText,
+      sourceId,
+      createdAt: now
+    };
+  }
+
+  // Check and update reciprocal links
+  if (seoCache.linkGraph[targetId]?.includes(sourceId)) {
+    const pairKey = [sourceId, targetId].sort().join('-');
+    seoCache.reciprocalLinks[pairKey] = true;
+  }
+
+  // Remove target from orphan pages if present
+  const orphanIndex = seoCache.orphanPages.findIndex(p => p.postId === targetId);
+  if (orphanIndex !== -1) {
+    const orphan = seoCache.orphanPages[orphanIndex];
+    orphan.inboundCount = (orphan.inboundCount || 0) + 1;
+    // Remove from orphans if now has > 2 inbound links
+    if (orphan.inboundCount > 2) {
+      seoCache.orphanPages.splice(orphanIndex, 1);
+    }
+  }
+
+  // Update anchor type ratios incrementally
+  const totalAnchors = Object.values(seoCache.anchorUsage).reduce((sum, a) => sum + a.count, 0);
+  if (totalAnchors > 0) {
+    const typeCounts = {};
+    for (const type of Object.values(ANCHOR_TYPES)) {
+      typeCounts[type] = 0;
+    }
+    for (const usage of Object.values(seoCache.anchorUsage)) {
+      if (usage.type && typeCounts[usage.type] !== undefined) {
+        typeCounts[usage.type] += usage.count;
+      }
+    }
+    for (const type of Object.keys(typeCounts)) {
+      seoCache.anchorTypeRatios[type] = Math.round((typeCounts[type] / totalAnchors) * 100);
+    }
+  }
+
+  // Mark incremental update time
+  seoCache.lastIncrementalUpdate = Date.now();
+
+  return {
+    success: true,
+    anchorUsageCount: seoCache.anchorUsage[anchorLower].count,
+    isReciprocal: seoCache.reciprocalLinks[[sourceId, targetId].sort().join('-')] || false
+  };
+}
+
+/**
+ * Batch incremental update for multiple links at once
+ * More efficient than calling incrementalCacheUpdate multiple times
+ *
+ * @param {Array} links - Array of {sourceId, targetId, anchorText, targetMeta}
+ */
+function batchIncrementalCacheUpdate(links) {
+  const results = [];
+  for (const link of links) {
+    const result = incrementalCacheUpdate(
+      link.sourceId,
+      link.targetId,
+      link.anchorText,
+      link.targetMeta || {}
+    );
+    results.push(result);
+  }
+  return {
+    success: true,
+    updated: results.length,
+    results
+  };
+}
+
 // ============================================================================
 // EXPORTS
 // ============================================================================
@@ -1681,6 +2272,31 @@ module.exports = {
   getDismissedOpportunities,
   isOpportunityDismissed,
   filterDismissedOpportunities,
+
+  // Incremental cache updates (performance optimization)
+  incrementalCacheUpdate,
+  batchIncrementalCacheUpdate,
+
+  // v2.1: Link velocity tracking
+  trackLinkVelocity,
+  getLinkVelocityScore,
+  getLinkVelocityReport,
+
+  // v2.1: E-E-A-T signals
+  registerAuthorPage,
+  trackAuthorExpertise,
+  getEEATScore,
+  getEEATReport,
+
+  // v2.1: Enhanced anchor text
+  generateActionAnchors,
+  getActionAnchorScore,
+  ACTION_ANCHOR_PATTERNS,
+
+  // v2.1: Semantic clustering
+  clusterLinksByIntent,
+  getBalancedRecommendations,
+  getSemanticClusterScore,
 
   // Cache access for testing
   _getCache: () => seoCache,
