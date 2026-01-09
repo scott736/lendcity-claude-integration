@@ -1174,6 +1174,10 @@ function lendcity_audit_chunk() {
                         'score' => $missing['score'] ?? 0,
                         'anchorText' => $missing['anchorText'] ?? '',
                         'anchorContext' => $missing['anchorContext'] ?? '',
+                        'anchorType' => $missing['anchorType'] ?? '',      // sentence, phrase, contextual
+                        'anchorPosition' => $missing['anchorPosition'] ?? '', // intro, body, conclusion
+                        'anchorScore' => $missing['anchorScore'] ?? 0,
+                        'matchingWords' => $missing['matchingWords'] ?? [],
                         'reason' => $missing['reason'] ?? ''
                     ];
                     $results['issues'][] = $issue;
@@ -1447,6 +1451,12 @@ function lendcity_run_background_audit($post_id) {
                     'targetUrl' => $missing['url'] ?? '',
                     'topicCluster' => $missing['topicCluster'] ?? '',
                     'score' => $missing['score'] ?? 0,
+                    'anchorText' => $missing['anchorText'] ?? '',
+                    'anchorContext' => $missing['anchorContext'] ?? '',
+                    'anchorType' => $missing['anchorType'] ?? '',
+                    'anchorPosition' => $missing['anchorPosition'] ?? '',
+                    'anchorScore' => $missing['anchorScore'] ?? 0,
+                    'matchingWords' => $missing['matchingWords'] ?? [],
                     'reason' => $missing['reason'] ?? ''
                 ];
             }
