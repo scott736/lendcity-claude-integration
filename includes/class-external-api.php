@@ -1240,9 +1240,9 @@ function lendcity_get_audit_list() {
 
     $items = [];
 
-    // Get all published posts and pages
+    // Get all published posts (pages excluded - they don't get link suggestions)
     $posts = get_posts([
-        'post_type' => ['post', 'page'],
+        'post_type' => 'post',
         'post_status' => 'publish',
         'numberposts' => -1
     ]);
@@ -1445,7 +1445,7 @@ function lendcity_update_audit_cache() {
          INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
          WHERE pm.meta_key = '_lendcity_audit_cache'
          AND p.post_status = 'publish'
-         AND p.post_type IN ('post', 'page')"
+         AND p.post_type = 'post'"
     );
 
     foreach ($posts_with_cache as $row) {
@@ -1479,10 +1479,10 @@ function lendcity_update_audit_cache() {
         }
     }
 
-    // Get total publishable posts count
+    // Get total publishable posts count (pages excluded from audit)
     $total_posts = $wpdb->get_var(
         "SELECT COUNT(*) FROM {$wpdb->posts}
-         WHERE post_status = 'publish' AND post_type IN ('post', 'page')"
+         WHERE post_status = 'publish' AND post_type = 'post'"
     );
 
     // Save global cache
@@ -1549,7 +1549,7 @@ function lendcity_get_stale_posts() {
          FROM {$wpdb->posts} p
          LEFT JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_lendcity_audit_cache'
          WHERE p.post_status = 'publish'
-         AND p.post_type IN ('post', 'page')
+         AND p.post_type = 'post'
          HAVING audit_cache IS NULL
             OR p.post_modified > SUBSTRING_INDEX(SUBSTRING_INDEX(audit_cache, '\"post_modified\";s:', -1), '\"', 2)"
     );
