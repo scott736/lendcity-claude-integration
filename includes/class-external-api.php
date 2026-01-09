@@ -27,8 +27,9 @@ class LendCity_External_API {
 
     /**
      * Request timeout in seconds
+     * v6.2: Increased to 60s for full semantic enrichment
      */
-    private $timeout = 30;
+    private $timeout = 60;
 
     /**
      * Batch timeout (longer for bulk operations)
@@ -542,6 +543,7 @@ class LendCity_External_API {
     /**
      * Sync article to external catalog (Pinecone)
      * v6.0: Sends raw content - Pinecone/Claude generates metadata
+     * v6.2: Enables full semantic enrichment for smarter linking
      *
      * @param int $post_id Post ID
      * @return array|WP_Error Result or error
@@ -552,7 +554,8 @@ class LendCity_External_API {
             return new WP_Error('invalid_post', 'Post not found');
         }
 
-        // v6.0: Send minimal data - Pinecone API will auto-analyze with Claude
+        // v6.2: Send data with full enrichment enabled
+        // Full enrichment extracts LSI keywords, anchor phrases, linkable moments, section embeddings
         $data = [
             'postId' => $post_id,
             'title' => $post->post_title,
@@ -562,7 +565,8 @@ class LendCity_External_API {
             'contentType' => $post->post_type,
             'isPillar' => (bool) get_post_meta($post_id, '_lendcity_is_pillar', true),
             'publishedAt' => $post->post_date,
-            'updatedAt' => $post->post_modified
+            'updatedAt' => $post->post_modified,
+            'fullEnrichment' => true  // v6.2: Enable full AI semantic enrichment
         ];
 
         return $this->request('api/catalog-sync', $data);
