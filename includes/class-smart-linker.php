@@ -3082,45 +3082,45 @@ class LendCity_Smart_Linker {
         $content = $post->post_content;
         $new_content = $content;
 
-        // Try to remove by data-link-id
+        // Method 1: Try to remove by data-link-id
         $pattern = '/<a\s[^>]*data-link-id="' . preg_quote($link_id, '/') . '"[^>]*>(.*?)<\/a>/is';
         $new_content = preg_replace($pattern, '$1', $content);
 
-        // Fallback methods
+        // Method 2: Fallback - find URL from meta and remove by URL + data-claude-link
         if ($new_content === $content) {
             $links = $this->get_post_links($post_id);
             foreach ($links as $link) {
                 if (isset($link['link_id']) && $link['link_id'] === $link_id) {
                     $url = $link['url'] ?? '';
                     if ($url) {
+                        // Try with data-claude-link attribute
                         $pattern = '/<a\s[^>]*data-claude-link="1"[^>]*href="' . preg_quote($url, '/') . '"[^>]*>(.*?)<\/a>/is';
                         $new_content = preg_replace($pattern, '$1', $content, 1);
+
+                        // Method 3: Try ANY link with this URL (for manually added or legacy links)
+                        if ($new_content === $content) {
+                            $pattern = '/<a\s[^>]*href="' . preg_quote($url, '/') . '"[^>]*>(.*?)<\/a>/is';
+                            $new_content = preg_replace($pattern, '$1', $content, 1);
+                        }
                     }
                     break;
                 }
             }
         }
 
+        // Update post if content changed
         if ($new_content !== $content) {
             wp_update_post(array('ID' => $post_id, 'post_content' => $new_content));
-
-            $links = $this->get_post_links($post_id);
-            $links = array_filter($links, function($l) use ($link_id) {
-                return !isset($l['link_id']) || $l['link_id'] !== $link_id;
-            });
-            update_post_meta($post_id, $this->link_meta_key, array_values($links));
-            $this->clear_links_cache();
-            return true;
         }
 
-        // Last resort
+        // Always update meta to remove the link tracking
         $links = $this->get_post_links($post_id);
         $original_count = count($links);
         $links = array_filter($links, function($l) use ($link_id) {
             return !isset($l['link_id']) || $l['link_id'] !== $link_id;
         });
 
-        if (count($links) < $original_count) {
+        if (count($links) < $original_count || $new_content !== $content) {
             update_post_meta($post_id, $this->link_meta_key, array_values($links));
             $this->clear_links_cache();
             return true;
