@@ -1,6 +1,7 @@
 const { upsertArticle, deleteArticle, getArticle, getPillarPages } = require('../lib/pinecone');
 const { generateArticleEmbedding } = require('../lib/embeddings');
 const { generateSummary, extractKeywords, autoAnalyzeArticle } = require('../lib/claude');
+const { enrichArticle, enrichArticleLight } = require('../lib/semantic-enrichment');
 
 /**
  * Catalog Sync Endpoint
@@ -145,7 +146,39 @@ async function handleSync(req, res) {
     keywords = await extractKeywords(content);
   }
 
-  // Prepare article data with auto-analyzed values
+  // === NEW: Semantic Enrichment (v2.0) ===
+  // Perform full semantic enrichment including LSI keywords, section embeddings,
+  // linkable moments, content structure analysis, E-E-A-T, and pre-computed anchors
+  console.log(`Performing semantic enrichment for article ${postId}...`);
+
+  let enrichmentData = {};
+  try {
+    // Use full enrichment for individual syncs (use enrichArticleLight for batch)
+    enrichmentData = await enrichArticle({
+      title,
+      content,
+      summary: articleSummary,
+      mainTopics: keywords.mainTopics,
+      semanticKeywords: keywords.semanticKeywords,
+      topicCluster: finalTopicCluster,
+      updatedAt: updatedAt || new Date().toISOString(),
+      publishedAt: publishedAt || new Date().toISOString()
+    }, {
+      generateSectionEmbed: true,     // Section-level embeddings
+      generateMultiVector: false,     // Skip multi-vector for single sync (expensive)
+      extractLSI: true,               // LSI keywords
+      detectLinkable: true,           // Linkable moments detection
+      analyzeStructure: true,         // Content structure (tables, FAQs, etc.)
+      analyzeEEATSignals: true,       // E-E-A-T analysis
+      extractAnchors: true,           // Pre-computed anchor phrases
+      useAI: true                     // Use Claude for better extraction
+    });
+    console.log(`Enrichment complete in ${enrichmentData.enrichmentTime}ms`);
+  } catch (enrichError) {
+    console.error('Semantic enrichment failed (continuing with basic data):', enrichError.message);
+  }
+
+  // Prepare article data with auto-analyzed values AND enrichment data
   const articleData = {
     postId,
     title,
@@ -163,11 +196,23 @@ async function handleSync(req, res) {
     summary: articleSummary,
     mainTopics: keywords.mainTopics,
     semanticKeywords: keywords.semanticKeywords,
-    anchorPhrases,
+    anchorPhrases: enrichmentData.anchorPhrases || anchorPhrases,
+    primaryAnchor: enrichmentData.primaryAnchor || '',
     inboundLinkCount: existing?.inboundLinkCount || 0,
     publishedAt: publishedAt || new Date().toISOString(),
     updatedAt: updatedAt || new Date().toISOString(),
-    embedding
+    embedding,
+
+    // === Semantic Enrichment Data ===
+    lsiKeywords: enrichmentData.lsiKeywords || [],
+    questionKeywords: enrichmentData.questionKeywords || [],
+    contentStructure: enrichmentData.contentStructure || {},
+    comprehensiveness: enrichmentData.comprehensiveness || {},
+    h2Topics: enrichmentData.h2Topics || [],
+    linkableMoments: enrichmentData.linkableMoments || [],
+    eeatAnalysis: enrichmentData.eeatAnalysis || {},
+    sections: enrichmentData.sections || [], // For section-level embeddings
+    enrichedAt: enrichmentData.enrichedAt || null
   };
 
   // Upsert to Pinecone
@@ -181,6 +226,15 @@ async function handleSync(req, res) {
     generatedSummary: !summary,
     generatedKeywords: !mainTopics || mainTopics.length === 0,
     autoAnalyzed: wasAutoAnalyzed,
+    semanticEnrichment: {
+      lsiKeywordsCount: (enrichmentData.lsiKeywords || []).length,
+      linkableMomentsCount: (enrichmentData.linkableMoments || []).length,
+      sectionsCount: (enrichmentData.sections || []).length,
+      contentFormat: enrichmentData.contentStructure?.contentFormat || 'unknown',
+      comprehensivenessScore: enrichmentData.comprehensiveness?.totalScore || 0,
+      eeatScore: enrichmentData.eeatAnalysis?.totalScore || 0,
+      enrichmentTime: enrichmentData.enrichmentTime || 0
+    },
     metadata: wasAutoAnalyzed ? {
       topicCluster: finalTopicCluster,
       funnelStage: finalFunnelStage,

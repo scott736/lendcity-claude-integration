@@ -1,6 +1,7 @@
 const { upsertArticle, deleteArticle, getArticle, getPillarPages } = require('../lib/pinecone');
 const { generateEmbeddings, cleanForEmbedding } = require('../lib/embeddings');
 const { batchAnalyzeArticles } = require('../lib/claude');
+const { enrichArticleLight, analyzeContentStructure, analyzeEEAT, extractLSIKeywords, calculateComprehensiveness } = require('../lib/semantic-enrichment');
 
 /**
  * Batch Catalog Sync Endpoint
@@ -105,7 +106,7 @@ module.exports = async function handler(req, res) {
     // Step 5: Generate all embeddings in single batch call
     const embeddings = await generateEmbeddings(textsForEmbedding);
 
-    // Step 6: Prepare article data with analysis results and embeddings
+    // Step 6: Prepare article data with analysis results, embeddings, AND light semantic enrichment
     const articlesToUpsert = validArticles.map((article, index) => {
       const analysis = analysisResults[article.postId] || {};
 
@@ -115,6 +116,25 @@ module.exports = async function handler(req, res) {
       const finalFunnelStage = article.funnelStage || analysis.funnelStage || 'awareness';
       const finalTargetPersona = article.targetPersona || analysis.targetPersona || 'general';
       const finalIsPillar = article.contentType === 'page' && (article.isPillar || false);
+      const mainTopics = article.mainTopics || analysis.mainTopics || [];
+
+      // === v2.2: Light Semantic Enrichment (fast, no additional API calls) ===
+      // These are computed locally without Claude/OpenAI calls for batch efficiency
+      const contentStructure = analyzeContentStructure(article.content || '');
+      const comprehensiveness = calculateComprehensiveness(
+        article.content || '',
+        contentStructure,
+        mainTopics
+      );
+      const lsiKeywords = extractLSIKeywords(
+        article.content || '',
+        mainTopics,
+        finalTopicCluster
+      );
+      const eeatAnalysis = analyzeEEAT(article.content || '', {
+        updatedAt: article.updatedAt,
+        publishedAt: article.publishedAt
+      });
 
       return {
         postId: article.postId,
@@ -131,13 +151,20 @@ module.exports = async function handler(req, res) {
         contentLifespan: article.contentLifespan || 'evergreen',
         isPillar: finalIsPillar,
         summary: article.summary || analysis.summary || '',
-        mainTopics: article.mainTopics || analysis.mainTopics || [],
+        mainTopics: mainTopics,
         semanticKeywords: article.semanticKeywords || analysis.semanticKeywords || [],
         anchorPhrases: article.anchorPhrases || [],
         inboundLinkCount: article.inboundLinkCount || 0,
         publishedAt: article.publishedAt || new Date().toISOString(),
         updatedAt: article.updatedAt || new Date().toISOString(),
-        embedding: embeddings[index]
+        embedding: embeddings[index],
+
+        // === Light Semantic Enrichment Data (v2.2) ===
+        lsiKeywords: lsiKeywords,
+        contentStructure: contentStructure,
+        comprehensiveness: comprehensiveness,
+        eeatAnalysis: eeatAnalysis,
+        enrichedAt: new Date().toISOString()
       };
     });
 
@@ -146,24 +173,46 @@ module.exports = async function handler(req, res) {
       articlesToUpsert.map(article => upsertArticle(article))
     );
 
-    // Compile results
+    // Compile results with enrichment stats
     const results = {
       success: true,
       processed: validArticles.length,
       succeeded: 0,
       failed: 0,
       details: [],
-      errors
+      errors,
+      enrichmentStats: {
+        articlesEnriched: articlesToUpsert.length,
+        averageComprehensiveness: Math.round(
+          articlesToUpsert.reduce((sum, a) => sum + (a.comprehensiveness?.totalScore || 0), 0) / articlesToUpsert.length
+        ),
+        averageEEAT: Math.round(
+          articlesToUpsert.reduce((sum, a) => sum + (a.eeatAnalysis?.totalScore || 0), 0) / articlesToUpsert.length
+        ),
+        contentFormats: articlesToUpsert.reduce((acc, a) => {
+          const format = a.contentStructure?.contentFormat || 'standard-article';
+          acc[format] = (acc[format] || 0) + 1;
+          return acc;
+        }, {}),
+        totalLSIKeywords: articlesToUpsert.reduce((sum, a) => sum + (a.lsiKeywords?.length || 0), 0)
+      }
     };
 
     upsertResults.forEach((result, index) => {
       const article = validArticles[index];
+      const enrichedArticle = articlesToUpsert[index];
       if (result.status === 'fulfilled') {
         results.succeeded++;
         results.details.push({
           postId: article.postId,
           status: 'success',
-          vectorId: result.value.id
+          vectorId: result.value.id,
+          enrichment: {
+            lsiKeywords: (enrichedArticle.lsiKeywords || []).length,
+            contentFormat: enrichedArticle.contentStructure?.contentFormat || 'unknown',
+            comprehensiveness: enrichedArticle.comprehensiveness?.totalScore || 0,
+            eeatScore: enrichedArticle.eeatAnalysis?.totalScore || 0
+          }
         });
       } else {
         results.failed++;

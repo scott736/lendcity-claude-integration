@@ -512,7 +512,7 @@ async function processSmartLinkRequest(params) {
     };
   }
 
-  // Step 3.5: Apply advanced scoring enhancements (v2.1)
+  // Step 3.5: Apply advanced scoring enhancements (v2.1 + v2.2 semantic enrichment)
   const enhancedRecommendations = recommendations.map(rec => {
     const target = rec.candidate;
     let enhancedScore = rec.totalScore;
@@ -530,11 +530,19 @@ async function processSmartLinkRequest(params) {
     enhancedScore += decayScore;
     enhancements.push({ type: 'freshness', score: decayScore });
 
-    // Apply E-E-A-T scoring
+    // Apply E-E-A-T scoring (from both old module AND new enriched data)
     const eeatData = getEEATScore(postId, target.postId, target);
-    enhancedScore += eeatData.score;
-    if (eeatData.factors.length > 0) {
-      enhancements.push({ type: 'eeat', score: eeatData.score, factors: eeatData.factors });
+    // v2.2: Boost based on stored E-E-A-T scores from enrichment
+    const targetEEATScore = target.eeatScore || 50;
+    const eeatBoost = Math.round((targetEEATScore - 50) / 10); // -5 to +5 based on stored score
+    enhancedScore += eeatData.score + eeatBoost;
+    if (eeatData.factors.length > 0 || eeatBoost !== 0) {
+      enhancements.push({
+        type: 'eeat',
+        score: eeatData.score + eeatBoost,
+        factors: eeatData.factors,
+        storedEEAT: targetEEATScore
+      });
     }
 
     // Apply link velocity check (penalize if too aggressive)
@@ -544,13 +552,144 @@ async function processSmartLinkRequest(params) {
       enhancements.push({ type: 'velocity', score: velocityData.score, status: velocityData.status });
     }
 
+    // === v2.2: NEW SEMANTIC ENRICHMENT BOOSTS ===
+
+    // 1. LSI Keyword Overlap Boost
+    // Check if source content mentions terms that are LSI keywords of target
+    if (target.lsiKeywords && target.lsiKeywords.length > 0) {
+      const contentLower = contentText.toLowerCase();
+      const lsiMatches = target.lsiKeywords.filter(kw => contentLower.includes(kw.toLowerCase()));
+      if (lsiMatches.length > 0) {
+        const lsiBoost = Math.min(15, lsiMatches.length * 3); // Up to +15 for 5+ matches
+        enhancedScore += lsiBoost;
+        enhancements.push({
+          type: 'lsi_overlap',
+          score: lsiBoost,
+          matches: lsiMatches.slice(0, 5) // Show first 5 matches
+        });
+      }
+    }
+
+    // 2. Content Structure Match Boost
+    // Prefer linking to similar content types (FAQ→FAQ, comparison→comparison, etc.)
+    const sourceContentFormat = determineSourceContentFormat(content);
+    const targetContentFormat = target.contentFormat || 'standard-article';
+    if (sourceContentFormat === targetContentFormat && sourceContentFormat !== 'standard-article') {
+      enhancedScore += 8;
+      enhancements.push({
+        type: 'format_match',
+        score: 8,
+        format: targetContentFormat
+      });
+    }
+
+    // 3. Comprehensiveness Boost
+    // Prefer linking to comprehensive content (more thorough = more valuable to link to)
+    const comprehensiveness = target.comprehensivenessScore || 50;
+    if (comprehensiveness >= 70) {
+      const compBoost = Math.round((comprehensiveness - 50) / 5); // +4 to +10 for high-quality
+      enhancedScore += compBoost;
+      enhancements.push({
+        type: 'comprehensiveness',
+        score: compBoost,
+        level: target.comprehensivenessLevel || 'adequate'
+      });
+    }
+
+    // 4. Structure Score Boost
+    // Prefer content with rich structure (tables, videos, FAQs, etc.)
+    const structureScore = target.structureScore || 50;
+    if (structureScore >= 70) {
+      const structBoost = Math.round((structureScore - 50) / 8); // +2 to +6
+      enhancedScore += structBoost;
+      const richFeatures = [];
+      if (target.hasTable) richFeatures.push('table');
+      if (target.hasFaq) richFeatures.push('FAQ');
+      if (target.hasVideo) richFeatures.push('video');
+      if (target.hasCalculator) richFeatures.push('calculator');
+      enhancements.push({
+        type: 'rich_content',
+        score: structBoost,
+        features: richFeatures
+      });
+    }
+
+    // 5. Pre-computed Anchor Phrase Match
+    // Boost if source content contains one of target's pre-computed anchor phrases
+    if (target.anchorPhrases && target.anchorPhrases.length > 0) {
+      const contentLower = contentText.toLowerCase();
+      const matchedAnchors = target.anchorPhrases.filter(phrase => {
+        const phraseLower = typeof phrase === 'string' ? phrase.toLowerCase() : (phrase.phrase || '').toLowerCase();
+        return phraseLower && contentLower.includes(phraseLower);
+      });
+      if (matchedAnchors.length > 0) {
+        enhancedScore += 10;
+        enhancements.push({
+          type: 'anchor_match',
+          score: 10,
+          matches: matchedAnchors.slice(0, 3).map(p => typeof p === 'string' ? p : p.phrase)
+        });
+      }
+    }
+
+    // 6. H2 Topic Relevance
+    // Boost if source mentions topics from target's H2 headers
+    if (target.h2Topics && target.h2Topics.length > 0) {
+      const contentLower = contentText.toLowerCase();
+      const h2Matches = target.h2Topics.filter(h2 => {
+        // Check if key words from H2 appear in content
+        const h2Words = h2.toLowerCase().split(/\s+/).filter(w => w.length > 4);
+        return h2Words.some(word => contentLower.includes(word));
+      });
+      if (h2Matches.length >= 2) {
+        enhancedScore += 6;
+        enhancements.push({
+          type: 'h2_relevance',
+          score: 6,
+          matchedSections: h2Matches.slice(0, 3)
+        });
+      }
+    }
+
+    // 7. Question Keyword Match (great for FAQ-style linking)
+    if (target.questionKeywords && target.questionKeywords.length > 0) {
+      const contentLower = contentText.toLowerCase();
+      const questionMatches = target.questionKeywords.filter(q => contentLower.includes(q.toLowerCase()));
+      if (questionMatches.length > 0) {
+        enhancedScore += 7;
+        enhancements.push({
+          type: 'question_match',
+          score: 7,
+          questions: questionMatches.slice(0, 3)
+        });
+      }
+    }
+
     return {
       ...rec,
       totalScore: Math.round(enhancedScore),
       enhancements,
-      seasonalBoost: seasonalData.isSeasonallyRelevant ? seasonalData.boostMultiplier : 1.0
+      seasonalBoost: seasonalData.isSeasonallyRelevant ? seasonalData.boostMultiplier : 1.0,
+      // Include enrichment metadata for anchor text selection
+      enrichmentData: {
+        anchorPhrases: target.anchorPhrases,
+        primaryAnchor: target.primaryAnchor,
+        linkableMoments: target.linkableMoments,
+        h2Topics: target.h2Topics
+      }
     };
   });
+
+  /**
+   * Determine source content format from HTML
+   */
+  function determineSourceContentFormat(html) {
+    if (/<table[\s>]/i.test(html) && (html.match(/<table[\s>]/gi) || []).length >= 2) return 'comparison';
+    if (/(?:faq|frequently asked)/i.test(html) || /<details[\s>]/i.test(html)) return 'faq';
+    if (/(?:youtube|vimeo|video)/i.test(html)) return 'video-guide';
+    if ((html.match(/<h2[\s>]/gi) || []).length >= 5) return 'comprehensive-guide';
+    return 'standard-article';
+  }
 
   // Re-sort by enhanced scores
   enhancedRecommendations.sort((a, b) => b.totalScore - a.totalScore);
