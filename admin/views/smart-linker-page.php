@@ -706,11 +706,24 @@ jQuery(document).ready(function($) {
         window.auditIssues = issues;
         window.currentFilter = null;
 
+        // Helper to check if an issue is dismissed in sessionStorage
+        window.isIssueDismissed = function(issue) {
+            var dismissed = JSON.parse(sessionStorage.getItem('dismissedAuditItems') || '[]');
+            return dismissed.some(function(d) {
+                return d.postId === issue.postId && d.targetPostId === issue.targetPostId;
+            });
+        };
+
         // Build and store the table builder function
         window.buildIssuesTable = function(issuesList, filterType) {
             var filteredIssues = filterType
                 ? issuesList.filter(function(i) { return i.type === filterType; })
                 : issuesList;
+
+            // Filter out dismissed items from sessionStorage
+            filteredIssues = filteredIssues.filter(function(i) {
+                return !window.isIssueDismissed(i);
+            });
 
             if (filteredIssues.length === 0) {
                 return '<p style="color: #666; text-align: center; padding: 20px;">No ' + (filterType || '') + ' issues found.</p>';
@@ -1076,51 +1089,42 @@ jQuery(document).ready(function($) {
     // Dismiss All Missing Opportunities Handler
     // This hides all suggestions from the view WITHOUT affecting Pinecone
     $('#dismiss-all-missing').on('click', function() {
-        var missingIssues = window.auditIssues.filter(function(i) { return i.type === 'missing'; });
-        var pendingRows = [];
+        // Get ALL missing issues (not just rendered ones)
+        var allMissingIssues = window.auditIssues.filter(function(i) { return i.type === 'missing'; });
 
-        // Find rows that haven't been processed yet
-        missingIssues.forEach(function(issue) {
-            var idx = window.auditIssues.indexOf(issue);
-            var $row = $('#issue-row-' + idx);
-            if ($row.find('.fix-link-btn').length > 0) {
-                pendingRows.push({ issue: issue, index: idx });
-            }
+        // Filter out already dismissed ones
+        var pendingIssues = allMissingIssues.filter(function(issue) {
+            return !window.isIssueDismissed(issue);
         });
 
-        if (pendingRows.length === 0) {
+        if (pendingIssues.length === 0) {
             alert('No pending opportunities to dismiss.');
             return;
         }
 
-        if (!confirm('Dismiss all ' + pendingRows.length + ' suggestions?\n\nThis hides them from the audit view. Does NOT affect Pinecone.\n\nThey will reappear on the next full audit.')) {
+        if (!confirm('Dismiss all ' + pendingIssues.length + ' suggestions?\n\nThis hides them from the audit view. Does NOT affect Pinecone.\n\nThey will reappear on the next full audit.')) {
             return;
         }
 
-        // Immediately hide all rows (no server call needed)
-        pendingRows.forEach(function(item) {
-            var $row = $('#issue-row-' + item.index);
-            $row.css('background', '#f5f5f5');
-            $row.find('.fix-link-btn').remove();
-            $row.find('td:last').html('<span style="color: #666;">Dismissed</span>');
-        });
-
-        // Update counter
-        var currentMissing = parseInt($('#audit-missing-opps').text()) || 0;
-        $('#audit-missing-opps').text(Math.max(0, currentMissing - pendingRows.length));
-
-        // Store dismissed items in session storage so they stay hidden until next audit
+        // Store ALL pending items in session storage
         var dismissed = JSON.parse(sessionStorage.getItem('dismissedAuditItems') || '[]');
-        pendingRows.forEach(function(item) {
+        pendingIssues.forEach(function(issue) {
             dismissed.push({
-                postId: item.issue.postId,
-                targetPostId: item.issue.targetPostId,
+                postId: issue.postId,
+                targetPostId: issue.targetPostId,
                 dismissedAt: new Date().toISOString()
             });
         });
         sessionStorage.setItem('dismissedAuditItems', JSON.stringify(dismissed));
 
-        alert('Dismissed ' + pendingRows.length + ' suggestions.\n\nThese will reappear on the next full audit.');
+        // Update counter to 0
+        $('#audit-missing-opps').text(0);
+
+        // Rebuild the table to reflect dismissed items
+        var html = window.buildIssuesTable(window.auditIssues, 'missing');
+        $('#audit-issues-list').html(html);
+
+        alert('Dismissed ' + pendingIssues.length + ' suggestions.\n\nThese will reappear on the next full audit.');
     });
 
     // Fix Link Button Handler (delegated for dynamically added buttons)
