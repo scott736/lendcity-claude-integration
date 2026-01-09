@@ -439,14 +439,32 @@ async function processSmartLinkRequest(params) {
   const contentText = extractBodyText(content);
   const embedding = await generateEmbedding(`${title || ''} ${contentText}`);
 
-  // Step 2: Query Pinecone for similar articles
+  // Step 2: Query Pinecone for similar articles + entity-based suggestions IN PARALLEL
   const excludeList = [...excludeIds];
   if (postId) excludeList.push(postId);
 
-  let candidates = await querySimilar(embedding, {
-    topK: 50,
-    excludeIds: excludeList
-  });
+  // v2.2: Run vector search and entity-based search in parallel for better coverage
+  const [vectorCandidates, entitySuggestions] = await Promise.all([
+    querySimilar(embedding, {
+      topK: 50,
+      excludeIds: excludeList
+    }),
+    postId ? suggestEntityBasedLinks(postId) : Promise.resolve([])
+  ]);
+
+  // Merge entity-based suggestions with vector candidates (deduplicate by postId)
+  const seenPostIds = new Set(vectorCandidates.map(c => c.metadata?.postId || c.postId));
+  const uniqueEntitySuggestions = entitySuggestions.filter(e => !seenPostIds.has(e.postId));
+
+  // Convert entity suggestions to candidate format and boost their score for shared entities
+  const entityCandidates = uniqueEntitySuggestions.map(e => ({
+    ...e,
+    metadata: { ...e, entityOverlap: e.entityOverlap, sharedEntities: e.sharedEntities },
+    score: 0.5 + (e.entityOverlap * 0.1), // Base score + boost per shared entity
+    sourceType: 'entity-graph'
+  }));
+
+  let candidates = [...vectorCandidates, ...entityCandidates];
 
   // Filter candidates by content type
   candidates = filterByContentType(candidates, contentType);
@@ -457,6 +475,25 @@ async function processSmartLinkRequest(params) {
       links: [],
       message: 'No candidate articles found'
     };
+  }
+
+  // v2.2: Apply cross-encoder re-ranking for improved accuracy
+  // Uses Claude to score relevance more accurately than vector similarity alone
+  const { results: reRankedCandidates, stats: reRankStats } = await twoStageRetrieval(
+    contentText,
+    title || '',
+    candidates,
+    {
+      preFilterThreshold: 0.25,  // Keep candidates with 25%+ vector similarity
+      maxReRank: 20,             // Re-rank top 20 candidates
+      finalTopK: maxLinks * 3   // Return 3x maxLinks for scoring pipeline
+    }
+  );
+
+  // Use re-ranked candidates if available, otherwise fall back to original
+  if (reRankedCandidates.length > 0) {
+    candidates = reRankedCandidates;
+    console.log(`Cross-encoder re-ranked ${reRankStats.reRanked} candidates from ${reRankStats.vectorCandidates} initial`);
   }
 
   // Step 3: Apply hybrid scoring
@@ -672,7 +709,10 @@ async function processSmartLinkRequest(params) {
       // v2.1: Enhanced stats
       funnelDistribution: distribution,
       isBalanced,
-      velocityStatus: velocityReport.status
+      velocityStatus: velocityReport.status,
+      // v2.2: Entity-graph and cross-encoder stats
+      entityBasedCandidates: entityCandidates?.length || 0,
+      crossEncoderReRanked: reRankStats?.reRanked || 0
     },
     seoSummary: includeSEOMetrics ? {
       sitewideHealth: seoMetrics?.health || null,
