@@ -13,6 +13,9 @@ const { getRecommendations } = require('../lib/scoring');
  * 5. Prefers anchors in intro/conclusion (higher SEO value)
  * 6. Semantic partial matching - finds phrases with multiple target words
  * 7. Position-based scoring for optimal link placement
+ * 8. Exact match penalty - avoids over-optimization
+ * 9. Word boundary matching - ensures clean word breaks
+ * 10. Natural language preference - prefers readable anchors
  *
  * @param {string} content - HTML content of source article
  * @param {string} contentLower - Lowercase version for searching
@@ -21,6 +24,8 @@ const { getRecommendations } = require('../lib/scoring');
  * @returns {{ text: string, context: string, position: string, score: number } | null}
  */
 function findAnchorInContent(content, contentLower, target, usedAnchors = new Set()) {
+  // Target title normalized for exact match detection
+  const targetTitleLower = (target.title || '').toLowerCase().replace(/[^\w\s]/g, '').trim();
   // Generic phrases that match too many pages - BLACKLIST
   const genericPhrases = new Set([
     'mortgage financing', 'real estate', 'investment property', 'property investment',
@@ -212,6 +217,32 @@ function findAnchorInContent(content, contentLower, target, usedAnchors = new Se
     }
   }
 
+  // Apply SEO penalties and bonuses before sorting
+  for (const candidate of candidates) {
+    const candLower = candidate.text.toLowerCase().replace(/[^\w\s]/g, '').trim();
+
+    // PENALTY: Exact match to target title (over-optimization risk)
+    if (candLower === targetTitleLower) {
+      candidate.score *= 0.6; // 40% penalty
+      candidate.exactMatch = true;
+    }
+
+    // BONUS: Natural language (contains verbs/action words)
+    const naturalWords = ['how', 'why', 'when', 'learn', 'discover', 'explore', 'understand', 'guide', 'about', 'benefits', 'advantages'];
+    const hasNaturalFlow = naturalWords.some(w => candLower.includes(w));
+    if (hasNaturalFlow) {
+      candidate.score *= 1.2; // 20% bonus for natural language
+      candidate.naturalLanguage = true;
+    }
+
+    // BONUS: Contains brand/location signals (more specific)
+    const brandSignals = ['lendcity', 'ontario', 'toronto', 'canada', 'gta'];
+    const hasBrandSignal = brandSignals.some(b => candLower.includes(b));
+    if (hasBrandSignal) {
+      candidate.score *= 1.15; // 15% bonus for brand/geo signals
+    }
+  }
+
   // Sort candidates by score (highest first)
   candidates.sort((a, b) => b.score - a.score);
 
@@ -233,11 +264,43 @@ function findAnchorInContent(content, contentLower, target, usedAnchors = new Se
       position: best.position,
       score: Math.round(best.score),
       type: best.type,
-      matchingWords: best.matchingWords
+      matchingWords: best.matchingWords,
+      isExactMatch: best.exactMatch || false,
+      isNaturalLanguage: best.naturalLanguage || false
     };
   }
 
   return null; // No suitable anchor found
+}
+
+/**
+ * Calculate link density and provide SEO warnings
+ * @param {string} content - HTML content
+ * @param {number} existingLinks - Number of existing links
+ * @returns {{ density: number, wordCount: number, warnings: string[] }}
+ */
+function analyzeLinkDensity(content, existingLinks) {
+  const plainText = content.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  const wordCount = plainText.split(/\s+/).length;
+  const density = existingLinks / (wordCount / 100); // Links per 100 words
+
+  const warnings = [];
+
+  // SEO best practice: 2-3 internal links per 1000 words is optimal
+  // More than 5 per 1000 words is over-optimized
+  if (density > 0.5) {
+    warnings.push(`High link density: ${density.toFixed(2)} links per 100 words. Consider reducing.`);
+  }
+
+  if (existingLinks > 10 && wordCount < 1500) {
+    warnings.push(`Too many links (${existingLinks}) for content length (${wordCount} words).`);
+  }
+
+  if (existingLinks === 0 && wordCount > 500) {
+    warnings.push('No internal links found. Add 2-3 relevant internal links.');
+  }
+
+  return { density, wordCount, warnings };
 }
 
 /**
@@ -385,14 +448,27 @@ module.exports = async function handler(req, res) {
           // Add to used set to prevent reuse
           usedAnchors.add(anchor.text.toLowerCase());
 
-          // Build SEO-focused reason based on anchor type
+          // Build SEO-focused reason with quality signals
           let reason = '';
+          const signals = [];
+
           if (anchor.type === 'sentence') {
-            reason = `Full sentence in ${anchor.position} contains: ${anchor.matchingWords.join(', ')}`;
+            reason = `Full sentence in ${anchor.position}`;
           } else if (anchor.type === 'phrase') {
-            reason = `Specific phrase match in ${anchor.position}`;
+            reason = `Phrase match in ${anchor.position}`;
           } else {
-            reason = `Contextual match with: ${anchor.matchingWords.join(', ')}`;
+            reason = `Contextual match in ${anchor.position}`;
+          }
+
+          // Add quality signals
+          if (anchor.isNaturalLanguage) signals.push('✓ Natural language');
+          if (anchor.isExactMatch) signals.push('⚠️ Exact match');
+          if (anchor.position === 'intro') signals.push('★ Intro placement');
+          if (anchor.position === 'conclusion') signals.push('★ Conclusion');
+          if (anchor.matchingWords.length >= 2) signals.push(`${anchor.matchingWords.length} keywords`);
+
+          if (signals.length > 0) {
+            reason += ` (${signals.join(', ')})`;
           }
 
           opportunitiesWithAnchors.push({
@@ -407,6 +483,8 @@ module.exports = async function handler(req, res) {
             anchorType: anchor.type,
             anchorScore: anchor.score,
             matchingWords: anchor.matchingWords,
+            isExactMatch: anchor.isExactMatch,
+            isNaturalLanguage: anchor.isNaturalLanguage,
             reason
           });
 
@@ -435,7 +513,10 @@ module.exports = async function handler(req, res) {
       }
     }
 
-    // Calculate stats
+    // Analyze link density for SEO warnings
+    const densityAnalysis = analyzeLinkDensity(content, existingLinks.length);
+
+    // Calculate stats with SEO insights
     audit.stats = {
       totalLinks: existingLinks.length,
       validLinks: audit.existing.valid.length,
@@ -444,7 +525,11 @@ module.exports = async function handler(req, res) {
       missingOpportunities: audit.suggestions.missing.length,
       healthScore: existingLinks.length > 0
         ? Math.round((audit.existing.valid.length / existingLinks.length) * 100)
-        : 100
+        : 100,
+      // SEO metrics
+      wordCount: densityAnalysis.wordCount,
+      linkDensity: Math.round(densityAnalysis.density * 100) / 100,
+      seoWarnings: densityAnalysis.warnings
     };
 
     return res.status(200).json({
