@@ -2,6 +2,56 @@ const OpenAI = require('openai');
 
 let openaiClient = null;
 
+// ============================================================================
+// EMBEDDING CACHE (Perf #9)
+// ============================================================================
+
+// In-memory embedding cache with content hash as key
+const embeddingCache = new Map();
+const EMBEDDING_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+const MAX_CACHE_SIZE = 500;
+
+/**
+ * Generate a hash for content (for cache key)
+ */
+function hashText(text) {
+  let hash = 0;
+  const str = text.slice(0, 2000); // Hash first 2000 chars
+  for (let i = 0; i < str.length; i++) {
+    const char = str.charCodeAt(i);
+    hash = ((hash << 5) - hash) + char;
+    hash = hash & hash;
+  }
+  return `emb:${hash.toString(36)}:${text.length}`;
+}
+
+/**
+ * Get cached embedding
+ */
+function getCachedEmbedding(cacheKey) {
+  const cached = embeddingCache.get(cacheKey);
+  if (cached && (Date.now() - cached.timestamp) < EMBEDDING_CACHE_TTL) {
+    return cached.embedding;
+  }
+  if (cached) {
+    embeddingCache.delete(cacheKey);
+  }
+  return null;
+}
+
+/**
+ * Store embedding in cache
+ */
+function setCachedEmbedding(cacheKey, embedding) {
+  // Limit cache size
+  if (embeddingCache.size >= MAX_CACHE_SIZE) {
+    // Remove oldest 50 entries
+    const keys = Array.from(embeddingCache.keys()).slice(0, 50);
+    keys.forEach(k => embeddingCache.delete(k));
+  }
+  embeddingCache.set(cacheKey, { embedding, timestamp: Date.now() });
+}
+
 /**
  * Initialize OpenAI client (singleton)
  */
@@ -18,20 +68,40 @@ function getClient() {
  * Generate embedding for text
  * Uses text-embedding-3-small for cost efficiency
  * Switch to text-embedding-3-large for better quality
+ *
+ * Performance: Caches embeddings by content hash (Perf #9)
  */
 async function generateEmbedding(text, options = {}) {
   const client = getClient();
-  const { model = 'text-embedding-3-small' } = options;
+  const { model = 'text-embedding-3-small', skipCache = false } = options;
 
   // Clean and truncate text (max ~8000 tokens)
   const cleanText = cleanForEmbedding(text);
+
+  // Check cache (Perf #9)
+  if (!skipCache) {
+    const cacheKey = hashText(cleanText);
+    const cached = getCachedEmbedding(cacheKey);
+    if (cached) {
+      console.log('Embedding cache hit');
+      return cached;
+    }
+  }
 
   const response = await client.embeddings.create({
     model,
     input: cleanText
   });
 
-  return response.data[0].embedding;
+  const embedding = response.data[0].embedding;
+
+  // Cache the result
+  if (!skipCache) {
+    const cacheKey = hashText(cleanText);
+    setCachedEmbedding(cacheKey, embedding);
+  }
+
+  return embedding;
 }
 
 /**
