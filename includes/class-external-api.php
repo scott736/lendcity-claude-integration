@@ -638,6 +638,7 @@ class LendCity_External_API {
             'content' => $post->post_content,
             'title' => $post->post_title,
             'existingLinks' => $existing_links,
+            'contentType' => $post->post_type,  // 'page' or 'post' - pages get no suggestions
             'maxSuggestions' => 5
         ];
 
