@@ -240,6 +240,7 @@ $total_links = $smart_linker->get_total_link_count();
                 <span id="audit-filter-label" style="font-weight: bold;"></span>
                 <button type="button" id="audit-clear-filter" class="button button-small" style="margin-left: 10px;">Show All</button>
                 <button type="button" id="accept-all-missing" class="button button-small" style="margin-left: 10px; background: #7b1fa2; color: white; border: none; display: none;">✓ Accept All Suggestions</button>
+                <button type="button" id="dismiss-all-missing" class="button button-small" style="margin-left: 10px; background: #6c757d; color: white; border: none; display: none;" title="Hide all suggestions from this view (does NOT affect Pinecone)">✕ Dismiss All</button>
             </div>
             <div id="audit-issues-list" style="max-height: 400px; overflow-y: auto;"></div>
         </div>
@@ -965,11 +966,13 @@ jQuery(document).ready(function($) {
         $('#audit-filter-label').text(filterLabels[filterType] || 'Filtered');
         $('#audit-filter-bar').show();
 
-        // Show/hide Accept All button only for missing opportunities
+        // Show/hide Accept All and Dismiss All buttons only for missing opportunities
         if (filterType === 'missing') {
             $('#accept-all-missing').show();
+            $('#dismiss-all-missing').show();
         } else {
             $('#accept-all-missing').hide();
+            $('#dismiss-all-missing').hide();
         }
 
         // Highlight active card
@@ -1070,6 +1073,56 @@ jQuery(document).ready(function($) {
         processNext();
     });
 
+    // Dismiss All Missing Opportunities Handler
+    // This hides all suggestions from the view WITHOUT affecting Pinecone
+    $('#dismiss-all-missing').on('click', function() {
+        var missingIssues = window.auditIssues.filter(function(i) { return i.type === 'missing'; });
+        var pendingRows = [];
+
+        // Find rows that haven't been processed yet
+        missingIssues.forEach(function(issue) {
+            var idx = window.auditIssues.indexOf(issue);
+            var $row = $('#issue-row-' + idx);
+            if ($row.find('.fix-link-btn').length > 0) {
+                pendingRows.push({ issue: issue, index: idx });
+            }
+        });
+
+        if (pendingRows.length === 0) {
+            alert('No pending opportunities to dismiss.');
+            return;
+        }
+
+        if (!confirm('Dismiss all ' + pendingRows.length + ' suggestions?\n\nThis hides them from the audit view. Does NOT affect Pinecone.\n\nThey will reappear on the next full audit.')) {
+            return;
+        }
+
+        // Immediately hide all rows (no server call needed)
+        pendingRows.forEach(function(item) {
+            var $row = $('#issue-row-' + item.index);
+            $row.css('background', '#f5f5f5');
+            $row.find('.fix-link-btn').remove();
+            $row.find('td:last').html('<span style="color: #666;">Dismissed</span>');
+        });
+
+        // Update counter
+        var currentMissing = parseInt($('#audit-missing-opps').text()) || 0;
+        $('#audit-missing-opps').text(Math.max(0, currentMissing - pendingRows.length));
+
+        // Store dismissed items in session storage so they stay hidden until next audit
+        var dismissed = JSON.parse(sessionStorage.getItem('dismissedAuditItems') || '[]');
+        pendingRows.forEach(function(item) {
+            dismissed.push({
+                postId: item.issue.postId,
+                targetPostId: item.issue.targetPostId,
+                dismissedAt: new Date().toISOString()
+            });
+        });
+        sessionStorage.setItem('dismissedAuditItems', JSON.stringify(dismissed));
+
+        alert('Dismissed ' + pendingRows.length + ' suggestions.\n\nThese will reappear on the next full audit.');
+    });
+
     // Fix Link Button Handler (delegated for dynamically added buttons)
     $(document).on('click', '.fix-link-btn', function() {
         var $btn = $(this);
@@ -1136,7 +1189,7 @@ jQuery(document).ready(function($) {
         }
 
         if (action === 'decline_opportunity') {
-            // Just hide the row - no server action needed
+            // Just hide the row - no server action needed (does NOT affect Pinecone)
             var $row = $('#issue-row-' + index);
             $row.css('background', '#f5f5f5');
             $row.find('.fix-link-btn').remove();
@@ -1146,6 +1199,14 @@ jQuery(document).ready(function($) {
             if (currentMissing > 0) {
                 $('#audit-missing-opps').text(currentMissing - 1);
             }
+            // Store in session storage to keep hidden until next full audit
+            var dismissed = JSON.parse(sessionStorage.getItem('dismissedAuditItems') || '[]');
+            dismissed.push({
+                postId: issue.postId,
+                targetPostId: issue.targetPostId,
+                dismissedAt: new Date().toISOString()
+            });
+            sessionStorage.setItem('dismissedAuditItems', JSON.stringify(dismissed));
             return;
         }
 
