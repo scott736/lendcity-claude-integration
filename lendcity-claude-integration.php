@@ -1035,13 +1035,22 @@ class LendCity_Claude_Integration {
         if (!current_user_can('manage_options')) {
             wp_send_json_error('Permission denied');
         }
-        
+
         $post_id = intval($_POST['post_id']);
-        $link_id = sanitize_text_field($_POST['link_id']);
-        
+        $link_id = sanitize_text_field($_POST['link_id'] ?? '');
+        $link_url = esc_url_raw($_POST['link_url'] ?? '');
+        $link_anchor = sanitize_text_field($_POST['link_anchor'] ?? '');
+
         $smart_linker = new LendCity_Smart_Linker();
+
+        // Try remove by link_id first
         $result = $smart_linker->remove_link($post_id, $link_id);
-        
+
+        // If that fails and we have URL/anchor, try direct removal
+        if (!$result && ($link_url || $link_anchor)) {
+            $result = $smart_linker->remove_link_by_url($post_id, $link_url, $link_anchor);
+        }
+
         if ($result) {
             wp_send_json_success();
         } else {

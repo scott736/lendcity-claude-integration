@@ -241,6 +241,7 @@ $total_links = $smart_linker->get_total_link_count();
                 <button type="button" id="audit-clear-filter" class="button button-small" style="margin-left: 10px;">Show All</button>
                 <button type="button" id="accept-all-missing" class="button button-small" style="margin-left: 10px; background: #7b1fa2; color: white; border: none; display: none;">✓ Accept All Suggestions</button>
                 <button type="button" id="dismiss-all-missing" class="button button-small" style="margin-left: 10px; background: #6c757d; color: white; border: none; display: none;" title="Hide all suggestions from this view (does NOT affect Pinecone)">✕ Dismiss All</button>
+                <button type="button" id="reset-dismissed" class="button button-small" style="margin-left: 10px; background: #17a2b8; color: white; border: none; display: none;" title="Show previously dismissed suggestions again">↺ Reset Dismissed</button>
             </div>
             <div id="audit-issues-list" style="max-height: 400px; overflow-y: auto;"></div>
         </div>
@@ -979,13 +980,15 @@ jQuery(document).ready(function($) {
         $('#audit-filter-label').text(filterLabels[filterType] || 'Filtered');
         $('#audit-filter-bar').show();
 
-        // Show/hide Accept All and Dismiss All buttons only for missing opportunities
+        // Show/hide Accept All, Dismiss All, and Reset buttons only for missing opportunities
         if (filterType === 'missing') {
             $('#accept-all-missing').show();
             $('#dismiss-all-missing').show();
+            $('#reset-dismissed').show();
         } else {
             $('#accept-all-missing').hide();
             $('#dismiss-all-missing').hide();
+            $('#reset-dismissed').hide();
         }
 
         // Highlight active card
@@ -1125,6 +1128,32 @@ jQuery(document).ready(function($) {
         $('#audit-issues-list').html(html);
 
         alert('Dismissed ' + pendingIssues.length + ' suggestions.\n\nThese will reappear on the next full audit.');
+    });
+
+    // Reset Dismissed Handler - Clear sessionStorage and show all opportunities again
+    $('#reset-dismissed').on('click', function() {
+        var dismissed = JSON.parse(sessionStorage.getItem('dismissedAuditItems') || '[]');
+        if (dismissed.length === 0) {
+            alert('No dismissed items to restore.');
+            return;
+        }
+
+        if (!confirm('Restore ' + dismissed.length + ' previously dismissed suggestions?')) {
+            return;
+        }
+
+        // Clear sessionStorage
+        sessionStorage.removeItem('dismissedAuditItems');
+
+        // Recalculate the missing opportunities count
+        var allMissing = window.auditIssues.filter(function(i) { return i.type === 'missing'; });
+        $('#audit-missing-opps').text(allMissing.length);
+
+        // Rebuild the table
+        var html = window.buildIssuesTable(window.auditIssues, 'missing');
+        $('#audit-issues-list').html(html);
+
+        alert('Restored ' + dismissed.length + ' suggestions.');
     });
 
     // Fix Link Button Handler (delegated for dynamically added buttons)
@@ -1370,22 +1399,26 @@ jQuery(document).ready(function($) {
         var $row = $btn.closest('tr');
         var linkId = $row.data('link-id');
         var sourceId = $row.data('source-id');
-        
+        var linkUrl = $row.data('current-url');
+        var linkAnchor = $row.find('td:eq(1) code').text(); // Get anchor from the code element
+
         if (!confirm('Delete this link?')) return;
-        
+
         $btn.prop('disabled', true).text('...');
-        
+
         $.post(ajaxurl, {
             action: 'lendcity_action', sub_action: 'remove_single_link',
             nonce: nonce,
             post_id: sourceId,
-            link_id: linkId
+            link_id: linkId,
+            link_url: linkUrl,
+            link_anchor: linkAnchor
         }, function(r) {
             if (r.success) {
                 $row.fadeOut(300, function() { $(this).remove(); });
             } else {
                 alert('Error: ' + (r.data || 'Failed to delete'));
-                $btn.prop('disabled', false).text('✕ Delete');
+                $btn.prop('disabled', false).text('✕');
             }
         });
     });
