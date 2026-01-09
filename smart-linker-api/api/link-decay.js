@@ -13,6 +13,11 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
+  // Edge caching for GET requests (decay report is expensive, cache for 1 hour)
+  if (req.method === 'GET') {
+    res.setHeader('Cache-Control', 's-maxage=3600, stale-while-revalidate=7200');
+  }
+
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
   }

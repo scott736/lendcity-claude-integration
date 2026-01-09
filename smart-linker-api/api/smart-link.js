@@ -8,8 +8,23 @@ const {
   calculateSEOScore,
   getSitewideSEOMetrics,
   getOrphanPagesReport,
+  incrementalCacheUpdate,
+  batchIncrementalCacheUpdate,
+  trackLinkVelocity,
+  getLinkVelocityScore,
+  getEEATScore,
+  getActionAnchorScore,
+  getSemanticClusterScore,
+  getBalancedRecommendations,
   ANCHOR_TYPES
 } = require('../lib/seo-scoring');
+
+// v2.1: Integrate previously unused modules
+const { suggestEntityBasedLinks, getEntity } = require('../lib/knowledge-graph');
+const { twoStageRetrieval, preFilterCandidates } = require('../lib/cross-encoder');
+const { calculateSeasonalScore, applySeasonalBoosting } = require('../lib/seasonal-boosting');
+const { getDecayScore, checkAllArticlesForDecay } = require('../lib/link-decay');
+
 const cheerio = require('cheerio');
 
 // ============================================================================
@@ -204,7 +219,8 @@ function insertLinksIntoContent(html, links) {
         const regex = new RegExp(`(${escapedAnchor})(?![^<]*>)`, 'i');
 
         if (regex.test(html)) {
-          const newHtml = html.replace(regex, `<a href="${link.url}">$1</a>`);
+          // v2.1: Add Schema.org itemprop for SEO - signals semantic relationship to search engines
+          const newHtml = html.replace(regex, `<a href="${link.url}" itemprop="relatedLink">$1</a>`);
           $el.html(newHtml);
           inserted = true;
         }
@@ -237,6 +253,10 @@ module.exports = async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', process.env.ALLOWED_ORIGIN || '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+  // Edge caching headers for Vercel Edge Network
+  // Cache successful responses for 5 minutes, stale-while-revalidate for 1 hour
+  res.setHeader('Cache-Control', 's-maxage=300, stale-while-revalidate=3600');
 
   if (req.method === 'OPTIONS') {
     return res.status(200).end();
@@ -401,6 +421,20 @@ async function processSmartLinkRequest(params) {
     };
   }
 
+  // Early exit for fully-linked posts - skip expensive analysis
+  const existingLinks = extractExistingLinks(content);
+  const existingSmartLinks = existingLinks.filter(l => l.url && !l.url.startsWith('http://') || l.url.includes(process.env.SITE_DOMAIN || 'lendcity'));
+  if (existingSmartLinks.length >= maxLinks) {
+    console.log(`Skipping smart linking for post ${postId} - already has ${existingSmartLinks.length} links (max: ${maxLinks})`);
+    return {
+      success: true,
+      links: [],
+      message: `Post already has ${existingSmartLinks.length} internal links (max: ${maxLinks})`,
+      skipped: true,
+      existingLinkCount: existingSmartLinks.length
+    };
+  }
+
   // Step 1: Generate embedding for source content (Perf #9 - caching in embeddings.js)
   const contentText = extractBodyText(content);
   const embedding = await generateEmbedding(`${title || ''} ${contentText}`);
@@ -441,10 +475,61 @@ async function processSmartLinkRequest(params) {
     };
   }
 
+  // Step 3.5: Apply advanced scoring enhancements (v2.1)
+  const enhancedRecommendations = recommendations.map(rec => {
+    const target = rec.candidate;
+    let enhancedScore = rec.totalScore;
+    const enhancements = [];
+
+    // Apply seasonal boosting
+    const seasonalData = calculateSeasonalScore(target);
+    if (seasonalData.isSeasonallyRelevant) {
+      enhancedScore *= seasonalData.boostMultiplier;
+      enhancements.push({ type: 'seasonal', boost: seasonalData.boostMultiplier, topics: seasonalData.matchedTopics });
+    }
+
+    // Apply decay scoring (fresher content scores higher)
+    const decayScore = getDecayScore(target);
+    enhancedScore += decayScore;
+    enhancements.push({ type: 'freshness', score: decayScore });
+
+    // Apply E-E-A-T scoring
+    const eeatData = getEEATScore(postId, target.postId, target);
+    enhancedScore += eeatData.score;
+    if (eeatData.factors.length > 0) {
+      enhancements.push({ type: 'eeat', score: eeatData.score, factors: eeatData.factors });
+    }
+
+    // Apply link velocity check (penalize if too aggressive)
+    const velocityData = getLinkVelocityScore(postId);
+    enhancedScore += velocityData.score;
+    if (velocityData.status !== 'healthy') {
+      enhancements.push({ type: 'velocity', score: velocityData.score, status: velocityData.status });
+    }
+
+    return {
+      ...rec,
+      totalScore: Math.round(enhancedScore),
+      enhancements,
+      seasonalBoost: seasonalData.isSeasonallyRelevant ? seasonalData.boostMultiplier : 1.0
+    };
+  });
+
+  // Re-sort by enhanced scores
+  enhancedRecommendations.sort((a, b) => b.totalScore - a.totalScore);
+
+  // Apply semantic clustering for balanced recommendations
+  const { recommendations: balancedRecs, distribution, isBalanced } = getBalancedRecommendations(
+    enhancedRecommendations,
+    { maxLinks: maxLinks * 2 }
+  );
+
   // Step 4: Claude analysis with preprocessed content (Perf #4)
   let finalLinks = [];
+  // Use balanced recommendations for better funnel coverage
+  const recsToAnalyze = balancedRecs.length > 0 ? balancedRecs : enhancedRecommendations;
 
-  if (useClaudeAnalysis && recommendations.length > 0) {
+  if (useClaudeAnalysis && recsToAnalyze.length > 0) {
     // Preprocess content for Claude (Perf #4)
     const processedContent = preprocessContent(content);
 
@@ -454,16 +539,18 @@ async function processSmartLinkRequest(params) {
     // Ask Claude to analyze and select best placements
     const analysis = await analyzeContentForLinking(
       processedContent, // Use preprocessed content
-      recommendations.map(r => ({
+      recsToAnalyze.map(r => ({
         ...r.candidate,
-        score: r.totalScore
+        score: r.totalScore,
+        enhancements: r.enhancements,
+        seasonalBoost: r.seasonalBoost
       })),
       { maxLinks, existingLinks }
     );
 
     // Step 5: Calculate SEO scores IN PARALLEL (Perf #14)
     const seoPromises = analysis.links.map(async (link) => {
-      const rec = recommendations[link.candidateIndex];
+      const rec = recsToAnalyze[link.candidateIndex];
 
       let seoData = null;
       if (includeSEOMetrics) {
@@ -514,18 +601,20 @@ async function processSmartLinkRequest(params) {
     finalLinks = finalLinks.slice(0, maxLinks);
 
   } else {
-    // Without Claude, just use top recommendations with title as anchor
-    finalLinks = recommendations.slice(0, maxLinks).map(rec => ({
+    // Without Claude, use balanced enhanced recommendations with title as anchor
+    finalLinks = recsToAnalyze.slice(0, maxLinks).map(rec => ({
       postId: rec.candidate.postId,
       title: rec.candidate.title,
       url: rec.candidate.url,
       topicCluster: rec.candidate.topicCluster,
       contentType: rec.candidate.contentType || 'post',
+      funnelStage: rec.candidate.funnelStage,
       score: rec.totalScore,
       scoreBreakdown: rec.breakdown,
+      enhancements: rec.enhancements,
       anchorText: rec.candidate.title,
       placement: null,
-      reasoning: 'Top-scored by hybrid algorithm',
+      reasoning: 'Top-scored by enhanced hybrid algorithm (v2.1)',
       seo: null
     }));
   }
@@ -535,7 +624,20 @@ async function processSmartLinkRequest(params) {
   if (autoInsert && finalLinks.length > 0) {
     linkedContent = insertLinksIntoContent(content, finalLinks);
 
-    // Track anchor usage in parallel
+    // Use batch incremental cache update (faster than individual updates)
+    batchIncrementalCacheUpdate(finalLinks.map(link => ({
+      sourceId: postId,
+      targetId: link.postId,
+      anchorText: link.anchorText,
+      targetMeta: { title: link.title, topicCluster: link.topicCluster }
+    })));
+
+    // Track link velocity (v2.1 - prevents over-optimization)
+    for (const link of finalLinks) {
+      trackLinkVelocity(postId, link.postId);
+    }
+
+    // Track in Pinecone in parallel (async persistence)
     const trackingPromises = finalLinks.map(link =>
       Promise.all([
         incrementInboundLinks(link.postId),
@@ -543,7 +645,10 @@ async function processSmartLinkRequest(params) {
       ])
     );
 
-    await Promise.all(trackingPromises);
+    // Don't await - let persistence happen in background
+    Promise.all(trackingPromises).catch(err =>
+      console.error('Background tracking error:', err.message)
+    );
   }
 
   // Get site-wide SEO metrics if requested
@@ -551,6 +656,9 @@ async function processSmartLinkRequest(params) {
   if (includeSEOMetrics) {
     seoMetrics = await getSitewideSEOMetrics();
   }
+
+  // Get velocity report
+  const velocityReport = getLinkVelocityScore(postId);
 
   return {
     success: true,
@@ -560,7 +668,11 @@ async function processSmartLinkRequest(params) {
       candidatesFound: totalCandidates,
       passedScoring: passedFilter,
       averageScore,
-      linksGenerated: finalLinks.length
+      linksGenerated: finalLinks.length,
+      // v2.1: Enhanced stats
+      funnelDistribution: distribution,
+      isBalanced,
+      velocityStatus: velocityReport.status
     },
     seoSummary: includeSEOMetrics ? {
       sitewideHealth: seoMetrics?.health || null,
@@ -568,6 +680,8 @@ async function processSmartLinkRequest(params) {
       anchorRatioHealth: seoMetrics?.anchors?.ratioHealth || 'unknown',
       reciprocalLinkRatio: seoMetrics?.links?.reciprocalRatio || 0,
       orphanPagesCount: seoMetrics?.orphanPages?.total || 0,
+      // v2.1: Enhanced SEO metrics
+      linkVelocity: velocityReport,
       recommendations: generateSEORecommendations(finalLinks, seoMetrics)
     } : null
   };
