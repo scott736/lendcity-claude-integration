@@ -207,20 +207,25 @@ $total_links = $smart_linker->get_total_link_count();
                     <div id="audit-total-links" style="font-size: 32px; font-weight: bold; color: #1565c0;">-</div>
                     <div style="font-size: 12px; color: #666;">Total Links</div>
                 </div>
-                <div style="text-align: center; padding: 15px; background: #ffebee; border-radius: 8px;">
+                <div class="audit-stat-card" data-filter="broken" style="text-align: center; padding: 15px; background: #ffebee; border-radius: 8px; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;" title="Click to view broken links">
                     <div id="audit-broken-links" style="font-size: 32px; font-weight: bold; color: #c62828;">-</div>
                     <div style="font-size: 12px; color: #666;">Broken</div>
                 </div>
-                <div style="text-align: center; padding: 15px; background: #fff3e0; border-radius: 8px;">
+                <div class="audit-stat-card" data-filter="suboptimal" style="text-align: center; padding: 15px; background: #fff3e0; border-radius: 8px; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;" title="Click to view suboptimal links">
                     <div id="audit-suboptimal-links" style="font-size: 32px; font-weight: bold; color: #ef6c00;">-</div>
                     <div style="font-size: 12px; color: #666;">Suboptimal</div>
                 </div>
-                <div style="text-align: center; padding: 15px; background: #f3e5f5; border-radius: 8px;">
+                <div class="audit-stat-card" data-filter="missing" style="text-align: center; padding: 15px; background: #f3e5f5; border-radius: 8px; cursor: pointer; transition: transform 0.2s, box-shadow 0.2s;" title="Click to view missing opportunities">
                     <div id="audit-missing-opps" style="font-size: 32px; font-weight: bold; color: #7b1fa2;">-</div>
                     <div style="font-size: 12px; color: #666;">Missing Opportunities</div>
                 </div>
             </div>
-            <div id="audit-issues-list" style="max-height: 300px; overflow-y: auto;"></div>
+            <div id="audit-filter-bar" style="display: none; margin-bottom: 10px; padding: 10px; background: #f5f5f5; border-radius: 4px;">
+                <span id="audit-filter-label" style="font-weight: bold;"></span>
+                <button type="button" id="audit-clear-filter" class="button button-small" style="margin-left: 10px;">Show All</button>
+                <button type="button" id="accept-all-missing" class="button button-small" style="margin-left: 10px; background: #7b1fa2; color: white; border: none; display: none;">✓ Accept All Suggestions</button>
+            </div>
+            <div id="audit-issues-list" style="max-height: 400px; overflow-y: auto;"></div>
         </div>
     </div>
     <?php else: ?>
@@ -700,43 +705,78 @@ jQuery(document).ready(function($) {
                     $('#audit-suboptimal-links').text(aggregatedStats.suboptimalLinks);
                     $('#audit-missing-opps').text(aggregatedStats.missingOpportunities);
 
+                    // Store issues globally for fix actions and filtering
+                    window.auditIssues = allIssues;
+                    window.currentFilter = null;
+
                     // Build issues list with action buttons
+                    function buildIssuesTable(issues, filterType) {
+                        var filteredIssues = filterType
+                            ? issues.filter(function(i) { return i.type === filterType; })
+                            : issues;
+
+                        if (filteredIssues.length === 0) {
+                            return '<p style="color: #666; text-align: center; padding: 20px;">No ' + (filterType || '') + ' issues found.</p>';
+                        }
+
+                        var html = '<table style="width: 100%; border-collapse: collapse; font-size: 13px;" id="audit-issues-table">';
+                        html += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Type</th><th style="padding: 8px; text-align: left;">Post</th><th style="padding: 8px; text-align: left;">Details</th><th style="padding: 8px; text-align: center;">Actions</th></tr>';
+
+                        filteredIssues.slice(0, 100).forEach(function(issue) {
+                            var origIndex = issues.indexOf(issue);
+                            var typeColor = issue.type === 'broken' ? '#c62828' : (issue.type === 'suboptimal' ? '#ef6c00' : '#7b1fa2');
+                            var typeLabel = issue.type === 'missing' ? 'OPPORTUNITY' : issue.type.toUpperCase();
+                            var details = '';
+                            var actions = '';
+
+                            if (issue.type === 'broken') {
+                                details = 'Anchor: "' + escapeHtml(issue.anchor) + '" → ' + escapeHtml(issue.url);
+                                actions = '<button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="remove_broken" style="background: #dc3545; color: white; border: none;">Remove Link</button>';
+                                actions += ' <button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="ignore" style="background: #6c757d; color: white; border: none;">Ignore</button>';
+                            } else if (issue.type === 'suboptimal') {
+                                details = 'Current: ' + escapeHtml(issue.currentTarget) + ' → Better: ' + escapeHtml(issue.betterOption);
+                                actions = '<button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="swap_link" style="background: #28a745; color: white; border: none;">Accept Better</button>';
+                                actions += ' <button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="ignore" style="background: #6c757d; color: white; border: none;">Ignore</button>';
+                            } else if (issue.type === 'missing') {
+                                details = 'Add link to: <strong>' + escapeHtml(issue.targetTitle) + '</strong>';
+                                if (issue.topicCluster) {
+                                    details += ' <span style="background: #e8f5e9; padding: 2px 6px; border-radius: 3px; font-size: 11px;">' + escapeHtml(issue.topicCluster) + '</span>';
+                                }
+                                details += '<br><span style="color: #666; font-size: 11px;">' + escapeHtml(issue.reason) + '</span>';
+                                actions = '<button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="accept_opportunity" style="background: #7b1fa2; color: white; border: none;">Accept</button>';
+                                actions += ' <button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="decline_opportunity" style="background: #6c757d; color: white; border: none;">Decline</button>';
+                            }
+
+                            html += '<tr id="issue-row-' + origIndex + '" data-type="' + issue.type + '" style="border-bottom: 1px solid #eee;">';
+                            html += '<td style="padding: 8px;"><span style="color: ' + typeColor + '; font-weight: bold;">' + typeLabel + '</span></td>';
+                            html += '<td style="padding: 8px;"><a href="post.php?post=' + issue.postId + '&action=edit" target="_blank">' + escapeHtml(issue.postTitle) + '</a></td>';
+                            html += '<td style="padding: 8px; font-size: 12px;">' + details + '</td>';
+                            html += '<td style="padding: 8px; text-align: center; white-space: nowrap;">' + actions + '</td>';
+                            html += '</tr>';
+                        });
+                        html += '</table>';
+                        if (filteredIssues.length > 100) {
+                            html += '<p style="color: #666; font-size: 12px;">Showing first 100 of ' + filteredIssues.length + ' items.</p>';
+                        }
+                        return html;
+                    }
+
                     var issuesHtml = '';
                     if (allIssues.length > 0) {
-                        // Store issues globally for fix actions
-                        window.auditIssues = allIssues;
-
-                        issuesHtml = '<table style="width: 100%; border-collapse: collapse; font-size: 13px;" id="audit-issues-table">';
-                        issuesHtml += '<tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Type</th><th style="padding: 8px; text-align: left;">Post</th><th style="padding: 8px; text-align: left;">Details</th><th style="padding: 8px; text-align: center;">Actions</th></tr>';
-                        allIssues.slice(0, 50).forEach(function(issue, index) {
-                            var typeColor = issue.type === 'broken' ? '#c62828' : '#ef6c00';
-                            var details = issue.type === 'broken'
-                                ? 'Anchor: "' + escapeHtml(issue.anchor) + '" → ' + escapeHtml(issue.url)
-                                : 'Current: ' + escapeHtml(issue.currentTarget) + ' → Better: ' + escapeHtml(issue.betterOption);
-
-                            var actions = '';
-                            if (issue.type === 'broken') {
-                                actions = '<button class="button button-small fix-link-btn" data-index="' + index + '" data-action="remove_broken" style="background: #dc3545; color: white; border: none;">Remove Link</button>';
-                            } else {
-                                actions = '<button class="button button-small fix-link-btn" data-index="' + index + '" data-action="swap_link" style="background: #28a745; color: white; border: none;">Accept Better</button>';
-                            }
-                            actions += ' <button class="button button-small fix-link-btn" data-index="' + index + '" data-action="ignore" style="background: #6c757d; color: white; border: none;">Ignore</button>';
-
-                            issuesHtml += '<tr id="issue-row-' + index + '" style="border-bottom: 1px solid #eee;">';
-                            issuesHtml += '<td style="padding: 8px;"><span style="color: ' + typeColor + '; font-weight: bold;">' + issue.type.toUpperCase() + '</span></td>';
-                            issuesHtml += '<td style="padding: 8px;"><a href="post.php?post=' + issue.postId + '&action=edit" target="_blank">' + escapeHtml(issue.postTitle) + '</a></td>';
-                            issuesHtml += '<td style="padding: 8px; font-size: 12px;">' + details + '</td>';
-                            issuesHtml += '<td style="padding: 8px; text-align: center; white-space: nowrap;">' + actions + '</td>';
-                            issuesHtml += '</tr>';
-                        });
-                        issuesHtml += '</table>';
-                        if (allIssues.length > 50) {
-                            issuesHtml += '<p style="color: #666; font-size: 12px;">Showing first 50 of ' + allIssues.length + ' issues.</p>';
+                        // Initially show only broken and suboptimal (not missing - user must click to see those)
+                        var initialIssues = allIssues.filter(function(i) { return i.type !== 'missing'; });
+                        if (initialIssues.length > 0) {
+                            issuesHtml = buildIssuesTable(initialIssues, null);
+                        } else {
+                            issuesHtml = '<p style="color: #2e7d32; text-align: center; padding: 20px;">✅ No broken or suboptimal links! Click "Missing Opportunities" above to see suggested links to add.</p>';
                         }
                     } else {
                         issuesHtml = '<p style="color: #2e7d32; text-align: center; padding: 20px;">✅ No issues found! All links are healthy.</p>';
                     }
                     $('#audit-issues-list').html(issuesHtml);
+
+                    // Store buildIssuesTable globally for filtering
+                    window.buildIssuesTable = buildIssuesTable;
 
                     $results.show();
                     $btn.prop('disabled', false).text('🔍 Audit Links');
@@ -814,6 +854,125 @@ jQuery(document).ready(function($) {
         });
     });
 
+    // Stat Card Click Handler - Filter issues by type
+    $(document).on('click', '.audit-stat-card', function() {
+        var filterType = $(this).data('filter');
+        var filterLabels = {
+            'broken': 'Showing Broken Links',
+            'suboptimal': 'Showing Suboptimal Links',
+            'missing': 'Showing Missing Opportunities'
+        };
+
+        if (!window.auditIssues) return;
+
+        window.currentFilter = filterType;
+        $('#audit-filter-label').text(filterLabels[filterType] || 'Filtered');
+        $('#audit-filter-bar').show();
+
+        // Show/hide Accept All button only for missing opportunities
+        if (filterType === 'missing') {
+            $('#accept-all-missing').show();
+        } else {
+            $('#accept-all-missing').hide();
+        }
+
+        // Highlight active card
+        $('.audit-stat-card').css({ 'transform': '', 'box-shadow': '' });
+        $(this).css({ 'transform': 'scale(1.05)', 'box-shadow': '0 4px 12px rgba(0,0,0,0.15)' });
+
+        // Rebuild table with filter
+        var html = window.buildIssuesTable(window.auditIssues, filterType);
+        $('#audit-issues-list').html(html);
+    });
+
+    // Clear Filter Handler
+    $('#audit-clear-filter').on('click', function() {
+        window.currentFilter = null;
+        $('#audit-filter-bar').hide();
+        $('.audit-stat-card').css({ 'transform': '', 'box-shadow': '' });
+
+        // Show broken + suboptimal only (not missing)
+        var initialIssues = window.auditIssues.filter(function(i) { return i.type !== 'missing'; });
+        var html = initialIssues.length > 0
+            ? window.buildIssuesTable(initialIssues, null)
+            : '<p style="color: #2e7d32; text-align: center; padding: 20px;">✅ No broken or suboptimal links!</p>';
+        $('#audit-issues-list').html(html);
+    });
+
+    // Accept All Missing Opportunities Handler
+    $('#accept-all-missing').on('click', function() {
+        var missingIssues = window.auditIssues.filter(function(i) { return i.type === 'missing'; });
+        var pendingRows = [];
+
+        // Find rows that haven't been processed yet
+        missingIssues.forEach(function(issue) {
+            var idx = window.auditIssues.indexOf(issue);
+            var $row = $('#issue-row-' + idx);
+            if ($row.find('.fix-link-btn').length > 0) {
+                pendingRows.push({ issue: issue, index: idx });
+            }
+        });
+
+        if (pendingRows.length === 0) {
+            alert('No pending opportunities to accept.');
+            return;
+        }
+
+        if (!confirm('Accept all ' + pendingRows.length + ' missing link opportunities?\n\nThis will trigger smart linking for each source post to add the suggested links.')) {
+            return;
+        }
+
+        var $btn = $(this);
+        $btn.prop('disabled', true).text('Processing...');
+
+        var processed = 0;
+        var succeeded = 0;
+
+        function processNext() {
+            if (processed >= pendingRows.length) {
+                $btn.prop('disabled', false).text('✓ Accept All Suggestions');
+                alert('Completed! ' + succeeded + ' of ' + pendingRows.length + ' opportunities accepted.');
+                // Update counter
+                var currentMissing = parseInt($('#audit-missing-opps').text()) || 0;
+                $('#audit-missing-opps').text(Math.max(0, currentMissing - succeeded));
+                return;
+            }
+
+            var item = pendingRows[processed];
+            var $row = $('#issue-row-' + item.index);
+            $row.find('.fix-link-btn').prop('disabled', true);
+
+            $.post(ajaxurl, {
+                action: 'lendcity_accept_opportunity',
+                nonce: linkAuditNonce,
+                post_id: item.issue.postId,
+                target_post_id: item.issue.targetPostId,
+                target_url: item.issue.targetUrl,
+                target_title: item.issue.targetTitle
+            }, function(response) {
+                if (response.success) {
+                    succeeded++;
+                    $row.css('background', '#d4edda');
+                    $row.find('.fix-link-btn').remove();
+                    $row.find('td:last').html('<span style="color: #28a745; font-weight: bold;">✓ Accepted</span>');
+                } else {
+                    $row.css('background', '#f8d7da');
+                    $row.find('td:last').html('<span style="color: #c62828;">✗ Failed</span>');
+                }
+                processed++;
+                $btn.text('Processing ' + processed + '/' + pendingRows.length + '...');
+                setTimeout(processNext, 300);
+            }).fail(function() {
+                $row.css('background', '#f8d7da');
+                $row.find('td:last').html('<span style="color: #c62828;">✗ Failed</span>');
+                processed++;
+                setTimeout(processNext, 300);
+            });
+        }
+
+        processNext();
+    });
+
     // Fix Link Button Handler (delegated for dynamically added buttons)
     $(document).on('click', '.fix-link-btn', function() {
         var $btn = $(this);
@@ -834,6 +993,10 @@ jQuery(document).ready(function($) {
             confirmMsg = 'Change the link target from:\n"' + issue.currentTarget + '"\nto:\n"' + issue.betterOption + '"?';
         } else if (action === 'ignore') {
             confirmMsg = 'Ignore this issue?';
+        } else if (action === 'accept_opportunity') {
+            confirmMsg = 'Add a link to "' + issue.targetTitle + '" in this post?\n\nThis will trigger smart linking to find the best anchor text.';
+        } else if (action === 'decline_opportunity') {
+            confirmMsg = 'Decline this suggestion?';
         }
 
         if (!confirm(confirmMsg)) {
@@ -841,6 +1004,51 @@ jQuery(document).ready(function($) {
         }
 
         $btn.prop('disabled', true).text('...');
+
+        // Handle accept/decline opportunity differently
+        if (action === 'accept_opportunity') {
+            $.post(ajaxurl, {
+                action: 'lendcity_accept_opportunity',
+                nonce: linkAuditNonce,
+                post_id: issue.postId,
+                target_post_id: issue.targetPostId,
+                target_url: issue.targetUrl,
+                target_title: issue.targetTitle
+            }, function(response) {
+                var $row = $('#issue-row-' + index);
+                if (response.success) {
+                    $row.css('background', '#d4edda');
+                    $row.find('.fix-link-btn').remove();
+                    $row.find('td:last').html('<span style="color: #28a745; font-weight: bold;">✓ Accepted</span>');
+                    // Update counter
+                    var currentMissing = parseInt($('#audit-missing-opps').text()) || 0;
+                    if (currentMissing > 0) {
+                        $('#audit-missing-opps').text(currentMissing - 1);
+                    }
+                } else {
+                    alert('Error: ' + (response.data?.message || 'Failed to add link'));
+                    $btn.prop('disabled', false).text('Accept');
+                }
+            }).fail(function() {
+                alert('Request failed. Please try again.');
+                $btn.prop('disabled', false).text('Accept');
+            });
+            return;
+        }
+
+        if (action === 'decline_opportunity') {
+            // Just hide the row - no server action needed
+            var $row = $('#issue-row-' + index);
+            $row.css('background', '#f5f5f5');
+            $row.find('.fix-link-btn').remove();
+            $row.find('td:last').html('<span style="color: #666;">Declined</span>');
+            // Update counter
+            var currentMissing = parseInt($('#audit-missing-opps').text()) || 0;
+            if (currentMissing > 0) {
+                $('#audit-missing-opps').text(currentMissing - 1);
+            }
+            return;
+        }
 
         var postData = {
             action: 'lendcity_fix_link',

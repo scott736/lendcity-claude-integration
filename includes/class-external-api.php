@@ -1141,6 +1141,23 @@ function lendcity_audit_chunk() {
                     ];
                 }
             }
+
+            // Missing opportunities (suggested new links)
+            if (!empty($a['suggestions']['missing'])) {
+                foreach ($a['suggestions']['missing'] as $missing) {
+                    $results['issues'][] = [
+                        'type' => 'missing',
+                        'postId' => $post_id,
+                        'postTitle' => $post->post_title,
+                        'targetPostId' => $missing['postId'] ?? 0,
+                        'targetTitle' => $missing['title'] ?? '',
+                        'targetUrl' => $missing['url'] ?? '',
+                        'topicCluster' => $missing['topicCluster'] ?? '',
+                        'score' => $missing['score'] ?? 0,
+                        'reason' => $missing['reason'] ?? ''
+                    ];
+                }
+            }
         }
     }
 
@@ -1223,6 +1240,183 @@ function lendcity_fix_link() {
     } else {
         wp_send_json_error(['message' => 'Could not find the link to fix. The content may have changed.']);
     }
+}
+
+/**
+ * AJAX handler: Accept a missed link opportunity
+ * This triggers smart linking for the source post to add the suggested link
+ */
+add_action('wp_ajax_lendcity_accept_opportunity', 'lendcity_accept_opportunity');
+
+function lendcity_accept_opportunity() {
+    check_ajax_referer('lendcity_link_audit', 'nonce');
+
+    if (!current_user_can('edit_posts')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $post_id = isset($_POST['post_id']) ? intval($_POST['post_id']) : 0;
+    $target_post_id = isset($_POST['target_post_id']) ? intval($_POST['target_post_id']) : 0;
+    $target_url = isset($_POST['target_url']) ? esc_url_raw($_POST['target_url']) : '';
+    $target_title = isset($_POST['target_title']) ? sanitize_text_field($_POST['target_title']) : '';
+
+    if (!$post_id || !$target_url) {
+        wp_send_json_error(['message' => 'Missing required parameters']);
+    }
+
+    $post = get_post($post_id);
+    if (!$post) {
+        wp_send_json_error(['message' => 'Source post not found']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'External API not configured']);
+    }
+
+    // Get link suggestions specifically asking for this target
+    $content = $post->post_content;
+    $suggestions = $api->get_smart_links($post_id, $content, [
+        'max_links' => 5,
+        'min_score' => 30, // Lower threshold to increase chance of finding the specific link
+        'use_claude' => true,
+        'preferred_targets' => [$target_url] // Hint to API about preferred target
+    ]);
+
+    if (is_wp_error($suggestions)) {
+        wp_send_json_error(['message' => 'API error: ' . $suggestions->get_error_message()]);
+    }
+
+    // Check if we got the specific link we wanted
+    $found_target = false;
+    $link_added = false;
+
+    if (!empty($suggestions['links'])) {
+        $link_meta = get_post_meta($post_id, '_lendcity_smart_links', true) ?: [];
+        $updated_content = $content;
+
+        foreach ($suggestions['links'] as $suggestion) {
+            // Check if this is our target or any valid suggestion
+            $is_our_target = ($suggestion['url'] === $target_url) ||
+                             (isset($suggestion['postId']) && $suggestion['postId'] == $target_post_id);
+
+            if (empty($suggestion['anchorText']) || empty($suggestion['url'])) {
+                continue;
+            }
+
+            // Skip if already linked to this URL
+            $already_linked = false;
+            foreach ($link_meta as $existing) {
+                if ($existing['url'] === $suggestion['url']) {
+                    $already_linked = true;
+                    if ($suggestion['url'] === $target_url) {
+                        $found_target = true; // Already have this link
+                    }
+                    break;
+                }
+            }
+            if ($already_linked) continue;
+
+            // If this is our target, prioritize it
+            if ($is_our_target || !$link_added) {
+                $anchor = $suggestion['anchorText'];
+                $url = $suggestion['url'];
+
+                // Find and replace anchor text with link
+                $pattern = '/(?<!["\'>])(' . preg_quote($anchor, '/') . ')(?![^<]*>)(?![^<]*<\/a>)/i';
+                $replacement = '<a href="' . esc_url($url) . '">' . $anchor . '</a>';
+
+                $new_content = preg_replace($pattern, $replacement, $updated_content, 1, $count);
+
+                if ($count > 0) {
+                    $updated_content = $new_content;
+                    $link_meta[] = [
+                        'link_id' => uniqid('lnk_'),
+                        'anchor' => $anchor,
+                        'url' => $url,
+                        'target_id' => $suggestion['postId'] ?? $target_post_id,
+                        'score' => $suggestion['score'] ?? 0,
+                        'created' => current_time('mysql'),
+                        'source' => 'opportunity_accept'
+                    ];
+                    $link_added = true;
+
+                    if ($is_our_target) {
+                        $found_target = true;
+                        break; // Got our target, stop
+                    }
+                }
+            }
+        }
+
+        if ($link_added) {
+            wp_update_post([
+                'ID' => $post_id,
+                'post_content' => $updated_content
+            ]);
+            update_post_meta($post_id, '_lendcity_smart_links', $link_meta);
+
+            wp_send_json_success([
+                'message' => $found_target
+                    ? 'Link to "' . $target_title . '" added successfully'
+                    : 'A related link was added (target not found in content)',
+                'found_target' => $found_target
+            ]);
+        }
+    }
+
+    // If no link was added via API, try to find anchor text for manual insertion
+    if (!$link_added) {
+        // Try to find a suitable anchor text based on the target title
+        $title_words = explode(' ', $target_title);
+        $potential_anchors = [];
+
+        // Generate potential anchor texts from title
+        for ($len = min(5, count($title_words)); $len >= 2; $len--) {
+            for ($i = 0; $i <= count($title_words) - $len; $i++) {
+                $potential_anchors[] = implode(' ', array_slice($title_words, $i, $len));
+            }
+        }
+
+        $link_meta = get_post_meta($post_id, '_lendcity_smart_links', true) ?: [];
+        $updated_content = $content;
+
+        foreach ($potential_anchors as $anchor) {
+            if (stripos($content, $anchor) !== false) {
+                // Check it's not already a link
+                $pattern = '/(?<!["\'>])(' . preg_quote($anchor, '/') . ')(?![^<]*>)(?![^<]*<\/a>)/i';
+                $replacement = '<a href="' . esc_url($target_url) . '">' . $anchor . '</a>';
+
+                $new_content = preg_replace($pattern, $replacement, $updated_content, 1, $count);
+
+                if ($count > 0) {
+                    $updated_content = $new_content;
+                    $link_meta[] = [
+                        'link_id' => uniqid('lnk_'),
+                        'anchor' => $anchor,
+                        'url' => $target_url,
+                        'target_id' => $target_post_id,
+                        'score' => 50,
+                        'created' => current_time('mysql'),
+                        'source' => 'opportunity_accept_fallback'
+                    ];
+
+                    wp_update_post([
+                        'ID' => $post_id,
+                        'post_content' => $updated_content
+                    ]);
+                    update_post_meta($post_id, '_lendcity_smart_links', $link_meta);
+
+                    wp_send_json_success([
+                        'message' => 'Link added using anchor: "' . $anchor . '"',
+                        'anchor_used' => $anchor
+                    ]);
+                }
+            }
+        }
+    }
+
+    wp_send_json_error(['message' => 'Could not find suitable anchor text in the post for this link']);
 }
 
 /**
