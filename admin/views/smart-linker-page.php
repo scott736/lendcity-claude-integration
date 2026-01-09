@@ -1399,22 +1399,26 @@ jQuery(document).ready(function($) {
         var $row = $btn.closest('tr');
         var linkId = $row.data('link-id');
         var sourceId = $row.data('source-id');
-        
+        var linkUrl = $row.data('current-url');
+        var linkAnchor = $row.find('td:eq(1) code').text(); // Get anchor from the code element
+
         if (!confirm('Delete this link?')) return;
-        
+
         $btn.prop('disabled', true).text('...');
-        
+
         $.post(ajaxurl, {
             action: 'lendcity_action', sub_action: 'remove_single_link',
             nonce: nonce,
             post_id: sourceId,
-            link_id: linkId
+            link_id: linkId,
+            link_url: linkUrl,
+            link_anchor: linkAnchor
         }, function(r) {
             if (r.success) {
                 $row.fadeOut(300, function() { $(this).remove(); });
             } else {
                 alert('Error: ' + (r.data || 'Failed to delete'));
-                $btn.prop('disabled', false).text('✕ Delete');
+                $btn.prop('disabled', false).text('✕');
             }
         });
     });

@@ -3166,6 +3166,82 @@ class LendCity_Smart_Linker {
     }
 
     /**
+     * Remove a link by URL and/or anchor text (fallback method)
+     */
+    public function remove_link_by_url($post_id, $url = '', $anchor = '') {
+        $post = get_post($post_id);
+        if (!$post) return false;
+
+        $content = $post->post_content;
+        $new_content = $content;
+        $site_url = home_url();
+
+        // Build URL variations
+        $url_variations = array();
+        if ($url) {
+            $url_variations[] = $url;
+            if (strpos($url, '/') === 0) {
+                $url_variations[] = $site_url . $url;
+                $url_variations[] = rtrim($site_url, '/') . $url;
+            }
+            if (strpos($url, $site_url) === 0) {
+                $url_variations[] = str_replace($site_url, '', $url);
+            }
+            $url_variations[] = rtrim($url, '/');
+            $url_variations[] = rtrim($url, '/') . '/';
+        }
+        $url_variations = array_unique(array_filter($url_variations));
+
+        // Try each URL variation
+        foreach ($url_variations as $try_url) {
+            if ($new_content !== $content) break;
+
+            // Try with data-claude-link
+            $pattern = '/<a\s[^>]*data-claude-link="1"[^>]*href="' . preg_quote($try_url, '/') . '"[^>]*>(.*?)<\/a>/is';
+            $new_content = preg_replace($pattern, '$1', $content, 1);
+
+            // Try any link with this URL
+            if ($new_content === $content) {
+                $pattern = '/<a\s[^>]*href="' . preg_quote($try_url, '/') . '"[^>]*>(.*?)<\/a>/is';
+                $new_content = preg_replace($pattern, '$1', $content, 1);
+            }
+        }
+
+        // Try by anchor text as last resort
+        if ($new_content === $content && $anchor) {
+            // Try with data-claude-link and anchor
+            $pattern = '/<a\s[^>]*data-claude-link="1"[^>]*>' . preg_quote($anchor, '/') . '<\/a>/is';
+            $new_content = preg_replace($pattern, $anchor, $content, 1);
+
+            // Try any link with this exact anchor
+            if ($new_content === $content) {
+                $pattern = '/<a\s[^>]+>' . preg_quote($anchor, '/') . '<\/a>/is';
+                $new_content = preg_replace($pattern, $anchor, $content, 1);
+            }
+        }
+
+        if ($new_content !== $content) {
+            wp_update_post(array('ID' => $post_id, 'post_content' => $new_content));
+
+            // Also remove from meta if URL matches
+            $links = $this->get_post_links($post_id);
+            $links = array_filter($links, function($l) use ($url, $anchor, $url_variations) {
+                $link_url = $l['url'] ?? '';
+                $link_anchor = $l['anchor'] ?? '';
+                // Remove if URL matches any variation OR anchor matches
+                if ($url && in_array($link_url, $url_variations)) return false;
+                if ($anchor && $link_anchor === $anchor) return false;
+                return true;
+            });
+            update_post_meta($post_id, $this->link_meta_key, array_values($links));
+            $this->clear_links_cache();
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
      * Remove ALL Claude links from a post
      */
     public function remove_all_links($post_id) {
