@@ -739,12 +739,38 @@ jQuery(document).ready(function($) {
                     if (issue.topicCluster) {
                         details += ' <span style="background: #e8f5e9; padding: 2px 6px; border-radius: 3px; font-size: 11px;">' + escapeHtml(issue.topicCluster) + '</span>';
                     }
+                    // Show anchor type badge (sentence, phrase, contextual)
+                    if (issue.anchorType) {
+                        var typeColors = { sentence: '#9c27b0', phrase: '#1976d2', contextual: '#00796b' };
+                        var typeLabels = { sentence: '📝 Sentence', phrase: '🔗 Phrase', contextual: '🎯 Contextual' };
+                        details += ' <span style="background: ' + (typeColors[issue.anchorType] || '#666') + '; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px;">' + (typeLabels[issue.anchorType] || issue.anchorType) + '</span>';
+                    }
+                    // Show position badge (intro, body, conclusion)
+                    if (issue.anchorPosition) {
+                        var posColors = { intro: '#2e7d32', body: '#757575', conclusion: '#1565c0' };
+                        details += ' <span style="background: ' + (posColors[issue.anchorPosition] || '#666') + '; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px; text-transform: uppercase;">' + issue.anchorPosition + '</span>';
+                    }
+                    // Show SEO quality signals
+                    if (issue.isNaturalLanguage) {
+                        details += ' <span style="background: #4caf50; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px;" title="Natural language anchor - better for SEO">✓ Natural</span>';
+                    }
+                    if (issue.isExactMatch) {
+                        details += ' <span style="background: #ff9800; color: white; padding: 2px 6px; border-radius: 3px; font-size: 10px;" title="Exact title match - use sparingly to avoid over-optimization">⚠ Exact Match</span>';
+                    }
                     // Show the anchor text that will be used
                     if (issue.anchorText) {
                         details += '<br><span style="color: #1565c0; font-size: 12px;">Anchor: "<strong>' + escapeHtml(issue.anchorText) + '</strong>"</span>';
                     }
+                    // Show matching keywords
+                    if (issue.matchingWords && issue.matchingWords.length > 0) {
+                        details += ' <span style="color: #666; font-size: 11px;">(keywords: ' + issue.matchingWords.join(', ') + ')</span>';
+                    }
                     if (issue.anchorContext) {
                         details += '<br><span style="color: #888; font-size: 11px; font-style: italic;">' + escapeHtml(issue.anchorContext) + '</span>';
+                    }
+                    // Show SEO reason
+                    if (issue.reason) {
+                        details += '<br><span style="color: #4527a0; font-size: 10px;">💡 ' + escapeHtml(issue.reason) + '</span>';
                     }
                     actions = '<button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="accept_opportunity" style="background: #7b1fa2; color: white; border: none;">Accept</button>';
                     actions += ' <button class="button button-small fix-link-btn" data-index="' + origIndex + '" data-action="decline_opportunity" style="background: #6c757d; color: white; border: none;">Decline</button>';

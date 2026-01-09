@@ -1174,11 +1174,27 @@ function lendcity_audit_chunk() {
                         'score' => $missing['score'] ?? 0,
                         'anchorText' => $missing['anchorText'] ?? '',
                         'anchorContext' => $missing['anchorContext'] ?? '',
+                        'anchorType' => $missing['anchorType'] ?? '',      // sentence, phrase, contextual
+                        'anchorPosition' => $missing['anchorPosition'] ?? '', // intro, body, conclusion
+                        'anchorScore' => $missing['anchorScore'] ?? 0,
+                        'matchingWords' => $missing['matchingWords'] ?? [],
+                        'isExactMatch' => $missing['isExactMatch'] ?? false,
+                        'isNaturalLanguage' => $missing['isNaturalLanguage'] ?? false,
                         'reason' => $missing['reason'] ?? ''
                     ];
                     $results['issues'][] = $issue;
                     $post_issues[] = $issue;
                 }
+            }
+
+            // Store SEO warnings if present
+            if (!empty($a['stats']['seoWarnings'])) {
+                $results['seoWarnings'] = array_merge(
+                    $results['seoWarnings'] ?? [],
+                    array_map(function($w) use ($post) {
+                        return $post->post_title . ': ' . $w;
+                    }, $a['stats']['seoWarnings'])
+                );
             }
         }
 
@@ -1447,6 +1463,14 @@ function lendcity_run_background_audit($post_id) {
                     'targetUrl' => $missing['url'] ?? '',
                     'topicCluster' => $missing['topicCluster'] ?? '',
                     'score' => $missing['score'] ?? 0,
+                    'anchorText' => $missing['anchorText'] ?? '',
+                    'anchorContext' => $missing['anchorContext'] ?? '',
+                    'anchorType' => $missing['anchorType'] ?? '',
+                    'anchorPosition' => $missing['anchorPosition'] ?? '',
+                    'anchorScore' => $missing['anchorScore'] ?? 0,
+                    'matchingWords' => $missing['matchingWords'] ?? [],
+                    'isExactMatch' => $missing['isExactMatch'] ?? false,
+                    'isNaturalLanguage' => $missing['isNaturalLanguage'] ?? false,
                     'reason' => $missing['reason'] ?? ''
                 ];
             }
