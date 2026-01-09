@@ -3081,29 +3081,65 @@ class LendCity_Smart_Linker {
 
         $content = $post->post_content;
         $new_content = $content;
+        $site_url = home_url();
 
         // Method 1: Try to remove by data-link-id
         $pattern = '/<a\s[^>]*data-link-id="' . preg_quote($link_id, '/') . '"[^>]*>(.*?)<\/a>/is';
         $new_content = preg_replace($pattern, '$1', $content);
 
-        // Method 2: Fallback - find URL from meta and remove by URL + data-claude-link
+        // Method 2: Fallback - find link info from meta
         if ($new_content === $content) {
             $links = $this->get_post_links($post_id);
+            $target_link = null;
             foreach ($links as $link) {
                 if (isset($link['link_id']) && $link['link_id'] === $link_id) {
-                    $url = $link['url'] ?? '';
-                    if ($url) {
-                        // Try with data-claude-link attribute
-                        $pattern = '/<a\s[^>]*data-claude-link="1"[^>]*href="' . preg_quote($url, '/') . '"[^>]*>(.*?)<\/a>/is';
-                        $new_content = preg_replace($pattern, '$1', $content, 1);
-
-                        // Method 3: Try ANY link with this URL (for manually added or legacy links)
-                        if ($new_content === $content) {
-                            $pattern = '/<a\s[^>]*href="' . preg_quote($url, '/') . '"[^>]*>(.*?)<\/a>/is';
-                            $new_content = preg_replace($pattern, '$1', $content, 1);
-                        }
-                    }
+                    $target_link = $link;
                     break;
+                }
+            }
+
+            if ($target_link) {
+                $url = $target_link['url'] ?? '';
+                $anchor = $target_link['anchor'] ?? '';
+
+                // Build list of URL variations to try
+                $url_variations = array();
+                if ($url) {
+                    $url_variations[] = $url;
+                    // If relative, also try with site URL
+                    if (strpos($url, '/') === 0) {
+                        $url_variations[] = $site_url . $url;
+                        $url_variations[] = rtrim($site_url, '/') . $url;
+                    }
+                    // If absolute, also try relative
+                    if (strpos($url, $site_url) === 0) {
+                        $url_variations[] = str_replace($site_url, '', $url);
+                    }
+                    // Try without trailing slash
+                    $url_variations[] = rtrim($url, '/');
+                    $url_variations[] = rtrim($url, '/') . '/';
+                }
+                $url_variations = array_unique($url_variations);
+
+                // Try each URL variation
+                foreach ($url_variations as $try_url) {
+                    if ($new_content !== $content) break;
+
+                    // Try with data-claude-link
+                    $pattern = '/<a\s[^>]*data-claude-link="1"[^>]*href="' . preg_quote($try_url, '/') . '"[^>]*>(.*?)<\/a>/is';
+                    $new_content = preg_replace($pattern, '$1', $content, 1);
+
+                    // Try any link with this URL
+                    if ($new_content === $content) {
+                        $pattern = '/<a\s[^>]*href="' . preg_quote($try_url, '/') . '"[^>]*>(.*?)<\/a>/is';
+                        $new_content = preg_replace($pattern, '$1', $content, 1);
+                    }
+                }
+
+                // Method 3: Last resort - match by anchor text
+                if ($new_content === $content && $anchor) {
+                    $pattern = '/<a\s[^>]*>(' . preg_quote($anchor, '/') . ')<\/a>/is';
+                    $new_content = preg_replace($pattern, '$1', $content, 1);
                 }
             }
         }
