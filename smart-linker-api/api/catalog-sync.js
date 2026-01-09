@@ -1,7 +1,13 @@
 const { upsertArticle, deleteArticle, getArticle, getPillarPages } = require('../lib/pinecone');
 const { generateArticleEmbedding } = require('../lib/embeddings');
 const { generateSummary, extractKeywords, autoAnalyzeArticle } = require('../lib/claude');
-const { enrichArticle, enrichArticleLight } = require('../lib/semantic-enrichment');
+const {
+  analyzeContentStructure,
+  calculateComprehensiveness,
+  extractLSIKeywords,
+  analyzeEEAT,
+  enrichArticle
+} = require('../lib/semantic-enrichment');
 
 /**
  * Catalog Sync Endpoint
@@ -146,34 +152,82 @@ async function handleSync(req, res) {
     keywords = await extractKeywords(content);
   }
 
-  // === NEW: Semantic Enrichment (v2.0) ===
-  // Perform full semantic enrichment including LSI keywords, section embeddings,
-  // linkable moments, content structure analysis, E-E-A-T, and pre-computed anchors
-  console.log(`Performing semantic enrichment for article ${postId}...`);
+  // === Semantic Enrichment (v2.2) ===
+  // Use LIGHT enrichment by default (fast, no extra API calls) to avoid timeouts
+  // Full AI enrichment available via fullEnrichment=true parameter
+  const { fullEnrichment = false } = req.body;
+
+  console.log(`Performing ${fullEnrichment ? 'FULL AI' : 'light'} semantic enrichment for article ${postId}...`);
 
   let enrichmentData = {};
   try {
-    // Use full enrichment for individual syncs (use enrichArticleLight for batch)
-    enrichmentData = await enrichArticle({
-      title,
-      content,
-      summary: articleSummary,
-      mainTopics: keywords.mainTopics,
-      semanticKeywords: keywords.semanticKeywords,
-      topicCluster: finalTopicCluster,
-      updatedAt: updatedAt || new Date().toISOString(),
-      publishedAt: publishedAt || new Date().toISOString()
-    }, {
-      generateSectionEmbed: true,     // Section-level embeddings
-      generateMultiVector: false,     // Skip multi-vector for single sync (expensive)
-      extractLSI: true,               // LSI keywords
-      detectLinkable: true,           // Linkable moments detection
-      analyzeStructure: true,         // Content structure (tables, FAQs, etc.)
-      analyzeEEATSignals: true,       // E-E-A-T analysis
-      extractAnchors: true,           // Pre-computed anchor phrases
-      useAI: true                     // Use Claude for better extraction
-    });
-    console.log(`Enrichment complete in ${enrichmentData.enrichmentTime}ms`);
+    if (fullEnrichment) {
+      // Full AI-powered enrichment (slower, ~10-15 sec, but more thorough)
+      // Only use when explicitly requested via fullEnrichment=true
+      enrichmentData = await enrichArticle({
+        title,
+        content,
+        summary: articleSummary,
+        mainTopics: keywords.mainTopics,
+        semanticKeywords: keywords.semanticKeywords,
+        topicCluster: finalTopicCluster,
+        updatedAt: updatedAt || new Date().toISOString(),
+        publishedAt: publishedAt || new Date().toISOString()
+      }, {
+        generateSectionEmbed: true,
+        generateMultiVector: false,
+        extractLSI: true,
+        detectLinkable: true,
+        analyzeStructure: true,
+        analyzeEEATSignals: true,
+        extractAnchors: true,
+        useAI: true
+      });
+      console.log(`Full enrichment complete in ${enrichmentData.enrichmentTime}ms`);
+    } else {
+      // Light enrichment (fast, <1 sec, no extra API calls) - DEFAULT
+      const contentStructure = analyzeContentStructure(content || '');
+      const comprehensiveness = calculateComprehensiveness(
+        content || '',
+        contentStructure,
+        keywords.mainTopics
+      );
+      const lsiKeywords = extractLSIKeywords(
+        content || '',
+        keywords.mainTopics,
+        finalTopicCluster
+      );
+      const eeatAnalysis = analyzeEEAT(content || '', {
+        updatedAt: updatedAt,
+        publishedAt: publishedAt
+      });
+
+      // Extract H2 topics from structure
+      const h2Regex = /<h2[^>]*>(.*?)<\/h2>/gi;
+      const h2Topics = [];
+      let match;
+      while ((match = h2Regex.exec(content || '')) !== null) {
+        const header = match[1].replace(/<[^>]*>/g, '').trim();
+        if (header) h2Topics.push(header);
+      }
+
+      enrichmentData = {
+        lsiKeywords,
+        questionKeywords: [],
+        contentStructure,
+        comprehensiveness,
+        eeatAnalysis,
+        h2Topics: h2Topics.slice(0, 15),
+        linkableMoments: [],
+        anchorPhrases: anchorPhrases || [],
+        primaryAnchor: '',
+        sections: [],
+        enrichedAt: new Date().toISOString(),
+        enrichmentTime: 0,
+        mode: 'light'
+      };
+      console.log(`Light enrichment complete`);
+    }
   } catch (enrichError) {
     console.error('Semantic enrichment failed (continuing with basic data):', enrichError.message);
   }

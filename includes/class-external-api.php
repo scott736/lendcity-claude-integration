@@ -27,8 +27,9 @@ class LendCity_External_API {
 
     /**
      * Request timeout in seconds
+     * v6.2: Increased to 60s for full semantic enrichment
      */
-    private $timeout = 30;
+    private $timeout = 60;
 
     /**
      * Batch timeout (longer for bulk operations)
@@ -542,6 +543,7 @@ class LendCity_External_API {
     /**
      * Sync article to external catalog (Pinecone)
      * v6.0: Sends raw content - Pinecone/Claude generates metadata
+     * v6.2: Enables full semantic enrichment for smarter linking
      *
      * @param int $post_id Post ID
      * @return array|WP_Error Result or error
@@ -552,7 +554,8 @@ class LendCity_External_API {
             return new WP_Error('invalid_post', 'Post not found');
         }
 
-        // v6.0: Send minimal data - Pinecone API will auto-analyze with Claude
+        // v6.2: Send data with full enrichment enabled
+        // Full enrichment extracts LSI keywords, anchor phrases, linkable moments, section embeddings
         $data = [
             'postId' => $post_id,
             'title' => $post->post_title,
@@ -562,7 +565,8 @@ class LendCity_External_API {
             'contentType' => $post->post_type,
             'isPillar' => (bool) get_post_meta($post_id, '_lendcity_is_pillar', true),
             'publishedAt' => $post->post_date,
-            'updatedAt' => $post->post_modified
+            'updatedAt' => $post->post_modified,
+            'fullEnrichment' => true  // v6.2: Enable full AI semantic enrichment
         ];
 
         return $this->request('api/catalog-sync', $data);
@@ -1025,11 +1029,34 @@ function lendcity_rebuild_catalog() {
 
 /**
  * Helper: Batch sync with chunking and retry logic
+ * v6.2: Changed default to 1 article at a time for full semantic enrichment
  */
-function lendcity_batch_sync_with_retry($api, $post_ids, $batch_size = 20) {
+function lendcity_batch_sync_with_retry($api, $post_ids, $batch_size = 1) {
     $results = ['success' => 0, 'failed' => 0, 'errors' => []];
 
-    // Process in batches
+    // v6.2: When batch_size is 1, use single sync (has full AI enrichment)
+    // This is slower but provides maximum SEO value per article
+    if ($batch_size === 1) {
+        foreach ($post_ids as $post_id) {
+            error_log("LendCity: Syncing article $post_id with full enrichment...");
+            $result = $api->sync_to_catalog($post_id);
+            if (is_wp_error($result)) {
+                $results['failed']++;
+                $post = get_post($post_id);
+                $results['errors'][] = [
+                    'type' => 'post',
+                    'postId' => $post_id,
+                    'title' => $post ? $post->post_title : 'Unknown',
+                    'error' => $result->get_error_message()
+                ];
+            } else {
+                $results['success']++;
+            }
+        }
+        return $results;
+    }
+
+    // Process in batches (for batch_size > 1, uses light enrichment)
     $batches = array_chunk($post_ids, $batch_size);
 
     foreach ($batches as $batch) {
