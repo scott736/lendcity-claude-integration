@@ -2,6 +2,7 @@
 /**
  * External Smart Linker API Client
  *
+ * v6.1: Added circuit breaker pattern and retry with exponential backoff
  * v6.0: Optimized for speed with batch operations
  * All metadata now lives in Pinecone - WordPress only stores pillar flags
  *
@@ -35,11 +36,39 @@ class LendCity_External_API {
     private $batch_timeout = 120;
 
     /**
+     * Circuit breaker state
+     */
+    private static $circuit_breaker = [
+        'failures' => 0,
+        'last_failure' => 0,
+        'state' => 'closed' // closed, open, half-open
+    ];
+
+    /**
+     * Circuit breaker thresholds
+     */
+    private const CB_FAILURE_THRESHOLD = 5;
+    private const CB_RESET_TIMEOUT = 60; // seconds
+    private const CB_HALF_OPEN_REQUESTS = 1;
+
+    /**
+     * Retry configuration
+     */
+    private const MAX_RETRIES = 3;
+    private const RETRY_BASE_DELAY = 1; // seconds (exponential: 1, 2, 4)
+
+    /**
      * Constructor
      */
     public function __construct() {
         $this->api_url = get_option('lendcity_external_api_url', '');
         $this->api_key = get_option('lendcity_external_api_key', '');
+
+        // Load circuit breaker state from transient
+        $saved_state = get_transient('lendcity_circuit_breaker');
+        if ($saved_state) {
+            self::$circuit_breaker = $saved_state;
+        }
     }
 
     /**
@@ -64,46 +93,225 @@ class LendCity_External_API {
     }
 
     /**
-     * Make API request
+     * Check if circuit breaker allows request
+     *
+     * @return bool True if request is allowed
      */
-    private function request($endpoint, $data = [], $method = 'POST', $timeout = null) {
+    private function is_circuit_closed() {
+        $cb = &self::$circuit_breaker;
+
+        // If circuit is closed, allow requests
+        if ($cb['state'] === 'closed') {
+            return true;
+        }
+
+        // If circuit is open, check if reset timeout has passed
+        if ($cb['state'] === 'open') {
+            if (time() - $cb['last_failure'] >= self::CB_RESET_TIMEOUT) {
+                // Move to half-open state
+                $cb['state'] = 'half-open';
+                $this->save_circuit_breaker_state();
+                return true;
+            }
+            return false;
+        }
+
+        // Half-open: allow limited requests
+        if ($cb['state'] === 'half-open') {
+            return true;
+        }
+
+        return true;
+    }
+
+    /**
+     * Record a successful request (resets circuit breaker)
+     */
+    private function record_success() {
+        $cb = &self::$circuit_breaker;
+
+        if ($cb['state'] === 'half-open') {
+            // Success in half-open state: close the circuit
+            $cb['state'] = 'closed';
+            $cb['failures'] = 0;
+            $this->save_circuit_breaker_state();
+        } elseif ($cb['failures'] > 0) {
+            // Reduce failure count on success
+            $cb['failures'] = max(0, $cb['failures'] - 1);
+            $this->save_circuit_breaker_state();
+        }
+    }
+
+    /**
+     * Record a failed request
+     */
+    private function record_failure() {
+        $cb = &self::$circuit_breaker;
+
+        $cb['failures']++;
+        $cb['last_failure'] = time();
+
+        if ($cb['state'] === 'half-open') {
+            // Failure in half-open state: open the circuit again
+            $cb['state'] = 'open';
+        } elseif ($cb['failures'] >= self::CB_FAILURE_THRESHOLD) {
+            // Too many failures: open the circuit
+            $cb['state'] = 'open';
+            error_log('LendCity: Circuit breaker opened after ' . $cb['failures'] . ' failures');
+        }
+
+        $this->save_circuit_breaker_state();
+    }
+
+    /**
+     * Save circuit breaker state to transient
+     */
+    private function save_circuit_breaker_state() {
+        set_transient('lendcity_circuit_breaker', self::$circuit_breaker, HOUR_IN_SECONDS);
+    }
+
+    /**
+     * Get circuit breaker status
+     *
+     * @return array Circuit breaker state info
+     */
+    public function get_circuit_breaker_status() {
+        return [
+            'state' => self::$circuit_breaker['state'],
+            'failures' => self::$circuit_breaker['failures'],
+            'last_failure' => self::$circuit_breaker['last_failure'],
+            'last_failure_ago' => self::$circuit_breaker['last_failure'] ? time() - self::$circuit_breaker['last_failure'] : null,
+            'will_reset_in' => self::$circuit_breaker['state'] === 'open'
+                ? max(0, self::CB_RESET_TIMEOUT - (time() - self::$circuit_breaker['last_failure']))
+                : null
+        ];
+    }
+
+    /**
+     * Reset circuit breaker (manual override)
+     */
+    public function reset_circuit_breaker() {
+        self::$circuit_breaker = [
+            'failures' => 0,
+            'last_failure' => 0,
+            'state' => 'closed'
+        ];
+        $this->save_circuit_breaker_state();
+    }
+
+    /**
+     * Make API request with circuit breaker and retry logic
+     *
+     * @param string $endpoint API endpoint
+     * @param array $data Request data
+     * @param string $method HTTP method
+     * @param int|null $timeout Request timeout
+     * @param bool $retry Whether to retry on failure
+     * @return array|WP_Error Response or error
+     */
+    private function request($endpoint, $data = [], $method = 'POST', $timeout = null, $retry = true) {
         if (!$this->is_configured()) {
             return new WP_Error('not_configured', 'External API not configured');
         }
 
-        $url = trailingslashit($this->api_url) . ltrim($endpoint, '/');
-
-        $args = [
-            'method' => $method,
-            'timeout' => $timeout ?? $this->timeout,
-            'headers' => [
-                'Content-Type' => 'application/json',
-                'Authorization' => 'Bearer ' . $this->api_key
-            ]
-        ];
-
-        if ($method === 'POST' && !empty($data)) {
-            $args['body'] = json_encode($data);
-        }
-
-        $response = wp_remote_request($url, $args);
-
-        if (is_wp_error($response)) {
-            return $response;
-        }
-
-        $status_code = wp_remote_retrieve_response_code($response);
-        $body = json_decode(wp_remote_retrieve_body($response), true);
-
-        if ($status_code >= 400) {
+        // Check circuit breaker
+        if (!$this->is_circuit_closed()) {
+            $status = $this->get_circuit_breaker_status();
             return new WP_Error(
-                'api_error',
-                $body['error'] ?? 'API request failed',
-                ['status' => $status_code, 'response' => $body]
+                'circuit_open',
+                'API temporarily unavailable (circuit breaker open). Will retry in ' . $status['will_reset_in'] . ' seconds.',
+                ['circuit_breaker' => $status]
             );
         }
 
-        return $body;
+        $url = trailingslashit($this->api_url) . ltrim($endpoint, '/');
+        $max_attempts = $retry ? self::MAX_RETRIES : 1;
+        $last_error = null;
+
+        for ($attempt = 1; $attempt <= $max_attempts; $attempt++) {
+            // Exponential backoff delay (skip on first attempt)
+            if ($attempt > 1) {
+                $delay = self::RETRY_BASE_DELAY * pow(2, $attempt - 2);
+                sleep($delay);
+            }
+
+            $args = [
+                'method' => $method,
+                'timeout' => $timeout ?? $this->timeout,
+                'headers' => [
+                    'Content-Type' => 'application/json',
+                    'Authorization' => 'Bearer ' . $this->api_key
+                ]
+            ];
+
+            if ($method === 'POST' && !empty($data)) {
+                $args['body'] = json_encode($data);
+            }
+
+            $response = wp_remote_request($url, $args);
+
+            // Handle network errors
+            if (is_wp_error($response)) {
+                $last_error = $response;
+                $error_code = $response->get_error_code();
+
+                // Retry on transient errors
+                if (in_array($error_code, ['http_request_failed', 'http_failure', 'timeout'])) {
+                    if ($attempt < $max_attempts) {
+                        error_log("LendCity: API request failed (attempt $attempt/$max_attempts): " . $response->get_error_message());
+                        continue;
+                    }
+                }
+
+                $this->record_failure();
+                return $response;
+            }
+
+            $status_code = wp_remote_retrieve_response_code($response);
+            $body = json_decode(wp_remote_retrieve_body($response), true);
+
+            // Handle HTTP errors
+            if ($status_code >= 500) {
+                // Server error - retry
+                $last_error = new WP_Error(
+                    'server_error',
+                    $body['error'] ?? 'Server error',
+                    ['status' => $status_code, 'response' => $body]
+                );
+
+                if ($attempt < $max_attempts) {
+                    error_log("LendCity: API server error (attempt $attempt/$max_attempts): HTTP $status_code");
+                    continue;
+                }
+
+                $this->record_failure();
+                return $last_error;
+            }
+
+            if ($status_code >= 400) {
+                // Client error - don't retry (except 429 rate limit)
+                if ($status_code === 429 && $attempt < $max_attempts) {
+                    // Rate limited - wait longer
+                    $retry_after = intval(wp_remote_retrieve_header($response, 'retry-after') ?: 5);
+                    sleep($retry_after);
+                    continue;
+                }
+
+                return new WP_Error(
+                    'api_error',
+                    $body['error'] ?? 'API request failed',
+                    ['status' => $status_code, 'response' => $body]
+                );
+            }
+
+            // Success!
+            $this->record_success();
+            return $body;
+        }
+
+        // All retries exhausted
+        $this->record_failure();
+        return $last_error ?? new WP_Error('max_retries', 'Maximum retry attempts reached');
     }
 
     /**

@@ -10,6 +10,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.24.0",
     "@pinecone-database/pinecone": "^2.0.0",
+    "cheerio": "^1.0.0",
     "openai": "^4.28.0"
   },
   "devDependencies": {
