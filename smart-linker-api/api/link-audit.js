@@ -6,7 +6,9 @@ const {
   calculateSEOScore,
   getSitewideSEOMetrics,
   getAnchorDiversityScore,
-  getReciprocalLinkScore
+  getReciprocalLinkScore,
+  getDismissedOpportunities,
+  filterDismissedOpportunities
 } = require('../lib/seo-scoring');
 
 /**
@@ -606,7 +608,13 @@ module.exports = async function handler(req, res) {
           });
         }
 
-        audit.suggestions.missing = opportunitiesWithAnchors;
+        // Load and filter out dismissed opportunities
+        await getDismissedOpportunities(postId); // Populates cache
+        const filteredOpportunities = filterDismissedOpportunities(postId, opportunitiesWithAnchors);
+
+        // Track how many were filtered out
+        audit.suggestions.dismissedCount = opportunitiesWithAnchors.length - filteredOpportunities.length;
+        audit.suggestions.missing = filteredOpportunities;
       }
     }
 
@@ -677,6 +685,7 @@ module.exports = async function handler(req, res) {
       suboptimalLinks: audit.existing.suboptimal.length,
       contentTypeViolations: audit.existing.contentTypeViolations.length,
       missingOpportunities: audit.suggestions.missing.length,
+      dismissedOpportunities: audit.suggestions.dismissedCount || 0,  // Excluded from count
       healthScore: existingLinks.length > 0
         ? Math.round((audit.existing.valid.length / existingLinks.length) * 100)
         : 100,

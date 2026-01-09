@@ -19,6 +19,7 @@ let seoCache = {
   reciprocalLinks: {},       // { "123-456": true } (postId pairs with reciprocal links)
   internalPageRank: {},      // { postId: 0.85 }
   firstLinkAnchors: {},      // { targetPostId: "first anchor used" }
+  dismissedOpportunities: {}, // { sourcePostId: { targetPostId: { dismissedAt, reason } } }
   lastRefresh: null
 };
 
@@ -414,7 +415,7 @@ function getPageRankScore(sourceId, targetId) {
 
 /**
  * Check content type linking rules
- * PAGES should NEVER link to POSTS (user manages page links)
+ * PAGES should NEVER receive automatic link suggestions (user manages ALL page links manually)
  * POSTS can link to both PAGES and POSTS
  *
  * @param {string} sourceType - Source content type ('page' or 'post')
@@ -425,27 +426,20 @@ function checkContentTypeLinking(sourceType, targetType) {
   const sourceLower = (sourceType || 'post').toLowerCase();
   const targetLower = (targetType || 'post').toLowerCase();
 
-  // Pages should NEVER link to posts
-  if (sourceLower === 'page' && targetLower === 'post') {
+  // PAGES should NEVER receive automatic link suggestions
+  // User manages ALL page links manually - no page-to-post OR page-to-page suggestions
+  if (sourceLower === 'page') {
     return {
       allowed: false,
-      reason: 'Pages cannot link to posts - page links are managed manually'
+      reason: 'Pages do not receive automatic link suggestions - all page links are managed manually'
     };
   }
 
-  // Posts can link to anything
+  // Posts can link to anything (pages and posts)
   if (sourceLower === 'post') {
     return {
       allowed: true,
       reason: targetLower === 'page' ? 'Post linking to page - allowed' : 'Post linking to post - allowed'
-    };
-  }
-
-  // Pages linking to pages - allowed but typically managed manually
-  if (sourceLower === 'page' && targetLower === 'page') {
-    return {
-      allowed: true,
-      reason: 'Page linking to page - allowed (verify manual management)'
     };
   }
 
@@ -669,22 +663,201 @@ async function getSitewideSEOMetrics() {
 
 /**
  * Filter candidates by content type rules
- * Removes posts from candidates when source is a page
+ * Pages get NO automatic link suggestions - all page links are managed manually
  *
  * @param {Array} candidates - Array of candidate articles
  * @param {string} sourceType - Source content type
  * @returns {Array} Filtered candidates
  */
 function filterByContentType(candidates, sourceType) {
-  if (sourceType?.toLowerCase() !== 'page') {
-    return candidates; // Posts can link to anything
+  // Pages get NO automatic suggestions at all
+  if (sourceType?.toLowerCase() === 'page') {
+    return []; // Empty array - pages are manually managed
   }
 
-  // Pages can only link to pages
-  return candidates.filter(c => {
-    const meta = c.metadata || c;
-    const targetType = (meta.contentType || 'post').toLowerCase();
-    return targetType === 'page';
+  // Posts can link to anything (pages and posts)
+  return candidates;
+}
+
+/**
+ * Dismiss a link opportunity
+ * Stores in cache and persists to Pinecone
+ *
+ * @param {number} sourceId - Source article ID
+ * @param {number} targetId - Target article ID to dismiss
+ * @param {string} reason - Optional reason for dismissal
+ * @param {boolean} persist - Whether to persist to Pinecone
+ * @returns {Promise<Object>} Result
+ */
+async function dismissOpportunity(sourceId, targetId, reason = '', persist = true) {
+  // Update cache
+  if (!seoCache.dismissedOpportunities[sourceId]) {
+    seoCache.dismissedOpportunities[sourceId] = {};
+  }
+
+  seoCache.dismissedOpportunities[sourceId][targetId] = {
+    dismissedAt: new Date().toISOString(),
+    reason: reason || 'User dismissed'
+  };
+
+  // Persist to Pinecone
+  if (persist) {
+    try {
+      const sourceArticle = await getArticle(sourceId);
+      if (sourceArticle) {
+        const dismissedLinks = sourceArticle.dismissedLinks || [];
+
+        // Check if already dismissed
+        const existingIndex = dismissedLinks.findIndex(d => d.targetId === targetId);
+        if (existingIndex >= 0) {
+          dismissedLinks[existingIndex] = {
+            targetId,
+            dismissedAt: new Date().toISOString(),
+            reason: reason || 'User dismissed'
+          };
+        } else {
+          dismissedLinks.push({
+            targetId,
+            dismissedAt: new Date().toISOString(),
+            reason: reason || 'User dismissed'
+          });
+        }
+
+        await updateMetadata(sourceId, { dismissedLinks });
+      }
+    } catch (error) {
+      console.error('Failed to persist dismissed opportunity:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  return {
+    success: true,
+    sourceId,
+    targetId,
+    dismissedAt: seoCache.dismissedOpportunities[sourceId][targetId].dismissedAt
+  };
+}
+
+/**
+ * Restore (un-dismiss) a link opportunity
+ *
+ * @param {number} sourceId - Source article ID
+ * @param {number} targetId - Target article ID to restore
+ * @param {boolean} persist - Whether to persist to Pinecone
+ * @returns {Promise<Object>} Result
+ */
+async function restoreOpportunity(sourceId, targetId, persist = true) {
+  // Update cache
+  if (seoCache.dismissedOpportunities[sourceId]) {
+    delete seoCache.dismissedOpportunities[sourceId][targetId];
+  }
+
+  // Persist to Pinecone
+  if (persist) {
+    try {
+      const sourceArticle = await getArticle(sourceId);
+      if (sourceArticle) {
+        const dismissedLinks = (sourceArticle.dismissedLinks || [])
+          .filter(d => d.targetId !== targetId);
+
+        await updateMetadata(sourceId, { dismissedLinks });
+      }
+    } catch (error) {
+      console.error('Failed to persist restored opportunity:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  return { success: true, sourceId, targetId, restored: true };
+}
+
+/**
+ * Clear all dismissed opportunities for a source article
+ *
+ * @param {number} sourceId - Source article ID
+ * @param {boolean} persist - Whether to persist to Pinecone
+ * @returns {Promise<Object>} Result
+ */
+async function clearDismissedOpportunities(sourceId, persist = true) {
+  const count = Object.keys(seoCache.dismissedOpportunities[sourceId] || {}).length;
+
+  // Clear cache
+  seoCache.dismissedOpportunities[sourceId] = {};
+
+  // Persist to Pinecone
+  if (persist) {
+    try {
+      await updateMetadata(sourceId, { dismissedLinks: [] });
+    } catch (error) {
+      console.error('Failed to clear dismissed opportunities:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  return { success: true, sourceId, clearedCount: count };
+}
+
+/**
+ * Get dismissed opportunities for a source article
+ *
+ * @param {number} sourceId - Source article ID
+ * @returns {Promise<Array>} Array of dismissed target IDs
+ */
+async function getDismissedOpportunities(sourceId) {
+  // Check cache first
+  if (seoCache.dismissedOpportunities[sourceId]) {
+    return Object.entries(seoCache.dismissedOpportunities[sourceId]).map(([targetId, data]) => ({
+      targetId: parseInt(targetId),
+      ...data
+    }));
+  }
+
+  // Load from Pinecone
+  try {
+    const sourceArticle = await getArticle(sourceId);
+    if (sourceArticle && sourceArticle.dismissedLinks) {
+      // Populate cache
+      seoCache.dismissedOpportunities[sourceId] = {};
+      for (const dismissed of sourceArticle.dismissedLinks) {
+        seoCache.dismissedOpportunities[sourceId][dismissed.targetId] = {
+          dismissedAt: dismissed.dismissedAt,
+          reason: dismissed.reason
+        };
+      }
+      return sourceArticle.dismissedLinks;
+    }
+  } catch (error) {
+    console.error('Failed to get dismissed opportunities:', error.message);
+  }
+
+  return [];
+}
+
+/**
+ * Check if a specific opportunity is dismissed
+ *
+ * @param {number} sourceId - Source article ID
+ * @param {number} targetId - Target article ID
+ * @returns {boolean} True if dismissed
+ */
+function isOpportunityDismissed(sourceId, targetId) {
+  return !!(seoCache.dismissedOpportunities[sourceId]?.[targetId]);
+}
+
+/**
+ * Filter out dismissed opportunities from a list
+ *
+ * @param {number} sourceId - Source article ID
+ * @param {Array} opportunities - Array of opportunities with postId or targetId
+ * @returns {Array} Filtered opportunities
+ */
+function filterDismissedOpportunities(sourceId, opportunities) {
+  const dismissed = seoCache.dismissedOpportunities[sourceId] || {};
+
+  return opportunities.filter(opp => {
+    const targetId = opp.postId || opp.targetId;
+    return !dismissed[targetId];
   });
 }
 
@@ -701,6 +874,13 @@ module.exports = {
   trackAnchorUsage,
   getSitewideSEOMetrics,
   filterByContentType,
+  // Dismiss functionality
+  dismissOpportunity,
+  restoreOpportunity,
+  clearDismissedOpportunities,
+  getDismissedOpportunities,
+  isOpportunityDismissed,
+  filterDismissedOpportunities,
   // Export cache for testing
   _getCache: () => seoCache
 };
