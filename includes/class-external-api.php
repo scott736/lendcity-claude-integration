@@ -1099,13 +1099,27 @@ function lendcity_audit_chunk() {
 
         $results['audited']++;
 
+        // Collect issues for this post
+        $post_issues = [];
+        $post_stats = [
+            'totalLinks' => 0,
+            'brokenLinks' => 0,
+            'suboptimalLinks' => 0,
+            'missingOpportunities' => 0
+        ];
+
         // Aggregate stats
         if (isset($audit['audit']['stats'])) {
             $stats = $audit['audit']['stats'];
-            $results['stats']['totalLinks'] += $stats['totalLinks'] ?? 0;
-            $results['stats']['brokenLinks'] += $stats['brokenLinks'] ?? 0;
-            $results['stats']['suboptimalLinks'] += $stats['suboptimalLinks'] ?? 0;
-            $results['stats']['missingOpportunities'] += $stats['missingOpportunities'] ?? 0;
+            $post_stats['totalLinks'] = $stats['totalLinks'] ?? 0;
+            $post_stats['brokenLinks'] = $stats['brokenLinks'] ?? 0;
+            $post_stats['suboptimalLinks'] = $stats['suboptimalLinks'] ?? 0;
+            $post_stats['missingOpportunities'] = $stats['missingOpportunities'] ?? 0;
+
+            $results['stats']['totalLinks'] += $post_stats['totalLinks'];
+            $results['stats']['brokenLinks'] += $post_stats['brokenLinks'];
+            $results['stats']['suboptimalLinks'] += $post_stats['suboptimalLinks'];
+            $results['stats']['missingOpportunities'] += $post_stats['missingOpportunities'];
         }
 
         // Collect issues
@@ -1115,7 +1129,7 @@ function lendcity_audit_chunk() {
             // Broken links
             if (!empty($a['existing']['broken'])) {
                 foreach ($a['existing']['broken'] as $broken) {
-                    $results['issues'][] = [
+                    $issue = [
                         'type' => 'broken',
                         'postId' => $post_id,
                         'postTitle' => $post->post_title,
@@ -1123,13 +1137,15 @@ function lendcity_audit_chunk() {
                         'url' => $broken['url'],
                         'issue' => $broken['issue']
                     ];
+                    $results['issues'][] = $issue;
+                    $post_issues[] = $issue;
                 }
             }
 
             // Suboptimal links
             if (!empty($a['existing']['suboptimal'])) {
                 foreach ($a['existing']['suboptimal'] as $sub) {
-                    $results['issues'][] = [
+                    $issue = [
                         'type' => 'suboptimal',
                         'postId' => $post_id,
                         'postTitle' => $post->post_title,
@@ -1139,13 +1155,15 @@ function lendcity_audit_chunk() {
                         'betterOption' => $sub['betterOptions'][0]['title'] ?? '',
                         'betterUrl' => $sub['betterOptions'][0]['url'] ?? ''
                     ];
+                    $results['issues'][] = $issue;
+                    $post_issues[] = $issue;
                 }
             }
 
             // Missing opportunities (suggested new links)
             if (!empty($a['suggestions']['missing'])) {
                 foreach ($a['suggestions']['missing'] as $missing) {
-                    $results['issues'][] = [
+                    $issue = [
                         'type' => 'missing',
                         'postId' => $post_id,
                         'postTitle' => $post->post_title,
@@ -1156,12 +1174,294 @@ function lendcity_audit_chunk() {
                         'score' => $missing['score'] ?? 0,
                         'reason' => $missing['reason'] ?? ''
                     ];
+                    $results['issues'][] = $issue;
+                    $post_issues[] = $issue;
                 }
+            }
+        }
+
+        // Cache per-post audit results
+        update_post_meta($post_id, '_lendcity_audit_cache', [
+            'stats' => $post_stats,
+            'issues' => $post_issues,
+            'audited_at' => current_time('mysql'),
+            'post_modified' => $post->post_modified
+        ]);
+    }
+
+    // Update global audit cache
+    lendcity_update_audit_cache();
+
+    wp_send_json_success($results);
+}
+
+/**
+ * Update the global audit cache by aggregating all per-post caches
+ */
+function lendcity_update_audit_cache() {
+    global $wpdb;
+
+    $cached_stats = [
+        'totalLinks' => 0,
+        'brokenLinks' => 0,
+        'suboptimalLinks' => 0,
+        'missingOpportunities' => 0
+    ];
+    $cached_issues = [];
+    $posts_audited = 0;
+    $posts_stale = 0;
+
+    // Get all posts with audit cache
+    $posts_with_cache = $wpdb->get_results(
+        "SELECT p.ID, p.post_title, p.post_modified, pm.meta_value
+         FROM {$wpdb->posts} p
+         INNER JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+         WHERE pm.meta_key = '_lendcity_audit_cache'
+         AND p.post_status = 'publish'
+         AND p.post_type IN ('post', 'page')"
+    );
+
+    foreach ($posts_with_cache as $row) {
+        $cache = maybe_unserialize($row->meta_value);
+        if (!$cache) continue;
+
+        // Check if cache is stale (post modified after audit)
+        $is_stale = strtotime($row->post_modified) > strtotime($cache['post_modified'] ?? $cache['audited_at']);
+
+        if ($is_stale) {
+            $posts_stale++;
+        }
+
+        $posts_audited++;
+
+        // Aggregate stats
+        if (!empty($cache['stats'])) {
+            $cached_stats['totalLinks'] += $cache['stats']['totalLinks'] ?? 0;
+            $cached_stats['brokenLinks'] += $cache['stats']['brokenLinks'] ?? 0;
+            $cached_stats['suboptimalLinks'] += $cache['stats']['suboptimalLinks'] ?? 0;
+            $cached_stats['missingOpportunities'] += $cache['stats']['missingOpportunities'] ?? 0;
+        }
+
+        // Collect issues (update post title in case it changed)
+        if (!empty($cache['issues'])) {
+            foreach ($cache['issues'] as $issue) {
+                $issue['postTitle'] = $row->post_title;
+                $issue['isStale'] = $is_stale;
+                $cached_issues[] = $issue;
             }
         }
     }
 
-    wp_send_json_success($results);
+    // Get total publishable posts count
+    $total_posts = $wpdb->get_var(
+        "SELECT COUNT(*) FROM {$wpdb->posts}
+         WHERE post_status = 'publish' AND post_type IN ('post', 'page')"
+    );
+
+    // Save global cache
+    update_option('lendcity_audit_cache', [
+        'stats' => $cached_stats,
+        'issues' => $cached_issues,
+        'posts_audited' => $posts_audited,
+        'posts_total' => (int) $total_posts,
+        'posts_stale' => $posts_stale,
+        'updated_at' => current_time('mysql')
+    ], false);
+}
+
+/**
+ * AJAX handler: Get cached audit results
+ */
+add_action('wp_ajax_lendcity_get_audit_cache', 'lendcity_get_audit_cache');
+
+function lendcity_get_audit_cache() {
+    check_ajax_referer('lendcity_link_audit', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $cache = get_option('lendcity_audit_cache', null);
+
+    if (!$cache) {
+        wp_send_json_success([
+            'has_cache' => false,
+            'message' => 'No audit data cached yet. Run an audit to populate.'
+        ]);
+    }
+
+    wp_send_json_success([
+        'has_cache' => true,
+        'stats' => $cache['stats'],
+        'issues' => $cache['issues'],
+        'posts_audited' => $cache['posts_audited'],
+        'posts_total' => $cache['posts_total'],
+        'posts_stale' => $cache['posts_stale'],
+        'updated_at' => $cache['updated_at']
+    ]);
+}
+
+/**
+ * AJAX handler: Get list of posts needing audit (new or modified since last audit)
+ */
+add_action('wp_ajax_lendcity_get_stale_posts', 'lendcity_get_stale_posts');
+
+function lendcity_get_stale_posts() {
+    check_ajax_referer('lendcity_link_audit', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    global $wpdb;
+
+    // Get posts that either have no cache or are stale
+    $stale_posts = $wpdb->get_results(
+        "SELECT p.ID, p.post_title, p.post_modified,
+                pm.meta_value as audit_cache
+         FROM {$wpdb->posts} p
+         LEFT JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_lendcity_audit_cache'
+         WHERE p.post_status = 'publish'
+         AND p.post_type IN ('post', 'page')
+         HAVING audit_cache IS NULL
+            OR p.post_modified > SUBSTRING_INDEX(SUBSTRING_INDEX(audit_cache, '\"post_modified\";s:', -1), '\"', 2)"
+    );
+
+    $items = [];
+    foreach ($stale_posts as $post) {
+        $items[] = [
+            'id' => (int) $post->ID,
+            'title' => $post->post_title,
+            'modified' => $post->post_modified
+        ];
+    }
+
+    wp_send_json_success([
+        'items' => $items,
+        'count' => count($items)
+    ]);
+}
+
+/**
+ * Schedule background audit when a post is saved
+ */
+add_action('save_post', 'lendcity_schedule_post_audit', 100, 2);
+
+function lendcity_schedule_post_audit($post_id, $post) {
+    // Skip autosaves, revisions, and non-published posts
+    if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) return;
+    if (wp_is_post_revision($post_id)) return;
+    if ($post->post_status !== 'publish') return;
+    if (!in_array($post->post_type, ['post', 'page'])) return;
+
+    // Clear any existing scheduled audit for this post
+    wp_clear_scheduled_hook('lendcity_background_audit_post', [$post_id]);
+
+    // Schedule audit in 30 seconds
+    wp_schedule_single_event(time() + 30, 'lendcity_background_audit_post', [$post_id]);
+
+    // Mark the post's audit cache as stale
+    $cache = get_post_meta($post_id, '_lendcity_audit_cache', true);
+    if ($cache) {
+        $cache['is_stale'] = true;
+        update_post_meta($post_id, '_lendcity_audit_cache', $cache);
+    }
+}
+
+/**
+ * Background audit handler for a single post
+ */
+add_action('lendcity_background_audit_post', 'lendcity_run_background_audit');
+
+function lendcity_run_background_audit($post_id) {
+    $post = get_post($post_id);
+    if (!$post || $post->post_status !== 'publish') return;
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) return;
+
+    $audit = $api->audit_links($post_id);
+    if (is_wp_error($audit)) {
+        error_log('LendCity background audit failed for post ' . $post_id . ': ' . $audit->get_error_message());
+        return;
+    }
+
+    // Process and cache the audit results
+    $post_issues = [];
+    $post_stats = [
+        'totalLinks' => 0,
+        'brokenLinks' => 0,
+        'suboptimalLinks' => 0,
+        'missingOpportunities' => 0
+    ];
+
+    if (isset($audit['audit']['stats'])) {
+        $stats = $audit['audit']['stats'];
+        $post_stats['totalLinks'] = $stats['totalLinks'] ?? 0;
+        $post_stats['brokenLinks'] = $stats['brokenLinks'] ?? 0;
+        $post_stats['suboptimalLinks'] = $stats['suboptimalLinks'] ?? 0;
+        $post_stats['missingOpportunities'] = $stats['missingOpportunities'] ?? 0;
+    }
+
+    if (isset($audit['audit'])) {
+        $a = $audit['audit'];
+
+        if (!empty($a['existing']['broken'])) {
+            foreach ($a['existing']['broken'] as $broken) {
+                $post_issues[] = [
+                    'type' => 'broken',
+                    'postId' => $post_id,
+                    'postTitle' => $post->post_title,
+                    'anchor' => $broken['anchor'],
+                    'url' => $broken['url'],
+                    'issue' => $broken['issue']
+                ];
+            }
+        }
+
+        if (!empty($a['existing']['suboptimal'])) {
+            foreach ($a['existing']['suboptimal'] as $sub) {
+                $post_issues[] = [
+                    'type' => 'suboptimal',
+                    'postId' => $post_id,
+                    'postTitle' => $post->post_title,
+                    'anchor' => $sub['anchor'],
+                    'currentTarget' => $sub['currentTarget']['title'] ?? '',
+                    'currentUrl' => $sub['currentTarget']['url'] ?? '',
+                    'betterOption' => $sub['betterOptions'][0]['title'] ?? '',
+                    'betterUrl' => $sub['betterOptions'][0]['url'] ?? ''
+                ];
+            }
+        }
+
+        if (!empty($a['suggestions']['missing'])) {
+            foreach ($a['suggestions']['missing'] as $missing) {
+                $post_issues[] = [
+                    'type' => 'missing',
+                    'postId' => $post_id,
+                    'postTitle' => $post->post_title,
+                    'targetPostId' => $missing['postId'] ?? 0,
+                    'targetTitle' => $missing['title'] ?? '',
+                    'targetUrl' => $missing['url'] ?? '',
+                    'topicCluster' => $missing['topicCluster'] ?? '',
+                    'score' => $missing['score'] ?? 0,
+                    'reason' => $missing['reason'] ?? ''
+                ];
+            }
+        }
+    }
+
+    // Save per-post cache
+    update_post_meta($post_id, '_lendcity_audit_cache', [
+        'stats' => $post_stats,
+        'issues' => $post_issues,
+        'audited_at' => current_time('mysql'),
+        'post_modified' => $post->post_modified,
+        'is_stale' => false
+    ]);
+
+    // Update global cache
+    lendcity_update_audit_cache();
 }
 
 /**
