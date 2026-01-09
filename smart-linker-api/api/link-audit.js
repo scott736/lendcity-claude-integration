@@ -1,6 +1,13 @@
 const { querySimilar, getArticle, getAllArticles } = require('../lib/pinecone');
 const { generateEmbedding, extractBodyText } = require('../lib/embeddings');
-const { getRecommendations } = require('../lib/scoring');
+const { getRecommendations, filterByContentType, checkContentTypeLinking } = require('../lib/scoring');
+const {
+  refreshSEOCache,
+  calculateSEOScore,
+  getSitewideSEOMetrics,
+  getAnchorDiversityScore,
+  getReciprocalLinkScore
+} = require('../lib/seo-scoring');
 
 /**
  * SEO-optimized anchor text finder (Expert Level)
@@ -336,27 +343,48 @@ module.exports = async function handler(req, res) {
       title,
       existingLinks = [], // Array of { anchor, url, targetId }
       topicCluster,
-      maxSuggestions = 5
+      contentType = 'post',  // 'page' or 'post' - affects what can be suggested
+      maxSuggestions = 5,
+      includeSEOMetrics = true
     } = req.body;
 
     if (!content) {
       return res.status(400).json({ error: 'content is required' });
     }
 
+    // Refresh SEO cache for accurate scoring
+    if (includeSEOMetrics) {
+      await refreshSEOCache();
+    }
+
+    const sourceType = contentType.toLowerCase();
+
     const audit = {
       existing: {
         total: existingLinks.length,
         valid: [],
         broken: [],
-        suboptimal: []
+        suboptimal: [],
+        contentTypeViolations: []  // Pages linking to posts
       },
       suggestions: {
         upgrades: [],    // Better targets for existing anchors
         missing: [],     // New links that should be added
         redundant: []    // Links that might be removed
       },
+      seo: {
+        anchorDiversity: [],
+        reciprocalLinks: [],
+        recommendations: []
+      },
       stats: {}
     };
+
+    // For pages, we skip suggestions entirely but still audit existing links
+    const isPage = sourceType === 'page';
+    if (isPage) {
+      audit.note = 'Page content - link suggestions disabled. Only auditing existing links for violations.';
+    }
 
     // Step 1: Validate existing links against Pinecone catalog
     for (const link of existingLinks) {
@@ -372,12 +400,60 @@ module.exports = async function handler(req, res) {
         continue;
       }
 
+      const targetType = (targetArticle.contentType || 'post').toLowerCase();
+
+      // CHECK CONTENT TYPE RULES: Pages should never link to posts
+      const contentTypeCheck = checkContentTypeLinking(sourceType, targetType);
+      if (!contentTypeCheck.allowed) {
+        audit.existing.contentTypeViolations.push({
+          ...link,
+          sourceType,
+          targetType,
+          target: {
+            title: targetArticle.title,
+            url: targetArticle.url,
+            contentType: targetType
+          },
+          issue: contentTypeCheck.reason,
+          action: 'REMOVE this link - pages should not link to posts',
+          severity: 'error'
+        });
+        continue; // Don't process further
+      }
+
+      // SEO Analysis: Anchor diversity
+      if (includeSEOMetrics) {
+        const diversityScore = getAnchorDiversityScore(link.anchor, link.targetId);
+        if (diversityScore.usage > 3) {
+          audit.seo.anchorDiversity.push({
+            anchor: link.anchor,
+            target: targetArticle.title,
+            usage: diversityScore.usage,
+            recommendation: diversityScore.recommendation
+          });
+        }
+
+        // Check for reciprocal links
+        const reciprocalCheck = getReciprocalLinkScore(postId, link.targetId);
+        if (reciprocalCheck.isReciprocal) {
+          audit.seo.reciprocalLinks.push({
+            source: postId,
+            target: link.targetId,
+            targetTitle: targetArticle.title,
+            recommendation: reciprocalCheck.recommendation
+          });
+        }
+      }
+
       // Check if there's a better target for this anchor text
       const anchorEmbedding = await generateEmbedding(link.anchor);
-      const betterMatches = await querySimilar(anchorEmbedding, {
-        topK: 5,
+      let betterMatches = await querySimilar(anchorEmbedding, {
+        topK: 10,
         excludeIds: [postId, link.targetId]
       });
+
+      // Filter by content type - if source is page, only suggest pages
+      betterMatches = filterByContentType(betterMatches, sourceType);
 
       // Score the current target vs alternatives
       const currentScore = targetArticle.qualityScore || 50;
@@ -394,13 +470,15 @@ module.exports = async function handler(req, res) {
           currentTarget: {
             title: targetArticle.title,
             url: targetArticle.url,
-            qualityScore: currentScore
+            qualityScore: currentScore,
+            contentType: targetType
           },
           betterOptions: betterOptions.slice(0, 2).map(opt => ({
             postId: opt.metadata.postId,
             title: opt.metadata.title,
             url: opt.metadata.url,
             qualityScore: opt.metadata.qualityScore || 50,
+            contentType: opt.metadata.contentType || 'post',
             similarity: Math.round(opt.score * 100)
           }))
         });
@@ -410,7 +488,8 @@ module.exports = async function handler(req, res) {
           target: {
             title: targetArticle.title,
             qualityScore: currentScore,
-            topicCluster: targetArticle.topicCluster
+            topicCluster: targetArticle.topicCluster,
+            contentType: targetType
           },
           status: 'optimal'
         });
@@ -418,82 +497,117 @@ module.exports = async function handler(req, res) {
     }
 
     // Step 2: Find missing link opportunities (only where anchor text exists in content)
-    const contentText = extractBodyText(content);
-    const contentLower = content.toLowerCase();
-    const contentEmbedding = await generateEmbedding(`${title || ''} ${contentText}`);
+    // SKIP for pages - they are manually managed
+    if (!isPage) {
+      const contentText = extractBodyText(content);
+      const contentLower = content.toLowerCase();
+      const contentEmbedding = await generateEmbedding(`${title || ''} ${contentText}`);
 
-    // Get all candidate articles
-    const excludeIds = [postId, ...existingLinks.map(l => l.targetId)];
-    const candidates = await querySimilar(contentEmbedding, {
-      topK: 30, // Get more candidates since we'll filter by anchor availability
-      excludeIds
-    });
+      // Get all candidate articles
+      const excludeIds = [postId, ...existingLinks.map(l => l.targetId)];
+      let candidates = await querySimilar(contentEmbedding, {
+        topK: 50, // Get more candidates for filtering
+        excludeIds
+      });
 
-    if (candidates.length > 0) {
-      // Score candidates
-      const sourceArticle = { postId, title, topicCluster };
-      const { recommendations } = getRecommendations(
-        sourceArticle,
-        candidates,
-        { minScore: 40, maxResults: 50 } // Lower threshold, more results - we'll filter by anchor
-      );
+      // Filter by content type - posts can link to pages and posts
+      candidates = filterByContentType(candidates, sourceType);
 
-      // Filter to only opportunities where anchor text exists in content
-      const opportunitiesWithAnchors = [];
-      const usedAnchors = new Set(); // Track used anchors to prevent duplicates
+      if (candidates.length > 0) {
+        // Score candidates
+        const sourceArticle = { postId, title, topicCluster, contentType: sourceType };
+        const { recommendations } = getRecommendations(
+          sourceArticle,
+          candidates,
+          { minScore: 40, maxResults: 50 } // Lower threshold, more results - we'll filter by anchor
+        );
 
-      for (const rec of recommendations) {
-        const anchor = findAnchorInContent(content, contentLower, rec.candidate, usedAnchors);
-        if (anchor) {
-          // Add to used set to prevent reuse
-          usedAnchors.add(anchor.text.toLowerCase());
+        // Filter to only opportunities where anchor text exists in content
+        const opportunitiesWithAnchors = [];
+        const usedAnchors = new Set(); // Track used anchors to prevent duplicates
 
-          // Build SEO-focused reason with quality signals
-          let reason = '';
-          const signals = [];
+        for (const rec of recommendations) {
+          const anchor = findAnchorInContent(content, contentLower, rec.candidate, usedAnchors);
+          if (anchor) {
+            // Add to used set to prevent reuse
+            usedAnchors.add(anchor.text.toLowerCase());
 
-          if (anchor.type === 'sentence') {
-            reason = `Full sentence in ${anchor.position}`;
-          } else if (anchor.type === 'phrase') {
-            reason = `Phrase match in ${anchor.position}`;
-          } else {
-            reason = `Contextual match in ${anchor.position}`;
+            // Build SEO-focused reason with quality signals
+            let reason = '';
+            const signals = [];
+
+            if (anchor.type === 'sentence') {
+              reason = `Full sentence in ${anchor.position}`;
+            } else if (anchor.type === 'phrase') {
+              reason = `Phrase match in ${anchor.position}`;
+            } else {
+              reason = `Contextual match in ${anchor.position}`;
+            }
+
+            // Add quality signals
+            if (anchor.isNaturalLanguage) signals.push('✓ Natural language');
+            if (anchor.isExactMatch) signals.push('⚠️ Exact match');
+            if (anchor.position === 'intro') signals.push('★ Intro placement');
+            if (anchor.position === 'conclusion') signals.push('★ Conclusion');
+            if (anchor.matchingWords.length >= 2) signals.push(`${anchor.matchingWords.length} keywords`);
+
+            if (signals.length > 0) {
+              reason += ` (${signals.join(', ')})`;
+            }
+
+            // Calculate SEO score for this opportunity
+            let seoData = null;
+            if (includeSEOMetrics) {
+              seoData = await calculateSEOScore({
+                sourceId: postId,
+                sourceType,
+                targetId: rec.candidate.postId,
+                targetType: rec.candidate.contentType || 'post',
+                target: rec.candidate,
+                anchorText: anchor.text,
+                content,
+                existingLinks
+              });
+            }
+
+            opportunitiesWithAnchors.push({
+              postId: rec.candidate.postId,
+              title: rec.candidate.title,
+              url: rec.candidate.url,
+              topicCluster: rec.candidate.topicCluster,
+              contentType: rec.candidate.contentType || 'post',
+              score: rec.totalScore,
+              anchorText: anchor.text,
+              anchorContext: anchor.context,
+              anchorPosition: anchor.position,
+              anchorType: anchor.type,
+              anchorScore: anchor.score,
+              matchingWords: anchor.matchingWords,
+              isExactMatch: anchor.isExactMatch,
+              isNaturalLanguage: anchor.isNaturalLanguage,
+              reason,
+              seo: seoData ? {
+                score: seoData.totalSEOScore,
+                breakdown: seoData.breakdown
+              } : null
+            });
+
+            // Stop once we have enough
+            if (opportunitiesWithAnchors.length >= maxSuggestions) break;
           }
-
-          // Add quality signals
-          if (anchor.isNaturalLanguage) signals.push('✓ Natural language');
-          if (anchor.isExactMatch) signals.push('⚠️ Exact match');
-          if (anchor.position === 'intro') signals.push('★ Intro placement');
-          if (anchor.position === 'conclusion') signals.push('★ Conclusion');
-          if (anchor.matchingWords.length >= 2) signals.push(`${anchor.matchingWords.length} keywords`);
-
-          if (signals.length > 0) {
-            reason += ` (${signals.join(', ')})`;
-          }
-
-          opportunitiesWithAnchors.push({
-            postId: rec.candidate.postId,
-            title: rec.candidate.title,
-            url: rec.candidate.url,
-            topicCluster: rec.candidate.topicCluster,
-            score: rec.totalScore,
-            anchorText: anchor.text,
-            anchorContext: anchor.context,
-            anchorPosition: anchor.position,
-            anchorType: anchor.type,
-            anchorScore: anchor.score,
-            matchingWords: anchor.matchingWords,
-            isExactMatch: anchor.isExactMatch,
-            isNaturalLanguage: anchor.isNaturalLanguage,
-            reason
-          });
-
-          // Stop once we have enough
-          if (opportunitiesWithAnchors.length >= maxSuggestions) break;
         }
-      }
 
-      audit.suggestions.missing = opportunitiesWithAnchors;
+        // Sort by combined score (relevance + SEO)
+        if (includeSEOMetrics) {
+          opportunitiesWithAnchors.sort((a, b) => {
+            const aTotal = a.score + (a.seo?.score || 0) * 0.3;
+            const bTotal = b.score + (b.seo?.score || 0) * 0.3;
+            return bTotal - aTotal;
+          });
+        }
+
+        audit.suggestions.missing = opportunitiesWithAnchors;
+      }
     }
 
     // Step 3: Check for redundant links (multiple links to same cluster)
@@ -516,25 +630,74 @@ module.exports = async function handler(req, res) {
     // Analyze link density for SEO warnings
     const densityAnalysis = analyzeLinkDensity(content, existingLinks.length);
 
+    // Get site-wide SEO metrics
+    let sitewideMetrics = null;
+    if (includeSEOMetrics) {
+      sitewideMetrics = await getSitewideSEOMetrics();
+    }
+
+    // Generate SEO recommendations
+    if (includeSEOMetrics) {
+      // Anchor diversity warnings
+      if (audit.seo.anchorDiversity.length > 0) {
+        audit.seo.recommendations.push({
+          type: 'anchor_diversity',
+          severity: 'warning',
+          message: `${audit.seo.anchorDiversity.length} anchors are overused. Consider varying anchor text.`,
+          details: audit.seo.anchorDiversity
+        });
+      }
+
+      // Reciprocal link warnings
+      if (audit.seo.reciprocalLinks.length > 0) {
+        audit.seo.recommendations.push({
+          type: 'reciprocal_links',
+          severity: 'info',
+          message: `${audit.seo.reciprocalLinks.length} reciprocal links detected. Consider one-way linking.`,
+          details: audit.seo.reciprocalLinks
+        });
+      }
+
+      // Content type violation errors
+      if (audit.existing.contentTypeViolations.length > 0) {
+        audit.seo.recommendations.push({
+          type: 'content_type_violation',
+          severity: 'error',
+          message: `${audit.existing.contentTypeViolations.length} invalid links: pages should not link to posts. Remove these links.`,
+          details: audit.existing.contentTypeViolations
+        });
+      }
+    }
+
     // Calculate stats with SEO insights
     audit.stats = {
       totalLinks: existingLinks.length,
       validLinks: audit.existing.valid.length,
       brokenLinks: audit.existing.broken.length,
       suboptimalLinks: audit.existing.suboptimal.length,
+      contentTypeViolations: audit.existing.contentTypeViolations.length,
       missingOpportunities: audit.suggestions.missing.length,
       healthScore: existingLinks.length > 0
         ? Math.round((audit.existing.valid.length / existingLinks.length) * 100)
         : 100,
       // SEO metrics
+      contentType: sourceType,
       wordCount: densityAnalysis.wordCount,
       linkDensity: Math.round(densityAnalysis.density * 100) / 100,
-      seoWarnings: densityAnalysis.warnings
+      seoWarnings: [
+        ...densityAnalysis.warnings,
+        ...(audit.existing.contentTypeViolations.length > 0
+          ? [`CRITICAL: ${audit.existing.contentTypeViolations.length} page-to-post links found - remove these`]
+          : [])
+      ],
+      // Site-wide health
+      sitewideHealth: sitewideMetrics?.health || null
     };
 
     return res.status(200).json({
       success: true,
       postId,
+      contentType: sourceType,
       audit
     });
 

@@ -3,8 +3,23 @@
  * Combines vector similarity with business rules from WordPress plugin
  *
  * Original WordPress scoring: 300+ points possible
- * New hybrid: Vector score (0-100) + Business rules (0-200) = 0-300
+ * New hybrid: Vector score (0-100) + Business rules (0-200) + SEO score (0-100) = 0-400
+ *
+ * SEO Components (v2.0):
+ * - Anchor text diversity tracking
+ * - Keyword-anchor alignment
+ * - Link position scoring
+ * - First link priority
+ * - Reciprocal link detection
+ * - Internal PageRank modeling
+ * - Content type restrictions (pages never link to posts)
  */
+
+const {
+  calculateSEOScore,
+  filterByContentType,
+  checkContentTypeLinking
+} = require('./seo-scoring');
 
 /**
  * Topic cluster definitions and relationships
@@ -51,9 +66,36 @@ const PERSONA_COMPATIBILITY = {
  */
 function calculateHybridScore(source, candidate, options = {}) {
   const {
-    vectorWeight = 0.4,      // 40% vector similarity
-    businessWeight = 0.6     // 60% business rules
+    vectorWeight = 0.35,     // 35% vector similarity
+    businessWeight = 0.45,   // 45% business rules
+    seoWeight = 0.20         // 20% SEO optimization (when available)
   } = options;
+
+  // Check content type restrictions FIRST (hard filter)
+  const sourceType = source.contentType || 'post';
+  const targetType = candidate.contentType || 'post';
+  const contentTypeCheck = checkContentTypeLinking(sourceType, targetType);
+
+  if (!contentTypeCheck.allowed) {
+    // Return disqualified score for pages linking to posts
+    return {
+      totalScore: -999,
+      disqualified: true,
+      disqualifyReason: contentTypeCheck.reason,
+      vectorScore: 0,
+      businessScore: 0,
+      seoScore: 0,
+      breakdown: {},
+      candidate: {
+        postId: candidate.postId,
+        title: candidate.title,
+        url: candidate.url,
+        topicCluster: candidate.topicCluster,
+        funnelStage: candidate.funnelStage,
+        contentType: targetType
+      }
+    };
+  }
 
   // Vector similarity score (0-100)
   // Pinecone returns 0-1, multiply by 100
@@ -83,13 +125,21 @@ function calculateHybridScore(source, candidate, options = {}) {
   // Normalize business score to 0-100
   const normalizedBusinessScore = Math.max(0, Math.min(100, (businessRulesScore / 225) * 100));
 
+  // SEO score placeholder (calculated later with anchor text context)
+  // Default to 50 (neutral) when anchor text isn't available yet
+  const seoScorePlaceholder = options.seoScore || 50;
+
   // Combined weighted score
-  const totalScore = (vectorScore * vectorWeight) + (normalizedBusinessScore * businessWeight);
+  // Note: Full SEO scoring requires anchor text context, done in calculateHybridScoreWithSEO
+  const totalScore = options.includeSEO
+    ? (vectorScore * vectorWeight) + (normalizedBusinessScore * businessWeight) + (seoScorePlaceholder * seoWeight)
+    : (vectorScore * (vectorWeight + seoWeight/2)) + (normalizedBusinessScore * (businessWeight + seoWeight/2));
 
   return {
     totalScore: Math.round(totalScore * 100) / 100,
     vectorScore: Math.round(vectorScore * 100) / 100,
     businessScore: Math.round(normalizedBusinessScore * 100) / 100,
+    seoScore: options.includeSEO ? seoScorePlaceholder : null,
     breakdown: {
       cluster: clusterScore,
       funnel: funnelScore,
@@ -105,7 +155,63 @@ function calculateHybridScore(source, candidate, options = {}) {
       title: candidate.title,
       url: candidate.url,
       topicCluster: candidate.topicCluster,
-      funnelStage: candidate.funnelStage
+      funnelStage: candidate.funnelStage,
+      contentType: targetType
+    }
+  };
+}
+
+/**
+ * Calculate hybrid score WITH full SEO optimization
+ * Use this when anchor text is known
+ *
+ * @param {Object} source - Source article with content
+ * @param {Object} candidate - Candidate article
+ * @param {string} anchorText - Proposed anchor text
+ * @param {Array} existingLinks - Existing links in source
+ * @param {Object} options - Scoring options
+ * @returns {Promise<Object>} Complete score with SEO breakdown
+ */
+async function calculateHybridScoreWithSEO(source, candidate, anchorText, existingLinks = [], options = {}) {
+  // Get base hybrid score
+  const baseScore = calculateHybridScore(source, candidate, { ...options, includeSEO: false });
+
+  // If disqualified by content type, return immediately
+  if (baseScore.disqualified) {
+    return baseScore;
+  }
+
+  // Calculate full SEO score with anchor text context
+  const seoResult = await calculateSEOScore({
+    sourceId: source.postId,
+    sourceType: source.contentType || 'post',
+    targetId: candidate.postId,
+    targetType: candidate.contentType || 'post',
+    target: candidate,
+    anchorText,
+    content: source.content || '',
+    existingLinks
+  });
+
+  // Combine scores with weights
+  const {
+    vectorWeight = 0.35,
+    businessWeight = 0.45,
+    seoWeight = 0.20
+  } = options;
+
+  const totalScore = (baseScore.vectorScore * vectorWeight) +
+                     (baseScore.businessScore * businessWeight) +
+                     (seoResult.totalSEOScore * seoWeight);
+
+  return {
+    ...baseScore,
+    totalScore: Math.round(totalScore * 100) / 100,
+    seoScore: seoResult.totalSEOScore,
+    seoBreakdown: seoResult.breakdown,
+    breakdown: {
+      ...baseScore.breakdown,
+      seo: seoResult.breakdown
     }
   };
 }
@@ -328,9 +434,14 @@ function passesSiloFilter(source, candidate, strict = false) {
 
 /**
  * Apply scoring to a list of candidates
+ * Now includes content type filtering (pages never link to posts)
  */
 function scoreAllCandidates(source, candidates, options = {}) {
-  const scored = candidates.map(candidate => {
+  // Pre-filter by content type if source is a page
+  const sourceType = source.contentType || 'post';
+  const filteredCandidates = filterByContentType(candidates, sourceType);
+
+  const scored = filteredCandidates.map(candidate => {
     const metadata = candidate.metadata || candidate;
     return calculateHybridScore(source, {
       ...metadata,
@@ -338,8 +449,10 @@ function scoreAllCandidates(source, candidates, options = {}) {
     }, options);
   });
 
-  // Sort by total score descending
-  return scored.sort((a, b) => b.totalScore - a.totalScore);
+  // Filter out disqualified candidates and sort by total score descending
+  return scored
+    .filter(s => !s.disqualified)
+    .sort((a, b) => b.totalScore - a.totalScore);
 }
 
 /**
@@ -389,6 +502,7 @@ function getRecommendations(source, candidates, options = {}) {
 
 module.exports = {
   calculateHybridScore,
+  calculateHybridScoreWithSEO,
   calculateClusterScore,
   calculateFunnelScore,
   calculatePersonaScore,
@@ -400,6 +514,9 @@ module.exports = {
   scoreAllCandidates,
   filterCandidates,
   getRecommendations,
+  // Re-export SEO functions for convenience
+  filterByContentType,
+  checkContentTypeLinking,
   CLUSTER_RELATIONSHIPS,
   FUNNEL_FLOW,
   PERSONA_COMPATIBILITY

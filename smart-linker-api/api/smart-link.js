@@ -1,7 +1,13 @@
 const { querySimilar, getArticle, incrementInboundLinks } = require('../lib/pinecone');
 const { generateEmbedding, extractBodyText } = require('../lib/embeddings');
 const { analyzeContentForLinking, generateAnchorText } = require('../lib/claude');
-const { getRecommendations } = require('../lib/scoring');
+const { getRecommendations, calculateHybridScoreWithSEO, filterByContentType } = require('../lib/scoring');
+const {
+  refreshSEOCache,
+  trackAnchorUsage,
+  calculateSEOScore,
+  getSitewideSEOMetrics
+} = require('../lib/seo-scoring');
 
 /**
  * Smart Link Endpoint
@@ -39,13 +45,15 @@ module.exports = async function handler(req, res) {
       relatedClusters = [],
       funnelStage,
       targetPersona,
+      contentType = 'post',  // 'page' or 'post' - pages never link to posts
       // Options
       maxLinks = 5,
       minScore = 40,
       excludeIds = [],
       useClaudeAnalysis = true,
       autoInsert = false,
-      strictSilo = false  // Only link within same cluster
+      strictSilo = false,     // Only link within same cluster
+      includeSEOMetrics = true // Include detailed SEO scoring
     } = req.body;
 
     // Validate required fields
@@ -55,15 +63,33 @@ module.exports = async function handler(req, res) {
       });
     }
 
+    // Refresh SEO cache for accurate scoring
+    if (includeSEOMetrics) {
+      await refreshSEOCache();
+    }
+
     // Build source article metadata
     const sourceArticle = {
       postId,
       title,
+      content,  // Include content for SEO position scoring
       topicCluster,
       relatedClusters,
       funnelStage,
-      targetPersona
+      targetPersona,
+      contentType: contentType.toLowerCase()
     };
+
+    // Early exit for pages - they don't get automatic links
+    if (contentType.toLowerCase() === 'page') {
+      console.log(`Skipping smart linking for page ${postId} - pages are manually managed`);
+      return res.status(200).json({
+        success: true,
+        links: [],
+        message: 'Pages do not receive automatic links - manage page links manually',
+        contentType: 'page'
+      });
+    }
 
     // Step 1: Generate embedding for source content
     const contentText = extractBodyText(content);
@@ -73,10 +99,15 @@ module.exports = async function handler(req, res) {
     const excludeList = [...excludeIds];
     if (postId) excludeList.push(postId);
 
-    const candidates = await querySimilar(embedding, {
-      topK: 30, // Get more candidates for scoring
+    let candidates = await querySimilar(embedding, {
+      topK: 50, // Get more candidates for filtering
       excludeIds: excludeList
     });
+
+    // Filter candidates by content type (posts can only link to pages & posts, not vice versa)
+    // Since source is a post (pages exit early), we allow all target types
+    // But we still filter using the utility for consistency
+    candidates = filterByContentType(candidates, contentType);
 
     if (candidates.length === 0) {
       return res.status(200).json({
@@ -119,21 +150,55 @@ module.exports = async function handler(req, res) {
         { maxLinks, existingLinks }
       );
 
-      // Map Claude's selections back to full recommendation data
-      finalLinks = analysis.links.map(link => {
+      // Map Claude's selections back to full recommendation data with SEO scoring
+      const linkPromises = analysis.links.map(async (link) => {
         const rec = recommendations[link.candidateIndex];
+
+        // Calculate full SEO score now that we have anchor text
+        let seoData = null;
+        if (includeSEOMetrics) {
+          seoData = await calculateSEOScore({
+            sourceId: postId,
+            sourceType: contentType,
+            targetId: rec.candidate.postId,
+            targetType: rec.candidate.contentType || 'post',
+            target: rec.candidate,
+            anchorText: link.anchorText,
+            content,
+            existingLinks
+          });
+        }
+
         return {
           postId: rec.candidate.postId,
           title: rec.candidate.title,
           url: rec.candidate.url,
           topicCluster: rec.candidate.topicCluster,
+          contentType: rec.candidate.contentType || 'post',
           score: rec.totalScore,
           scoreBreakdown: rec.breakdown,
           anchorText: link.anchorText,
           placement: link.placement,
-          reasoning: link.reasoning
+          reasoning: link.reasoning,
+          // SEO optimization data
+          seo: seoData ? {
+            score: seoData.totalSEOScore,
+            allowed: seoData.allowed,
+            breakdown: seoData.breakdown
+          } : null
         };
       });
+
+      finalLinks = await Promise.all(linkPromises);
+
+      // Re-sort by combined score (original + SEO boost)
+      if (includeSEOMetrics) {
+        finalLinks.sort((a, b) => {
+          const aTotal = a.score + (a.seo?.score || 0) * 0.2;
+          const bTotal = b.score + (b.seo?.score || 0) * 0.2;
+          return bTotal - aTotal;
+        });
+      }
     } else {
       // Without Claude, just use top recommendations with title as anchor
       finalLinks = recommendations.slice(0, maxLinks).map(rec => ({
@@ -141,11 +206,13 @@ module.exports = async function handler(req, res) {
         title: rec.candidate.title,
         url: rec.candidate.url,
         topicCluster: rec.candidate.topicCluster,
+        contentType: rec.candidate.contentType || 'post',
         score: rec.totalScore,
         scoreBreakdown: rec.breakdown,
         anchorText: rec.candidate.title,
         placement: null,
-        reasoning: 'Top-scored by hybrid algorithm'
+        reasoning: 'Top-scored by hybrid algorithm',
+        seo: null
       }));
     }
 
@@ -154,10 +221,19 @@ module.exports = async function handler(req, res) {
     if (autoInsert && finalLinks.length > 0) {
       linkedContent = insertLinksIntoContent(content, finalLinks);
 
-      // Update inbound link counts
+      // Update inbound link counts and track anchor usage for SEO
       for (const link of finalLinks) {
         await incrementInboundLinks(link.postId);
+
+        // Track anchor usage for diversity scoring
+        await trackAnchorUsage(link.anchorText, postId, link.postId, true);
       }
+    }
+
+    // Get site-wide SEO metrics if requested
+    let seoMetrics = null;
+    if (includeSEOMetrics) {
+      seoMetrics = await getSitewideSEOMetrics();
     }
 
     return res.status(200).json({
@@ -169,7 +245,14 @@ module.exports = async function handler(req, res) {
         passedScoring: passedFilter,
         averageScore,
         linksGenerated: finalLinks.length
-      }
+      },
+      // SEO optimization summary
+      seoSummary: includeSEOMetrics ? {
+        sitewideHealth: seoMetrics?.health || null,
+        anchorDiversityStatus: seoMetrics?.anchors?.overused > 5 ? 'warning' : 'good',
+        reciprocalLinkRatio: seoMetrics?.links?.reciprocalRatio || 0,
+        recommendations: generateSEORecommendations(finalLinks, seoMetrics)
+      } : null
     });
 
   } catch (error) {
@@ -237,4 +320,73 @@ function insertLinksIntoContent(content, links) {
   }
 
   return result;
+}
+
+/**
+ * Generate SEO recommendations based on link analysis
+ */
+function generateSEORecommendations(links, seoMetrics) {
+  const recommendations = [];
+
+  // Check anchor diversity issues
+  for (const link of links) {
+    if (link.seo?.breakdown?.anchorDiversity?.usage > 5) {
+      recommendations.push({
+        type: 'anchor_diversity',
+        severity: 'warning',
+        link: link.anchorText,
+        target: link.title,
+        message: `Anchor "${link.anchorText}" is overused (${link.seo.breakdown.anchorDiversity.usage} times). Consider varying anchor text.`
+      });
+    }
+
+    // Check for reciprocal link warnings
+    if (link.seo?.breakdown?.reciprocal?.isReciprocal) {
+      recommendations.push({
+        type: 'reciprocal_link',
+        severity: 'info',
+        target: link.title,
+        message: `Reciprocal link detected with "${link.title}". Consider one-way linking for better SEO.`
+      });
+    }
+
+    // Check for first link priority
+    if (link.seo?.breakdown?.firstLink && !link.seo.breakdown.firstLink.isFirstLink) {
+      recommendations.push({
+        type: 'duplicate_target',
+        severity: 'info',
+        target: link.title,
+        message: `Already linked to "${link.title}" with anchor "${link.seo.breakdown.firstLink.existingAnchor}". Additional link has reduced SEO value.`
+      });
+    }
+
+    // Check position scoring
+    if (link.seo?.breakdown?.linkPosition?.percentile > 80) {
+      recommendations.push({
+        type: 'link_position',
+        severity: 'suggestion',
+        target: link.title,
+        message: `Link to "${link.title}" appears late in content (${link.seo.breakdown.linkPosition.percentile}%). Earlier placement has more SEO value.`
+      });
+    }
+  }
+
+  // Site-wide recommendations
+  if (seoMetrics?.anchors?.overused > 10) {
+    recommendations.push({
+      type: 'sitewide_anchor_diversity',
+      severity: 'warning',
+      message: `${seoMetrics.anchors.overused} anchor texts are overused site-wide. Review and diversify anchor text strategy.`
+    });
+  }
+
+  if (seoMetrics?.links?.reciprocalRatio > 30) {
+    recommendations.push({
+      type: 'sitewide_reciprocal',
+      severity: 'warning',
+      message: `High reciprocal link ratio (${seoMetrics.links.reciprocalRatio}%). Consider more one-way linking patterns.`
+    });
+  }
+
+  return recommendations;
 }
