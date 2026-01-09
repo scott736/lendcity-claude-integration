@@ -849,6 +849,10 @@ function lendcity_sync_chunk() {
         wp_send_json_error(['message' => 'Unauthorized']);
     }
 
+    // v6.3: Increase limits for full semantic enrichment (can take 15-30 sec per article)
+    @set_time_limit(300);
+    @ini_set('memory_limit', '512M');
+
     $post_ids = isset($_POST['post_ids']) ? array_map('intval', (array)$_POST['post_ids']) : [];
 
     if (empty($post_ids)) {
@@ -857,6 +861,7 @@ function lendcity_sync_chunk() {
 
     $api = new LendCity_External_API();
     if (!$api->is_configured()) {
+        error_log('LendCity sync_chunk: External API not configured');
         wp_send_json_error(['message' => 'External API not configured']);
     }
 
@@ -864,20 +869,27 @@ function lendcity_sync_chunk() {
     $failed = 0;
     $errors = [];
 
+    error_log('LendCity sync_chunk: Processing ' . count($post_ids) . ' posts: ' . implode(', ', $post_ids));
+
     foreach ($post_ids as $post_id) {
+        error_log('LendCity sync_chunk: Syncing post ' . $post_id . ' with full enrichment...');
         $result = $api->sync_to_catalog($post_id);
 
         if (is_wp_error($result)) {
             $failed++;
-            $errors[] = ['postId' => $post_id, 'error' => $result->get_error_message()];
+            $error_msg = $result->get_error_message();
+            $errors[] = ['postId' => $post_id, 'error' => $error_msg];
+            error_log('LendCity sync_chunk: Post ' . $post_id . ' FAILED - ' . $error_msg);
         } else {
             $success++;
             // Mark as synced for skip functionality
             update_post_meta($post_id, '_lendcity_pinecone_synced', '1');
             update_post_meta($post_id, '_lendcity_pinecone_synced_at', current_time('mysql'));
+            error_log('LendCity sync_chunk: Post ' . $post_id . ' SUCCESS');
         }
     }
 
+    error_log('LendCity sync_chunk: Complete - success: ' . $success . ', failed: ' . $failed);
     wp_send_json_success([
         'success' => $success,
         'failed' => $failed,
