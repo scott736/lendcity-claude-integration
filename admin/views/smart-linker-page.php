@@ -122,19 +122,36 @@ $total_links = $smart_linker->get_total_link_count();
             <!-- Rebuild Catalog Card -->
             <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
                 <h3 style="margin: 0 0 10px; color: white;">📚 Rebuild Catalog</h3>
-                <p style="margin: 0 0 10px; font-size: 13px; opacity: 0.8;">Sync all content to Pinecone. Pillars first, then pages, then posts.</p>
+                <p style="margin: 0 0 10px; font-size: 13px; opacity: 0.8;">Sync all content to Pinecone with full AI enrichment.</p>
                 <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; cursor: pointer;">
                     <input type="checkbox" id="skip-already-synced" checked>
                     <span>Skip already catalogued articles</span>
                 </label>
-                <button type="button" id="rebuild-pinecone-catalog" class="button button-large" style="background: #4fc3f7; color: #0f0c29; border: none; font-weight: bold; width: 100%;">
-                    🔄 Rebuild Catalog
-                </button>
+                <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+                    <button type="button" id="rebuild-pinecone-catalog" class="button button-large" style="background: #4fc3f7; color: #0f0c29; border: none; font-weight: bold; flex: 1;">
+                        🔄 Rebuild (Parallel)
+                    </button>
+                    <button type="button" id="rebuild-background" class="button button-large" style="background: #81c784; color: #1b5e20; border: none; font-weight: bold; flex: 1;">
+                        ⏳ Background
+                    </button>
+                </div>
+                <p style="margin: 0 0 10px; font-size: 11px; opacity: 0.6;">Parallel: ~10 min for 128 articles. Background: runs via cron, can close browser.</p>
                 <div id="rebuild-catalog-status" style="margin-top: 10px; display: none;">
                     <div style="background: rgba(255,255,255,0.2); height: 8px; border-radius: 4px; overflow: hidden;">
                         <div id="rebuild-catalog-bar" style="background: #4fc3f7; height: 100%; width: 0%; transition: width 0.3s;"></div>
                     </div>
                     <p id="rebuild-catalog-text" style="margin: 8px 0 0; font-size: 12px;"></p>
+                </div>
+                <!-- Background rebuild status -->
+                <div id="background-rebuild-status" style="margin-top: 10px; display: none; background: rgba(129,199,132,0.2); padding: 10px; border-radius: 6px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                        <strong style="font-size: 12px;">⏳ Background Rebuild</strong>
+                        <button type="button" id="stop-background-rebuild" class="button" style="background: #ef5350; color: white; border: none; font-size: 11px; padding: 2px 8px;">Stop</button>
+                    </div>
+                    <div style="background: rgba(255,255,255,0.2); height: 6px; border-radius: 3px; overflow: hidden;">
+                        <div id="background-rebuild-bar" style="background: #81c784; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                    </div>
+                    <p id="background-rebuild-text" style="margin: 6px 0 0; font-size: 11px;"></p>
                 </div>
             </div>
 
@@ -613,29 +630,59 @@ jQuery(document).ready(function($) {
             var processed = 0;
             var succeeded = 0;
             var failed = 0;
-            // v6.3: Process 1 article at a time for full semantic enrichment (takes 15-30 sec each)
-            var chunkSize = 1;
+            var nextIndex = 0;
 
-            $text.text('Syncing 0 of ' + total + ' articles...');
+            // v6.3: Parallel processing with batch full enrichment
+            // - chunkSize: 5 articles per API call (batch endpoint max for full enrichment)
+            // - parallelWorkers: 3 simultaneous requests (15 articles processing at once)
+            var chunkSize = 5;
+            var parallelWorkers = 3;
+            var activeWorkers = 0;
 
-            function processChunk() {
-                if (processed >= total) {
+            $text.text('Syncing 0 of ' + total + ' articles (parallel mode)...');
+
+            function updateProgress() {
+                var percent = Math.round((processed / total) * 100);
+                $bar.css('width', percent + '%');
+                $text.text('Syncing ' + processed + ' of ' + total + ' articles (' + activeWorkers + ' active)...');
+            }
+
+            function checkComplete() {
+                if (processed >= total && activeWorkers === 0) {
                     $bar.css('width', '100%');
                     $text.html('<strong>Complete!</strong> ' + succeeded + ' of ' + total + ' synced.' +
                         (failed > 0 ? ' <span style="color: #ff5252;">' + failed + ' failed</span>' : ''));
                     $btn.prop('disabled', false).text('🔄 Rebuild Catalog');
                     loadPineconeStats(); // Refresh stats
+                }
+            }
+
+            function processNextBatch() {
+                // Don't start new work if we've processed everything
+                if (nextIndex >= total) {
+                    checkComplete();
                     return;
                 }
 
-                var chunk = items.slice(processed, processed + chunkSize);
+                // Don't exceed parallel limit
+                if (activeWorkers >= parallelWorkers) {
+                    return;
+                }
+
+                // Get next batch of articles
+                var chunk = items.slice(nextIndex, nextIndex + chunkSize);
                 var chunkIds = chunk.map(function(item) { return item.id; });
+                nextIndex += chunk.length;
+                activeWorkers++;
+
+                updateProgress();
 
                 $.post(ajaxurl, {
-                    action: 'lendcity_sync_chunk',
+                    action: 'lendcity_sync_batch_full',
                     nonce: bulkSyncNonce,
                     post_ids: chunkIds
                 }, function(chunkResponse) {
+                    activeWorkers--;
                     if (chunkResponse.success) {
                         succeeded += chunkResponse.data.success || 0;
                         failed += chunkResponse.data.failed || 0;
@@ -644,24 +691,173 @@ jQuery(document).ready(function($) {
                     }
                     processed += chunk.length;
 
-                    var percent = Math.round((processed / total) * 100);
-                    $bar.css('width', percent + '%');
-                    $text.text('Syncing ' + processed + ' of ' + total + ' articles...');
-
-                    setTimeout(processChunk, 500);
+                    updateProgress();
+                    processNextBatch(); // Start next batch
+                    checkComplete();
                 }).fail(function() {
+                    activeWorkers--;
                     failed += chunk.length;
                     processed += chunk.length;
-                    setTimeout(processChunk, 500);
+
+                    updateProgress();
+                    processNextBatch(); // Start next batch
+                    checkComplete();
                 });
+
+                // Immediately try to start more workers
+                processNextBatch();
             }
 
-            processChunk();
+            // Start parallel workers
+            for (var i = 0; i < parallelWorkers; i++) {
+                processNextBatch();
+            }
         }).fail(function() {
             $text.text('Request failed. Check console for details.');
-            $btn.prop('disabled', false).text('🔄 Rebuild Catalog');
+            $btn.prop('disabled', false).text('🔄 Rebuild (Parallel)');
         });
     });
+
+    // ========== BACKGROUND REBUILD SYSTEM ==========
+
+    var backgroundPollInterval = null;
+
+    // Check background rebuild status on page load
+    function checkBackgroundStatus() {
+        $.post(ajaxurl, {
+            action: 'lendcity_get_background_status',
+            nonce: bulkSyncNonce
+        }, function(response) {
+            if (response.success) {
+                var data = response.data;
+                if (data.status === 'running') {
+                    showBackgroundStatus(data);
+                    startBackgroundPolling();
+                } else if (data.status === 'complete') {
+                    showBackgroundComplete(data);
+                } else {
+                    hideBackgroundStatus();
+                }
+            }
+        });
+    }
+
+    function showBackgroundStatus(data) {
+        var $status = $('#background-rebuild-status');
+        var $bar = $('#background-rebuild-bar');
+        var $text = $('#background-rebuild-text');
+
+        var percent = data.total > 0 ? Math.round((data.processed / data.total) * 100) : 0;
+        $bar.css('width', percent + '%');
+        $text.html(data.processed + ' of ' + data.total + ' processed. ' +
+            '<span style="color: #81c784;">' + data.succeeded + ' succeeded</span>' +
+            (data.failed > 0 ? ', <span style="color: #ef5350;">' + data.failed + ' failed</span>' : '') +
+            '<br><small>Last update: ' + data.updated_at + '</small>');
+        $status.show();
+    }
+
+    function showBackgroundComplete(data) {
+        var $status = $('#background-rebuild-status');
+        var $bar = $('#background-rebuild-bar');
+        var $text = $('#background-rebuild-text');
+
+        $bar.css('width', '100%');
+        $text.html('<strong>Complete!</strong> ' + data.succeeded + ' succeeded' +
+            (data.failed > 0 ? ', ' + data.failed + ' failed' : '') +
+            '<br><small>Finished at: ' + data.updated_at + '</small>');
+        $status.show();
+        $('#stop-background-rebuild').hide();
+        loadPineconeStats();
+    }
+
+    function hideBackgroundStatus() {
+        $('#background-rebuild-status').hide();
+    }
+
+    function startBackgroundPolling() {
+        if (backgroundPollInterval) return;
+        backgroundPollInterval = setInterval(function() {
+            $.post(ajaxurl, {
+                action: 'lendcity_get_background_status',
+                nonce: bulkSyncNonce
+            }, function(response) {
+                if (response.success) {
+                    var data = response.data;
+                    if (data.status === 'running') {
+                        showBackgroundStatus(data);
+                    } else if (data.status === 'complete') {
+                        showBackgroundComplete(data);
+                        stopBackgroundPolling();
+                    } else {
+                        hideBackgroundStatus();
+                        stopBackgroundPolling();
+                    }
+                }
+            });
+        }, 5000); // Poll every 5 seconds
+    }
+
+    function stopBackgroundPolling() {
+        if (backgroundPollInterval) {
+            clearInterval(backgroundPollInterval);
+            backgroundPollInterval = null;
+        }
+    }
+
+    // Start background rebuild button
+    $('#rebuild-background').on('click', function() {
+        var $btn = $(this);
+        var skipSynced = $('#skip-already-synced').is(':checked');
+
+        $btn.prop('disabled', true).text('Starting...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_start_background_rebuild',
+            nonce: bulkSyncNonce,
+            skip_synced: skipSynced ? 'true' : 'false'
+        }, function(response) {
+            $btn.prop('disabled', false).text('⏳ Background');
+
+            if (response.success) {
+                if (response.data.status === 'complete') {
+                    alert('All articles already catalogued!');
+                } else {
+                    $('#stop-background-rebuild').show();
+                    showBackgroundStatus({
+                        processed: 0,
+                        total: response.data.total,
+                        succeeded: 0,
+                        failed: 0,
+                        updated_at: 'Just started'
+                    });
+                    startBackgroundPolling();
+                }
+            } else {
+                alert('Error: ' + (response.data?.message || 'Unknown error'));
+            }
+        }).fail(function() {
+            $btn.prop('disabled', false).text('⏳ Background');
+            alert('Request failed');
+        });
+    });
+
+    // Stop background rebuild button
+    $('#stop-background-rebuild').on('click', function() {
+        if (!confirm('Stop background rebuild? Progress will be saved.')) return;
+
+        $.post(ajaxurl, {
+            action: 'lendcity_stop_background_rebuild',
+            nonce: bulkSyncNonce
+        }, function(response) {
+            if (response.success) {
+                stopBackgroundPolling();
+                $('#background-rebuild-text').html('<strong>Stopped.</strong> Progress saved. Click Background to resume.');
+            }
+        });
+    });
+
+    // Check status on page load
+    checkBackgroundStatus();
 
     // ========== AUDIT CACHING SYSTEM ==========
 

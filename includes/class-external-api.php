@@ -574,12 +574,13 @@ class LendCity_External_API {
 
     /**
      * Batch sync multiple articles to Pinecone
-     * v6.0: Much faster than individual syncs
+     * v6.3: Added fullEnrichment parameter for parallel AI enrichment
      *
      * @param array $post_ids Array of post IDs to sync
+     * @param bool $full_enrichment Whether to use full AI enrichment (default: true)
      * @return array|WP_Error Results or error
      */
-    public function batch_sync_to_catalog($post_ids) {
+    public function batch_sync_to_catalog($post_ids, $full_enrichment = true) {
         if (empty($post_ids)) {
             return ['success' => true, 'processed' => 0];
         }
@@ -607,8 +608,12 @@ class LendCity_External_API {
             return ['success' => true, 'processed' => 0];
         }
 
-        // Send batch request - Pinecone is the only data store
-        return $this->request('api/catalog-sync-batch', ['articles' => $articles], 'POST', $this->batch_timeout);
+        // v6.3: Send batch request with fullEnrichment flag
+        // Full enrichment runs AI analysis in parallel on the API side (~30 sec for 5 articles)
+        return $this->request('api/catalog-sync-batch', [
+            'articles' => $articles,
+            'fullEnrichment' => $full_enrichment
+        ], 'POST', $this->batch_timeout);
     }
 
     /**
@@ -898,6 +903,67 @@ function lendcity_sync_chunk() {
 }
 
 /**
+ * AJAX handler: Sync batch of posts with FULL enrichment (parallel API processing)
+ * v6.3: Uses batch endpoint with parallel AI enrichment for faster rebuilds
+ */
+add_action('wp_ajax_lendcity_sync_batch_full', 'lendcity_sync_batch_full');
+
+function lendcity_sync_batch_full() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    // Increase limits for batch full enrichment (processes up to 5 articles in parallel)
+    @set_time_limit(300);
+    @ini_set('memory_limit', '512M');
+
+    $post_ids = isset($_POST['post_ids']) ? array_map('intval', (array)$_POST['post_ids']) : [];
+
+    if (empty($post_ids)) {
+        wp_send_json_error(['message' => 'No post IDs provided']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        error_log('LendCity sync_batch_full: External API not configured');
+        wp_send_json_error(['message' => 'External API not configured']);
+    }
+
+    error_log('LendCity sync_batch_full: Processing ' . count($post_ids) . ' posts with FULL enrichment: ' . implode(', ', $post_ids));
+
+    // Use batch endpoint with full enrichment (parallel AI processing on API side)
+    $result = $api->batch_sync_to_catalog($post_ids, true);
+
+    if (is_wp_error($result)) {
+        error_log('LendCity sync_batch_full: FAILED - ' . $result->get_error_message());
+        wp_send_json_error(['message' => $result->get_error_message()]);
+    }
+
+    $success = $result['succeeded'] ?? 0;
+    $failed = $result['failed'] ?? 0;
+
+    // Mark successfully synced posts
+    if (!empty($result['details'])) {
+        foreach ($result['details'] as $detail) {
+            if ($detail['status'] === 'success') {
+                update_post_meta($detail['postId'], '_lendcity_pinecone_synced', '1');
+                update_post_meta($detail['postId'], '_lendcity_pinecone_synced_at', current_time('mysql'));
+            }
+        }
+    }
+
+    error_log('LendCity sync_batch_full: Complete - success: ' . $success . ', failed: ' . $failed);
+    wp_send_json_success([
+        'success' => $success,
+        'failed' => $failed,
+        'errors' => $result['errors'] ?? [],
+        'enrichmentStats' => $result['enrichmentStats'] ?? []
+    ]);
+}
+
+/**
  * AJAX handler for rebuilding catalog (pillars first, then content)
  * v6.0: Uses BATCH operations for much faster sync
  */
@@ -1041,38 +1107,29 @@ function lendcity_rebuild_catalog() {
 
 /**
  * Helper: Batch sync with chunking and retry logic
- * v6.2: Changed default to 1 article at a time for full semantic enrichment
+ * v6.3: Now uses batch endpoint with parallel full enrichment (5 articles at a time)
+ *
+ * @param LendCity_External_API $api API instance
+ * @param array $post_ids Array of post IDs to sync
+ * @param int $batch_size Number of articles per batch (max 5 for full enrichment)
+ * @param bool $full_enrichment Whether to use full AI enrichment
  */
-function lendcity_batch_sync_with_retry($api, $post_ids, $batch_size = 1) {
+function lendcity_batch_sync_with_retry($api, $post_ids, $batch_size = 5, $full_enrichment = true) {
     $results = ['success' => 0, 'failed' => 0, 'errors' => []];
 
-    // v6.2: When batch_size is 1, use single sync (has full AI enrichment)
-    // This is slower but provides maximum SEO value per article
-    if ($batch_size === 1) {
-        foreach ($post_ids as $post_id) {
-            error_log("LendCity: Syncing article $post_id with full enrichment...");
-            $result = $api->sync_to_catalog($post_id);
-            if (is_wp_error($result)) {
-                $results['failed']++;
-                $post = get_post($post_id);
-                $results['errors'][] = [
-                    'type' => 'post',
-                    'postId' => $post_id,
-                    'title' => $post ? $post->post_title : 'Unknown',
-                    'error' => $result->get_error_message()
-                ];
-            } else {
-                $results['success']++;
-            }
-        }
-        return $results;
-    }
+    // v6.3: Cap batch size based on enrichment mode
+    // Full enrichment max is 5 (API limit for parallel AI processing)
+    $max_batch = $full_enrichment ? 5 : 20;
+    $batch_size = min($batch_size, $max_batch);
 
-    // Process in batches (for batch_size > 1, uses light enrichment)
+    error_log("LendCity batch_sync: Processing " . count($post_ids) . " articles in batches of $batch_size with " . ($full_enrichment ? 'FULL' : 'light') . " enrichment");
+
+    // Process in batches with full enrichment support
     $batches = array_chunk($post_ids, $batch_size);
 
-    foreach ($batches as $batch) {
-        $result = $api->batch_sync_to_catalog($batch);
+    foreach ($batches as $batch_index => $batch) {
+        error_log("LendCity batch_sync: Processing batch " . ($batch_index + 1) . "/" . count($batches) . " (" . count($batch) . " articles)");
+        $result = $api->batch_sync_to_catalog($batch, $full_enrichment);
 
         if (is_wp_error($result)) {
             // Batch failed - fall back to individual syncs
@@ -2103,4 +2160,272 @@ function lendcity_get_sync_list_filtered() {
         'total' => count($items),
         'skipped_synced' => $skip_synced
     ]);
+}
+
+// ============================================================================
+// v6.3: BACKGROUND QUEUE SYSTEM FOR CATALOG REBUILD
+// ============================================================================
+
+/**
+ * Register WP Cron hook for background catalog rebuild
+ */
+add_action('lendcity_background_catalog_rebuild', 'lendcity_process_background_queue');
+
+/**
+ * Schedule custom cron interval (every minute)
+ */
+add_filter('cron_schedules', function($schedules) {
+    $schedules['every_minute'] = [
+        'interval' => 60,
+        'display' => __('Every Minute')
+    ];
+    return $schedules;
+});
+
+/**
+ * AJAX handler: Start background catalog rebuild
+ */
+add_action('wp_ajax_lendcity_start_background_rebuild', 'lendcity_start_background_rebuild');
+
+function lendcity_start_background_rebuild() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    $skip_synced = isset($_POST['skip_synced']) && $_POST['skip_synced'] === 'true';
+
+    // Get all items to sync
+    $items = [];
+
+    // Get pillar pages first
+    $pillar_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'meta_query' => [
+            ['key' => '_lendcity_is_pillar', 'value' => '1']
+        ]
+    ]);
+
+    foreach ($pillar_pages as $page) {
+        if ($skip_synced && get_post_meta($page->ID, '_lendcity_pinecone_synced', true) === '1') {
+            continue;
+        }
+        $items[] = $page->ID;
+    }
+
+    // Get other pages
+    $pillar_ids = wp_list_pluck($pillar_pages, 'ID');
+    $other_pages = get_posts([
+        'post_type' => 'page',
+        'post_status' => 'publish',
+        'numberposts' => -1,
+        'post__not_in' => !empty($pillar_ids) ? $pillar_ids : [0]
+    ]);
+
+    foreach ($other_pages as $page) {
+        if ($skip_synced && get_post_meta($page->ID, '_lendcity_pinecone_synced', true) === '1') {
+            continue;
+        }
+        $items[] = $page->ID;
+    }
+
+    // Get posts
+    $posts = get_posts([
+        'post_type' => 'post',
+        'post_status' => 'publish',
+        'numberposts' => -1
+    ]);
+
+    foreach ($posts as $post) {
+        if ($skip_synced && get_post_meta($post->ID, '_lendcity_pinecone_synced', true) === '1') {
+            continue;
+        }
+        $items[] = $post->ID;
+    }
+
+    if (empty($items)) {
+        wp_send_json_success([
+            'status' => 'complete',
+            'message' => 'No articles to sync'
+        ]);
+    }
+
+    // Store queue in options
+    $queue_data = [
+        'status' => 'running',
+        'queue' => $items,
+        'total' => count($items),
+        'processed' => 0,
+        'succeeded' => 0,
+        'failed' => 0,
+        'started_at' => current_time('mysql'),
+        'updated_at' => current_time('mysql'),
+        'errors' => []
+    ];
+
+    update_option('lendcity_background_rebuild_queue', $queue_data);
+
+    // Schedule cron job if not already scheduled
+    if (!wp_next_scheduled('lendcity_background_catalog_rebuild')) {
+        wp_schedule_event(time(), 'every_minute', 'lendcity_background_catalog_rebuild');
+    }
+
+    // Also trigger immediate processing
+    wp_schedule_single_event(time(), 'lendcity_background_catalog_rebuild');
+
+    error_log('LendCity: Background rebuild started with ' . count($items) . ' articles');
+
+    wp_send_json_success([
+        'status' => 'started',
+        'total' => count($items),
+        'message' => 'Background rebuild started'
+    ]);
+}
+
+/**
+ * AJAX handler: Get background rebuild status
+ */
+add_action('wp_ajax_lendcity_get_background_status', 'lendcity_get_background_status');
+
+function lendcity_get_background_status() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    $queue_data = get_option('lendcity_background_rebuild_queue', null);
+
+    if (!$queue_data) {
+        wp_send_json_success([
+            'status' => 'idle',
+            'message' => 'No background rebuild in progress'
+        ]);
+    }
+
+    wp_send_json_success([
+        'status' => $queue_data['status'],
+        'total' => $queue_data['total'],
+        'processed' => $queue_data['processed'],
+        'succeeded' => $queue_data['succeeded'],
+        'failed' => $queue_data['failed'],
+        'remaining' => count($queue_data['queue']),
+        'started_at' => $queue_data['started_at'],
+        'updated_at' => $queue_data['updated_at'],
+        'errors' => array_slice($queue_data['errors'], -5) // Last 5 errors
+    ]);
+}
+
+/**
+ * AJAX handler: Stop background rebuild
+ */
+add_action('wp_ajax_lendcity_stop_background_rebuild', 'lendcity_stop_background_rebuild');
+
+function lendcity_stop_background_rebuild() {
+    check_ajax_referer('lendcity_bulk_sync', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    // Clear the scheduled event
+    wp_clear_scheduled_hook('lendcity_background_catalog_rebuild');
+
+    // Update queue status
+    $queue_data = get_option('lendcity_background_rebuild_queue', null);
+    if ($queue_data) {
+        $queue_data['status'] = 'stopped';
+        $queue_data['updated_at'] = current_time('mysql');
+        update_option('lendcity_background_rebuild_queue', $queue_data);
+    }
+
+    error_log('LendCity: Background rebuild stopped');
+
+    wp_send_json_success([
+        'status' => 'stopped',
+        'message' => 'Background rebuild stopped'
+    ]);
+}
+
+/**
+ * WP Cron handler: Process background queue
+ * Processes 5 articles per cron run (batch with full enrichment)
+ */
+function lendcity_process_background_queue() {
+    $queue_data = get_option('lendcity_background_rebuild_queue', null);
+
+    if (!$queue_data || $queue_data['status'] !== 'running') {
+        // No active queue, clear the scheduled event
+        wp_clear_scheduled_hook('lendcity_background_catalog_rebuild');
+        return;
+    }
+
+    if (empty($queue_data['queue'])) {
+        // Queue is empty, mark as complete
+        $queue_data['status'] = 'complete';
+        $queue_data['updated_at'] = current_time('mysql');
+        update_option('lendcity_background_rebuild_queue', $queue_data);
+        wp_clear_scheduled_hook('lendcity_background_catalog_rebuild');
+
+        error_log('LendCity: Background rebuild COMPLETE - ' . $queue_data['succeeded'] . ' succeeded, ' . $queue_data['failed'] . ' failed');
+        return;
+    }
+
+    // Increase limits for background processing
+    @set_time_limit(300);
+    @ini_set('memory_limit', '512M');
+
+    // Get next batch (5 articles for full enrichment)
+    $batch_size = 5;
+    $batch = array_splice($queue_data['queue'], 0, $batch_size);
+
+    error_log('LendCity: Background processing batch of ' . count($batch) . ' articles');
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        error_log('LendCity: Background rebuild - API not configured');
+        $queue_data['status'] = 'error';
+        $queue_data['errors'][] = ['error' => 'API not configured', 'time' => current_time('mysql')];
+        update_option('lendcity_background_rebuild_queue', $queue_data);
+        return;
+    }
+
+    // Process batch with full enrichment
+    $result = $api->batch_sync_to_catalog($batch, true);
+
+    if (is_wp_error($result)) {
+        $queue_data['failed'] += count($batch);
+        $queue_data['errors'][] = [
+            'error' => $result->get_error_message(),
+            'batch' => $batch,
+            'time' => current_time('mysql')
+        ];
+        error_log('LendCity: Background batch FAILED - ' . $result->get_error_message());
+    } else {
+        $queue_data['succeeded'] += $result['succeeded'] ?? 0;
+        $queue_data['failed'] += $result['failed'] ?? 0;
+
+        // Mark successfully synced posts
+        if (!empty($result['details'])) {
+            foreach ($result['details'] as $detail) {
+                if ($detail['status'] === 'success') {
+                    update_post_meta($detail['postId'], '_lendcity_pinecone_synced', '1');
+                    update_post_meta($detail['postId'], '_lendcity_pinecone_synced_at', current_time('mysql'));
+                }
+            }
+        }
+
+        error_log('LendCity: Background batch complete - ' . ($result['succeeded'] ?? 0) . ' succeeded');
+    }
+
+    $queue_data['processed'] += count($batch);
+    $queue_data['updated_at'] = current_time('mysql');
+
+    // Check if queue is now empty
+    if (empty($queue_data['queue'])) {
+        $queue_data['status'] = 'complete';
+        wp_clear_scheduled_hook('lendcity_background_catalog_rebuild');
+        error_log('LendCity: Background rebuild COMPLETE - ' . $queue_data['succeeded'] . ' succeeded, ' . $queue_data['failed'] . ' failed');
+    }
+
+    update_option('lendcity_background_rebuild_queue', $queue_data);
 }
