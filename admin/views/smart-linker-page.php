@@ -1013,6 +1013,7 @@ jQuery(document).ready(function($) {
     }
 
     // Run audit on specific posts
+    // v6.3: Uses parallel batch processing for faster audits
     function runAudit(postIds, onComplete) {
         var $bar = $('#audit-progress-bar');
         var $text = $('#audit-progress-text');
@@ -1023,15 +1024,20 @@ jQuery(document).ready(function($) {
 
         var total = postIds.length;
         var processed = 0;
-        var chunkSize = 3;
+        var chunkSize = 10; // v6.3: Larger batch size (API handles up to 10)
+        var parallelWorkers = 3; // v6.3: Run 3 batches in parallel
+        var activeWorkers = 0;
+        var chunkIndex = 0;
 
         var aggregatedStats = { totalLinks: 0, brokenLinks: 0, suboptimalLinks: 0, missingOpportunities: 0 };
         var allIssues = [];
+        var startTime = Date.now();
 
-        function processChunk() {
-            if (processed >= total) {
+        function checkComplete() {
+            if (processed >= total && activeWorkers === 0) {
+                var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
                 $bar.css('width', '100%');
-                $text.text('Complete! Refreshing results...');
+                $text.text('Complete in ' + elapsed + 's! Refreshing results...');
 
                 // Reload cached results to get fresh data
                 setTimeout(function() {
@@ -1039,13 +1045,29 @@ jQuery(document).ready(function($) {
                     $progress.hide();
                     if (onComplete) onComplete();
                 }, 500);
+            }
+        }
+
+        function processNextBatch() {
+            // Check if we have more chunks to process
+            var startIdx = chunkIndex * chunkSize;
+            if (startIdx >= total) {
+                checkComplete();
                 return;
             }
 
-            var chunk = postIds.slice(processed, processed + chunkSize);
+            // Check if we can start a new worker
+            if (activeWorkers >= parallelWorkers) {
+                return;
+            }
+
+            // Get chunk and increment index
+            var chunk = postIds.slice(startIdx, startIdx + chunkSize);
+            chunkIndex++;
+            activeWorkers++;
 
             $.post(ajaxurl, {
-                action: 'lendcity_audit_chunk',
+                action: 'lendcity_audit_chunk_batch', // v6.3: Use batch endpoint
                 nonce: linkAuditNonce,
                 post_ids: chunk
             }, function(chunkResponse) {
@@ -1061,16 +1083,24 @@ jQuery(document).ready(function($) {
                 processed += chunk.length;
                 var percent = Math.round((processed / total) * 100);
                 $bar.css('width', percent + '%');
-                $text.text('Auditing ' + processed + ' of ' + total + ' posts...');
+                $text.text('Auditing ' + processed + ' of ' + total + ' posts (' + parallelWorkers + ' parallel)...');
 
-                setTimeout(processChunk, 500);
+                activeWorkers--;
+                processNextBatch(); // Start next batch immediately
             }).fail(function() {
                 processed += chunk.length;
-                setTimeout(processChunk, 500);
+                activeWorkers--;
+                processNextBatch();
             });
+
+            // Try to start more workers immediately
+            processNextBatch();
         }
 
-        processChunk();
+        // Start parallel workers
+        for (var i = 0; i < parallelWorkers; i++) {
+            processNextBatch();
+        }
     }
 
     // Load cached results on page load

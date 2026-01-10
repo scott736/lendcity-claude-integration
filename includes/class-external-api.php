@@ -655,6 +655,45 @@ class LendCity_External_API {
     }
 
     /**
+     * Batch audit links for multiple posts
+     * v6.3: Uses batch endpoint for faster processing
+     *
+     * @param array $post_ids Array of post IDs
+     * @return array|WP_Error Batch audit results or error
+     */
+    public function audit_links_batch($post_ids) {
+        $articles = [];
+
+        foreach ($post_ids as $post_id) {
+            $post = get_post($post_id);
+            if (!$post) {
+                continue;
+            }
+
+            // Extract existing links from content
+            $existing_links = $this->extract_links_from_content($post->post_content);
+
+            $articles[] = [
+                'postId' => $post_id,
+                'content' => $post->post_content,
+                'title' => $post->post_title,
+                'existingLinks' => $existing_links,
+                'contentType' => $post->post_type,
+                'maxSuggestions' => 5
+            ];
+        }
+
+        if (empty($articles)) {
+            return new WP_Error('no_valid_posts', 'No valid posts found');
+        }
+
+        return $this->request('api/link-audit-batch', [
+            'articles' => $articles,
+            'includeSEOMetrics' => true
+        ]);
+    }
+
+    /**
      * Extract internal links from post content
      *
      * @param string $content Post content
@@ -1510,6 +1549,171 @@ function lendcity_audit_chunk() {
             'audited_at' => current_time('mysql'),
             'post_modified' => $post->post_modified
         ]);
+    }
+
+    // Update global audit cache
+    lendcity_update_audit_cache();
+
+    wp_send_json_success($results);
+}
+
+/**
+ * AJAX handler: Batch audit posts using the batch API endpoint
+ * v6.3: Uses batch endpoint for faster parallel processing
+ */
+add_action('wp_ajax_lendcity_audit_chunk_batch', 'lendcity_audit_chunk_batch');
+
+function lendcity_audit_chunk_batch() {
+    check_ajax_referer('lendcity_link_audit', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    @set_time_limit(120);
+    @ini_set('memory_limit', '512M');
+
+    $post_ids = isset($_POST['post_ids']) ? array_map('intval', (array)$_POST['post_ids']) : [];
+
+    if (empty($post_ids)) {
+        wp_send_json_error(['message' => 'No post IDs provided']);
+    }
+
+    $api = new LendCity_External_API();
+    if (!$api->is_configured()) {
+        wp_send_json_error(['message' => 'External API not configured']);
+    }
+
+    // Use batch API
+    $batch_result = $api->audit_links_batch($post_ids);
+
+    if (is_wp_error($batch_result)) {
+        wp_send_json_error(['message' => $batch_result->get_error_message()]);
+    }
+
+    $results = [
+        'audited' => 0,
+        'failed' => 0,
+        'errors' => [],
+        'stats' => [
+            'totalLinks' => 0,
+            'brokenLinks' => 0,
+            'suboptimalLinks' => 0,
+            'missingOpportunities' => 0
+        ],
+        'issues' => [],
+        'processingTime' => $batch_result['processingTime'] ?? 0
+    ];
+
+    // Aggregate from batch stats
+    if (isset($batch_result['stats'])) {
+        $results['stats']['totalLinks'] = $batch_result['stats']['totalLinks'] ?? 0;
+        $results['stats']['brokenLinks'] = $batch_result['stats']['brokenLinks'] ?? 0;
+        $results['stats']['suboptimalLinks'] = $batch_result['stats']['suboptimalLinks'] ?? 0;
+        $results['stats']['missingOpportunities'] = $batch_result['stats']['missingOpportunities'] ?? 0;
+    }
+
+    // Process individual results
+    if (!empty($batch_result['results'])) {
+        foreach ($batch_result['results'] as $article_result) {
+            $post_id = $article_result['postId'];
+            $post = get_post($post_id);
+            $post_title = $post ? $post->post_title : "Post #$post_id";
+
+            if (!$article_result['success']) {
+                $results['failed']++;
+                $results['errors'][] = ['postId' => $post_id, 'error' => $article_result['error'] ?? 'Unknown error'];
+                continue;
+            }
+
+            $results['audited']++;
+
+            $post_issues = [];
+            $post_stats = [
+                'totalLinks' => 0,
+                'brokenLinks' => 0,
+                'suboptimalLinks' => 0,
+                'missingOpportunities' => 0
+            ];
+
+            if (isset($article_result['audit']['stats'])) {
+                $stats = $article_result['audit']['stats'];
+                $post_stats['totalLinks'] = $stats['totalLinks'] ?? 0;
+                $post_stats['brokenLinks'] = $stats['brokenLinks'] ?? 0;
+                $post_stats['suboptimalLinks'] = $stats['suboptimalLinks'] ?? 0;
+                $post_stats['missingOpportunities'] = $stats['missingOpportunities'] ?? 0;
+            }
+
+            // Process audit results
+            if (isset($article_result['audit'])) {
+                $a = $article_result['audit'];
+
+                // Broken links
+                if (!empty($a['existing']['broken'])) {
+                    foreach ($a['existing']['broken'] as $broken) {
+                        $issue = [
+                            'type' => 'broken',
+                            'postId' => $post_id,
+                            'postTitle' => $post_title,
+                            'anchor' => $broken['anchor'],
+                            'url' => $broken['url'],
+                            'issue' => $broken['issue']
+                        ];
+                        $results['issues'][] = $issue;
+                        $post_issues[] = $issue;
+                    }
+                }
+
+                // Suboptimal links
+                if (!empty($a['existing']['suboptimal'])) {
+                    foreach ($a['existing']['suboptimal'] as $sub) {
+                        $issue = [
+                            'type' => 'suboptimal',
+                            'postId' => $post_id,
+                            'postTitle' => $post_title,
+                            'anchor' => $sub['anchor'],
+                            'currentTarget' => $sub['currentTarget']['title'] ?? '',
+                            'currentUrl' => $sub['currentTarget']['url'] ?? '',
+                            'betterOption' => isset($sub['betterOptions'][0]) ? $sub['betterOptions'][0]['title'] : '',
+                            'betterUrl' => isset($sub['betterOptions'][0]) ? $sub['betterOptions'][0]['url'] : ''
+                        ];
+                        $results['issues'][] = $issue;
+                        $post_issues[] = $issue;
+                    }
+                }
+
+                // Missing opportunities
+                if (!empty($a['suggestions']['missing'])) {
+                    foreach ($a['suggestions']['missing'] as $missing) {
+                        $issue = [
+                            'type' => 'missing',
+                            'postId' => $post_id,
+                            'postTitle' => $post_title,
+                            'targetPostId' => $missing['postId'] ?? 0,
+                            'targetTitle' => $missing['title'] ?? '',
+                            'targetUrl' => $missing['url'] ?? '',
+                            'topicCluster' => $missing['topicCluster'] ?? '',
+                            'score' => $missing['score'] ?? 0,
+                            'anchorText' => $missing['anchorText'] ?? '',
+                            'anchorContext' => $missing['anchorContext'] ?? '',
+                            'reason' => $missing['reason'] ?? ''
+                        ];
+                        $results['issues'][] = $issue;
+                        $post_issues[] = $issue;
+                    }
+                }
+            }
+
+            // Cache per-post audit results
+            if ($post) {
+                update_post_meta($post_id, '_lendcity_audit_cache', [
+                    'stats' => $post_stats,
+                    'issues' => $post_issues,
+                    'audited_at' => current_time('mysql'),
+                    'post_modified' => $post->post_modified
+                ]);
+            }
+        }
     }
 
     // Update global audit cache
