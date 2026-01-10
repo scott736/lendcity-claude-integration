@@ -757,6 +757,12 @@ add_action('publish_post', 'lendcity_sync_on_publish', 20);
 add_action('publish_page', 'lendcity_sync_on_publish', 20);
 
 function lendcity_sync_on_publish($post_id) {
+    // v6.3: Skip sync if we're just adding a link (not a real content change)
+    global $lendcity_skip_sync;
+    if (!empty($lendcity_skip_sync)) {
+        return;
+    }
+
     // Check if external API is enabled
     if (!get_option('lendcity_use_external_api', false)) {
         return;
@@ -2011,6 +2017,10 @@ function lendcity_fix_link() {
         wp_send_json_error(['message' => 'Unauthorized']);
     }
 
+    // v6.3: Skip Pinecone sync - fixing a link doesn't change article semantics
+    global $lendcity_skip_sync;
+    $lendcity_skip_sync = true;
+
     $post_id = isset($_POST['post_id']) ? intval($_POST['post_id']) : 0;
     $action_type = isset($_POST['fix_type']) ? sanitize_text_field($_POST['fix_type']) : '';
     $anchor = isset($_POST['anchor']) ? wp_unslash($_POST['anchor']) : '';
@@ -2089,6 +2099,10 @@ function lendcity_accept_opportunity() {
     if (!current_user_can('edit_posts')) {
         wp_send_json_error(['message' => 'Unauthorized']);
     }
+
+    // v6.3: Skip Pinecone sync - adding a link doesn't change article semantics
+    global $lendcity_skip_sync;
+    $lendcity_skip_sync = true;
 
     $post_id = isset($_POST['post_id']) ? intval($_POST['post_id']) : 0;
     $target_post_id = isset($_POST['target_post_id']) ? intval($_POST['target_post_id']) : 0;
@@ -2203,6 +2217,149 @@ function lendcity_accept_opportunity() {
     }
 
     wp_send_json_error(['message' => 'Could not find suitable anchor text in the post for this link']);
+}
+
+/**
+ * AJAX handler: Batch accept multiple link opportunities
+ * v6.3: Process multiple links in one request for faster "Accept All"
+ */
+add_action('wp_ajax_lendcity_accept_opportunities_batch', 'lendcity_accept_opportunities_batch');
+
+function lendcity_accept_opportunities_batch() {
+    check_ajax_referer('lendcity_link_audit', 'nonce');
+
+    if (!current_user_can('edit_posts')) {
+        wp_send_json_error(['message' => 'Unauthorized']);
+    }
+
+    // v6.3: Skip Pinecone sync for all link additions
+    global $lendcity_skip_sync;
+    $lendcity_skip_sync = true;
+
+    $opportunities = isset($_POST['opportunities']) ? $_POST['opportunities'] : [];
+
+    if (empty($opportunities) || !is_array($opportunities)) {
+        wp_send_json_error(['message' => 'No opportunities provided']);
+    }
+
+    $results = [
+        'succeeded' => 0,
+        'failed' => 0,
+        'details' => []
+    ];
+
+    // Group opportunities by post_id to minimize post updates
+    $by_post = [];
+    foreach ($opportunities as $opp) {
+        $post_id = intval($opp['post_id']);
+        if (!isset($by_post[$post_id])) {
+            $by_post[$post_id] = [];
+        }
+        $by_post[$post_id][] = $opp;
+    }
+
+    foreach ($by_post as $post_id => $post_opps) {
+        $post = get_post($post_id);
+        if (!$post) {
+            foreach ($post_opps as $opp) {
+                $results['failed']++;
+                $results['details'][] = [
+                    'post_id' => $post_id,
+                    'success' => false,
+                    'error' => 'Post not found'
+                ];
+            }
+            continue;
+        }
+
+        $content = $post->post_content;
+        $link_meta = get_post_meta($post_id, '_lendcity_smart_links', true) ?: [];
+        $post_modified = false;
+
+        foreach ($post_opps as $opp) {
+            $target_url = esc_url_raw($opp['target_url'] ?? '');
+            $target_post_id = intval($opp['target_post_id'] ?? 0);
+            $target_title = sanitize_text_field($opp['target_title'] ?? '');
+            $anchor_text = wp_unslash($opp['anchor_text'] ?? '');
+
+            // Check if already linked
+            $already_linked = false;
+            foreach ($link_meta as $existing) {
+                if ($existing['url'] === $target_url) {
+                    $already_linked = true;
+                    break;
+                }
+            }
+
+            if ($already_linked) {
+                $results['details'][] = [
+                    'post_id' => $post_id,
+                    'target_url' => $target_url,
+                    'success' => false,
+                    'error' => 'Already linked'
+                ];
+                $results['failed']++;
+                continue;
+            }
+
+            // Try to add the link
+            $added = false;
+
+            if (!empty($anchor_text)) {
+                $pattern = '/(?<!["\'>])(' . preg_quote($anchor_text, '/') . ')(?![^<]*>)(?![^<]*<\/a>)/i';
+                $replacement = '<a href="' . esc_url($target_url) . '">$1</a>';
+                $new_content = preg_replace($pattern, $replacement, $content, 1, $count);
+
+                if ($count > 0) {
+                    $content = $new_content;
+                    $added = true;
+
+                    $link_meta[] = [
+                        'link_id' => uniqid('lnk_'),
+                        'anchor' => $anchor_text,
+                        'url' => $target_url,
+                        'target_id' => $target_post_id,
+                        'score' => 75,
+                        'created' => current_time('mysql'),
+                        'source' => 'audit_batch_accept'
+                    ];
+                    $post_modified = true;
+                }
+            }
+
+            if ($added) {
+                $results['succeeded']++;
+                $results['details'][] = [
+                    'post_id' => $post_id,
+                    'target_url' => $target_url,
+                    'anchor' => $anchor_text,
+                    'success' => true
+                ];
+            } else {
+                $results['failed']++;
+                $results['details'][] = [
+                    'post_id' => $post_id,
+                    'target_url' => $target_url,
+                    'success' => false,
+                    'error' => 'Anchor not found'
+                ];
+            }
+        }
+
+        // Update post once with all links
+        if ($post_modified) {
+            wp_update_post([
+                'ID' => $post_id,
+                'post_content' => $content
+            ]);
+            update_post_meta($post_id, '_lendcity_smart_links', $link_meta);
+        }
+    }
+
+    // Update audit cache once at the end
+    lendcity_update_audit_cache();
+
+    wp_send_json_success($results);
 }
 
 /**
