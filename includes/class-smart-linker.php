@@ -5504,6 +5504,7 @@ class LendCity_Smart_Linker {
     public function get_posts_for_tag_assignment($only_untagged = false) {
         global $wpdb;
 
+        // Only get posts (not pages) - WordPress only supports tags on posts by default
         if ($only_untagged) {
             // Get posts without tags
             $query = "
@@ -5512,7 +5513,7 @@ class LendCity_Smart_Linker {
                 LEFT JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
                 LEFT JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id AND tt.taxonomy = 'post_tag'
                 WHERE p.post_status = 'publish'
-                AND p.post_type IN ('post', 'page')
+                AND p.post_type = 'post'
                 AND tt.term_taxonomy_id IS NULL
                 ORDER BY p.post_date DESC
             ";
@@ -5522,7 +5523,7 @@ class LendCity_Smart_Linker {
                 SELECT ID
                 FROM {$wpdb->posts}
                 WHERE post_status = 'publish'
-                AND post_type IN ('post', 'page')
+                AND post_type = 'post'
                 ORDER BY post_date DESC
             ";
         }
