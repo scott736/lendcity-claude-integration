@@ -1576,12 +1576,12 @@ class LendCity_Claude_Integration {
         }
         $existing_cats_list = implode(', ', $existing_cat_names);
         
-        // Send to Claude for processing
-        $api = new LendCity_Claude_API();
-        
+        // Send to Claude for processing - use Opus for article writing (higher quality)
+        $api = new LendCity_Claude_API('opus');
+
         $prompt = "You are a friendly content writer for LendCity Mortgages (Canadian mortgage brokerage for investment properties).\n\n";
         $prompt .= "CRITICAL: COMPLETELY REWRITE the content below. Do NOT copy it word-for-word.\n\n";
-        
+
         $prompt .= "WRITING STYLE (VERY IMPORTANT):\n";
         $prompt .= "- Write like a friendly expert explaining things to a regular person\n";
         $prompt .= "- Use simple, everyday words - avoid fancy or complex vocabulary\n";
@@ -1592,7 +1592,7 @@ class LendCity_Claude_Integration {
         $prompt .= "- Sound like a real person talking, not a robot or marketing brochure\n";
         $prompt .= "- Be direct and get to the point\n";
         $prompt .= "- Use 'you' and 'your' to speak directly to the reader\n\n";
-        
+
         $prompt .= "TASKS:\n";
         $prompt .= "1. Create a NEW catchy title (50-60 chars) - simple words\n";
         $prompt .= "2. Meta description (150-160 chars)\n";
@@ -2199,17 +2199,18 @@ class LendCity_Claude_Integration {
         // If transcript is very long, summarize it first to capture full meaning
         $max_transcript_length = 15000;
         if (strlen($transcript) > $max_transcript_length) {
-            $api = new LendCity_Claude_API();
-            
+            // Use Opus for transcript summarization (high quality content generation)
+            $api = new LendCity_Claude_API('opus');
+
             $summary_prompt = "You are summarizing a podcast transcript for LendCity Mortgages (Canadian mortgage brokerage for investment properties).\n\n";
             $summary_prompt .= "Create a detailed summary that captures ALL the key points, advice, strategies, and insights from this episode. ";
             $summary_prompt .= "Include specific numbers, tips, and actionable advice mentioned. ";
             $summary_prompt .= "The summary should be comprehensive enough that someone could write a full article from it without missing important content.\n\n";
             $summary_prompt .= "TRANSCRIPT:\n{$transcript}\n\n";
             $summary_prompt .= "Provide a detailed summary (aim for 2000-3000 words) covering all main topics discussed:";
-            
+
             $summary_response = $api->generate_content($summary_prompt);
-            
+
             if (!is_wp_error($summary_response) && !empty($summary_response)) {
                 $transcript = $summary_response;
             }
@@ -2222,10 +2223,10 @@ class LendCity_Claude_Integration {
             $existing_tag_names[] = $tag->name;
         }
         $existing_tags_list = !empty($existing_tag_names) ? implode(', ', $existing_tag_names) : 'None yet';
-        
-        // Send to Claude for processing
-        $api = new LendCity_Claude_API();
-        
+
+        // Send to Claude for processing - use Opus for article writing (higher quality)
+        $api = new LendCity_Claude_API('opus');
+
         $prompt = "You are a friendly content writer for LendCity Mortgages (Canadian mortgage brokerage for investment properties).\n\n";
         $prompt .= "You have a podcast transcript below. Your job is to turn it into a blog article (~1000 words).\n\n";
         
@@ -2657,26 +2658,27 @@ class LendCity_Claude_Integration {
         // process the episode manually or contact your host about timeout limits.
         $max_transcript_length = 15000;
         if (strlen($transcript) > $max_transcript_length) {
-            $api = new LendCity_Claude_API();
-            
+            // Use Opus for transcript summarization (high quality content generation)
+            $api = new LendCity_Claude_API('opus');
+
             $summary_prompt = "You are summarizing a podcast transcript for LendCity Mortgages (Canadian mortgage brokerage for investment properties).\n\n";
             $summary_prompt .= "Create a detailed summary that captures ALL the key points, advice, strategies, and insights from this episode. ";
             $summary_prompt .= "Include specific numbers, tips, and actionable advice mentioned. ";
             $summary_prompt .= "The summary should be comprehensive enough that someone could write a full article from it without missing important content.\n\n";
             $summary_prompt .= "TRANSCRIPT:\n{$transcript}\n\n";
             $summary_prompt .= "Provide a detailed summary (aim for 2000-3000 words) covering all main topics discussed:";
-            
+
             $summary_response = $api->generate_content($summary_prompt);
-            
+
             if (is_wp_error($summary_response)) {
                 return array('success' => false, 'error' => 'Failed to summarize transcript: ' . $summary_response->get_error_message());
             }
-            
+
             if (!empty($summary_response)) {
                 $transcript = $summary_response;
             }
         }
-        
+
         // Build embed block
         $embed_block = '<!-- wp:html -->' . "\n";
         $embed_block .= '<iframe src="https://share.transistor.fm/e/' . esc_attr($share_id) . '" width="100%" height="180" frameborder="0" scrolling="no" seamless="true"></iframe>' . "\n";
@@ -2689,10 +2691,10 @@ class LendCity_Claude_Integration {
             $existing_tag_names[] = $tag->name;
         }
         $existing_tags_list = !empty($existing_tag_names) ? implode(', ', $existing_tag_names) : 'None yet';
-        
-        // Send to Claude for processing
-        $api = new LendCity_Claude_API();
-        
+
+        // Send to Claude for processing - use Opus for article writing (higher quality)
+        $api = new LendCity_Claude_API('opus');
+
         $prompt = "You are a friendly content writer for LendCity Mortgages (Canadian mortgage brokerage for investment properties).\n\n";
         $prompt .= "Below is content from a podcast episode. Your job is to create a NEW, engaging blog article based on this content.\n\n";
         
@@ -3735,12 +3737,12 @@ class LendCity_Claude_Integration {
         }
         $existing_cats_list = implode(', ', $existing_cat_names);
         
-        // Send to Claude for processing
-        $api = new LendCity_Claude_API();
-        
+        // Send to Claude for processing - use Opus for article writing (higher quality)
+        $api = new LendCity_Claude_API('opus');
+
         $prompt = "You are a friendly content writer for LendCity Mortgages (Canadian mortgage brokerage for investment properties).\n\n";
         $prompt .= "CRITICAL: COMPLETELY REWRITE the content below. Do NOT copy it word-for-word.\n\n";
-        
+
         $prompt .= "WRITING STYLE (VERY IMPORTANT):\n";
         $prompt .= "- Write like a friendly expert explaining things to a regular person\n";
         $prompt .= "- Use simple, everyday words - avoid fancy or complex vocabulary\n";
@@ -3751,7 +3753,7 @@ class LendCity_Claude_Integration {
         $prompt .= "- Sound like a real person talking, not a robot or marketing brochure\n";
         $prompt .= "- Be direct and get to the point\n";
         $prompt .= "- Use 'you' and 'your' to speak directly to the reader\n\n";
-        
+
         $prompt .= "TASKS:\n";
         $prompt .= "1. Create a NEW catchy title (50-60 chars) - different from the original, simple words\n";
         $prompt .= "2. Create a meta description (150-160 chars)\n";
