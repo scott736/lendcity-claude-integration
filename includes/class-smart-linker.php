@@ -3745,6 +3745,7 @@ class LendCity_Smart_Linker {
             return array('success' => false, 'error' => 'API key not set');
         }
 
+        // Use Sonnet for catalog building and link suggestions (structured data extraction)
         $response = wp_remote_post('https://api.anthropic.com/v1/messages', array(
             'timeout' => 120,
             'headers' => array(
@@ -3753,7 +3754,7 @@ class LendCity_Smart_Linker {
                 'anthropic-version' => '2023-06-01'
             ),
             'body' => json_encode(array(
-                'model' => 'claude-opus-4-5-20251101',
+                'model' => LendCity_Claude_API::MODEL_SONNET,
                 'max_tokens' => $max_tokens,
                 'messages' => array(array('role' => 'user', 'content' => $prompt))
             ))
@@ -3873,8 +3874,9 @@ class LendCity_Smart_Linker {
                     'x-api-key: ' . $this->api_key,
                     'anthropic-version: 2023-06-01'
                 ),
+                // Use Sonnet for parallel catalog building (structured data extraction)
                 CURLOPT_POSTFIELDS => json_encode(array(
-                    'model' => 'claude-opus-4-5-20251101',
+                    'model' => LendCity_Claude_API::MODEL_SONNET,
                     'max_tokens' => 1500,
                     'messages' => array(array('role' => 'user', 'content' => $prompt))
                 ))
@@ -4098,24 +4100,30 @@ class LendCity_Smart_Linker {
         // Parse response - strip markdown code blocks if present
         $cleaned_response = $response;
 
-        // Remove markdown code blocks (```json ... ``` or ``` ... ```)
-        if (preg_match('/```(?:json)?\s*([\s\S]*?)\s*```/', $cleaned_response, $code_matches)) {
-            $cleaned_response = trim($code_matches[1]);
-        }
+        // Remove opening code fence (```json or ``` at start)
+        $cleaned_response = preg_replace('/^```(?:json)?\s*\n?/', '', $cleaned_response);
 
-        // Try to parse the cleaned response first
+        // Remove closing code fence (``` at end)
+        $cleaned_response = preg_replace('/\n?```\s*$/', '', $cleaned_response);
+
+        $cleaned_response = trim($cleaned_response);
+
+        // Try to parse the cleaned response
         $result = json_decode($cleaned_response, true);
 
-        // If that fails, try extracting JSON object from the response
-        if (!$result) {
-            if (preg_match('/(\{(?:[^{}]|(?1))*\})/s', $cleaned_response, $matches)) {
-                $result = json_decode($matches[0], true);
-            }
-        }
-
-        // Final fallback: try original response
+        // If that fails, try original response
         if (!$result) {
             $result = json_decode($response, true);
+        }
+
+        // If still failing, try to extract JSON from anywhere in the response
+        if (!$result) {
+            $first_brace = strpos($cleaned_response, '{');
+            $last_brace = strrpos($cleaned_response, '}');
+            if ($first_brace !== false && $last_brace !== false && $last_brace > $first_brace) {
+                $json_str = substr($cleaned_response, $first_brace, $last_brace - $first_brace + 1);
+                $result = json_decode($json_str, true);
+            }
         }
 
         if (!$result || !isset($result['title'])) {
@@ -4828,29 +4836,36 @@ class LendCity_Smart_Linker {
         // Parse response - strip markdown code blocks if present
         $cleaned_response = $response;
 
-        // Remove markdown code blocks (```json ... ``` or ``` ... ```)
-        if (preg_match('/```(?:json)?\s*([\s\S]*?)\s*```/', $cleaned_response, $code_matches)) {
-            $cleaned_response = trim($code_matches[1]);
-        }
+        // Remove opening code fence (```json or ``` at start)
+        $cleaned_response = preg_replace('/^```(?:json)?\s*\n?/', '', $cleaned_response);
 
-        // Try to parse the cleaned response first
+        // Remove closing code fence (``` at end)
+        $cleaned_response = preg_replace('/\n?```\s*$/', '', $cleaned_response);
+
+        $cleaned_response = trim($cleaned_response);
+
+        // Try to parse the cleaned response
         $result = json_decode($cleaned_response, true);
 
-        // If that fails, try extracting JSON object from the response
-        if (!$result) {
-            // Try to find the outermost JSON object
-            if (preg_match('/(\{(?:[^{}]|(?1))*\})/s', $cleaned_response, $matches)) {
-                $result = json_decode($matches[0], true);
-            }
-        }
-
-        // Final fallback: try original response
+        // If that fails, try original response
         if (!$result) {
             $result = json_decode($response, true);
         }
 
+        // If still failing, try to extract JSON from anywhere in the response
+        if (!$result) {
+            // Find first { and last } to extract JSON
+            $first_brace = strpos($cleaned_response, '{');
+            $last_brace = strrpos($cleaned_response, '}');
+            if ($first_brace !== false && $last_brace !== false && $last_brace > $first_brace) {
+                $json_str = substr($cleaned_response, $first_brace, $last_brace - $first_brace + 1);
+                $result = json_decode($json_str, true);
+            }
+        }
+
         if (!$result || !isset($result['tags'])) {
             error_log('LendCity Tag Audit: Failed to parse API response. Raw: ' . substr($response, 0, 1000));
+            error_log('LendCity Tag Audit: JSON error: ' . json_last_error_msg());
             return array('success' => false, 'error' => 'Invalid API response', 'raw' => substr($response, 0, 500));
         }
 
@@ -5168,24 +5183,30 @@ class LendCity_Smart_Linker {
         // Parse response - strip markdown code blocks if present
         $cleaned_response = $response;
 
-        // Remove markdown code blocks (```json ... ``` or ``` ... ```)
-        if (preg_match('/```(?:json)?\s*([\s\S]*?)\s*```/', $cleaned_response, $code_matches)) {
-            $cleaned_response = trim($code_matches[1]);
-        }
+        // Remove opening code fence (```json or ``` at start)
+        $cleaned_response = preg_replace('/^```(?:json)?\s*\n?/', '', $cleaned_response);
 
-        // Try to parse the cleaned response first
+        // Remove closing code fence (``` at end)
+        $cleaned_response = preg_replace('/\n?```\s*$/', '', $cleaned_response);
+
+        $cleaned_response = trim($cleaned_response);
+
+        // Try to parse the cleaned response
         $result = json_decode($cleaned_response, true);
 
-        // If that fails, try extracting JSON object from the response
-        if (!$result) {
-            if (preg_match('/(\{(?:[^{}]|(?1))*\})/s', $cleaned_response, $matches)) {
-                $result = json_decode($matches[0], true);
-            }
-        }
-
-        // Final fallback: try original response
+        // If that fails, try original response
         if (!$result) {
             $result = json_decode($response, true);
+        }
+
+        // If still failing, try to extract JSON from anywhere in the response
+        if (!$result) {
+            $first_brace = strpos($cleaned_response, '{');
+            $last_brace = strrpos($cleaned_response, '}');
+            if ($first_brace !== false && $last_brace !== false && $last_brace > $first_brace) {
+                $json_str = substr($cleaned_response, $first_brace, $last_brace - $first_brace + 1);
+                $result = json_decode($json_str, true);
+            }
         }
 
         if (!$result || !isset($result['selected_tags'])) {

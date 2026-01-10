@@ -5,9 +5,13 @@
 
 class LendCity_Claude_API {
 
+    // Model constants
+    const MODEL_SONNET = 'claude-sonnet-4-20250514';
+    const MODEL_OPUS = 'claude-opus-4-5-20251101';
+
     private $api_key;
     private $api_url = 'https://api.anthropic.com/v1/messages';
-    private $model = 'claude-opus-4-5-20251101';
+    private $model;
 
     // Retry configuration
     private $max_retries = 3;
@@ -23,8 +27,14 @@ class LendCity_Claude_API {
     private $rate_limit_window = 60;      // Window in seconds (1 minute)
     private $rate_limit_key = 'lendcity_api_rate_limit';
 
-    public function __construct() {
+    /**
+     * Constructor
+     *
+     * @param string $model Model to use: 'sonnet' (default, cheaper) or 'opus' (for article writing)
+     */
+    public function __construct($model = 'sonnet') {
         $this->api_key = get_option('lendcity_claude_api_key');
+        $this->model = ($model === 'opus') ? self::MODEL_OPUS : self::MODEL_SONNET;
     }
 
     /**
