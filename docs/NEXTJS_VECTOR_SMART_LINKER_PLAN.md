@@ -1660,7 +1660,64 @@ function renderStructuredData(article) {
 | Content Gap Analysis | Find missing topics | P2 |
 
 **NOTES:**
-<!-- Add your SEO feature priorities here -->
+
+### SEOPress vs Custom SEO - Decision Notes (January 2026)
+
+**Current State:**
+- SEOPress handles: meta tag output, FAQ Schema blocks, sitemaps
+- Our Claude plugin already generates: AI-powered titles, descriptions, focus keyphrases
+- SEOPress is just the storage/output mechanism for what Claude generates
+
+**What SEOPress Does Well (and is already working):**
+1. Outputs meta tags to `<head>`
+2. FAQ Schema via Gutenberg blocks (FAQPage JSON-LD)
+3. Sitemap generation
+4. Zero additional effort - works today
+
+**What SEOPress Cannot Do:**
+- Link-context aware SEO (the novel feature in this plan)
+- Doesn't know about internal linking patterns
+- Can't use inbound anchor text to inform focus keyphrases
+
+**The Only Genuinely Novel Feature Worth Building:**
+
+Link-Context Aware SEO (Section 17): If 8 articles link to your BRRRR guide
+using "BRRRR strategy" as anchor text, that should automatically become
+your focus keyphrase - not something you guess. SEOPress cannot do this.
+
+**Decision Matrix:**
+
+| Option | Effort | Benefit |
+|--------|--------|---------|
+| Keep SEOPress | Zero | Everything works today |
+| Build custom meta output only | Low | One less plugin, no new capability |
+| Build link-aware SEO | Medium | Genuine competitive advantage |
+
+**Recommendation:**
+- If NOT using link-context aware SEO → Keep SEOPress
+- If WANT link-aware feature → Build custom (requires deep integration with linking system)
+
+**SEOPress Features Worth Preserving (if building custom):**
+1. FAQ Schema generation (most valuable)
+2. Auto-generating SEO titles/descriptions (already doing via Claude)
+
+**SEOPress Features NOT Needed:**
+- Content analysis scores (Claude's quality scoring is better)
+- Sitemap generation (other simpler plugins exist)
+- Social media previews (standard Open Graph tags suffice)
+- Redirect management (not SEO-specific)
+
+**Schema Types to Implement (if building custom):**
+
+| Schema Type | Trigger | Notes |
+|-------------|---------|-------|
+| Article | All blog posts | Standard article markup |
+| FAQPage | Posts with FAQ sections | Currently handled by SEOPress |
+| HowTo | Posts with step instructions | Based on content_format |
+| BreadcrumbList | All pages | Navigation schema |
+| Organization | Site-wide | Company info |
+
+**Key Question:** Is link-context aware SEO valuable enough to justify building this?
 
 
 ---
