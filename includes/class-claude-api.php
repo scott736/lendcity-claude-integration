@@ -317,6 +317,9 @@ class LendCity_Claude_API {
             return false;
         }
 
+        // Use longer timeout for large requests (tag audit with 300+ tags needs ~2-3 minutes)
+        $timeout = ($max_tokens > 4000) ? 180 : 60;
+
         $response = $this->http_request_with_retry(array(
             'headers' => array(
                 'Content-Type' => 'application/json',
@@ -324,7 +327,7 @@ class LendCity_Claude_API {
                 'anthropic-version' => '2023-06-01'
             ),
             'body' => $json_body
-        ), 60);
+        ), $timeout);
 
         if (is_wp_error($response)) {
             error_log('LendCity Claude API Error: ' . $response->get_error_message());
