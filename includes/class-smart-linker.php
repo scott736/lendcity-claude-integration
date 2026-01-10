@@ -3745,6 +3745,7 @@ class LendCity_Smart_Linker {
             return array('success' => false, 'error' => 'API key not set');
         }
 
+        // Use Sonnet for catalog building and link suggestions (structured data extraction)
         $response = wp_remote_post('https://api.anthropic.com/v1/messages', array(
             'timeout' => 120,
             'headers' => array(
@@ -3753,7 +3754,7 @@ class LendCity_Smart_Linker {
                 'anthropic-version' => '2023-06-01'
             ),
             'body' => json_encode(array(
-                'model' => 'claude-opus-4-5-20251101',
+                'model' => LendCity_Claude_API::MODEL_SONNET,
                 'max_tokens' => $max_tokens,
                 'messages' => array(array('role' => 'user', 'content' => $prompt))
             ))
@@ -3873,8 +3874,9 @@ class LendCity_Smart_Linker {
                     'x-api-key: ' . $this->api_key,
                     'anthropic-version: 2023-06-01'
                 ),
+                // Use Sonnet for parallel catalog building (structured data extraction)
                 CURLOPT_POSTFIELDS => json_encode(array(
-                    'model' => 'claude-opus-4-5-20251101',
+                    'model' => LendCity_Claude_API::MODEL_SONNET,
                     'max_tokens' => 1500,
                     'messages' => array(array('role' => 'user', 'content' => $prompt))
                 ))
