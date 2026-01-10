@@ -1,7 +1,14 @@
 const { upsertArticle, deleteArticle, getArticle, getPillarPages } = require('../lib/pinecone');
-const { generateEmbeddings, cleanForEmbedding } = require('../lib/embeddings');
-const { batchAnalyzeArticles } = require('../lib/claude');
-const { enrichArticleLight, analyzeContentStructure, analyzeEEAT, extractLSIKeywords, calculateComprehensiveness } = require('../lib/semantic-enrichment');
+const { generateEmbeddings, generateArticleEmbedding, cleanForEmbedding } = require('../lib/embeddings');
+const { batchAnalyzeArticles, generateSummary, extractKeywords } = require('../lib/claude');
+const {
+  enrichArticle,
+  enrichArticleLight,
+  analyzeContentStructure,
+  analyzeEEAT,
+  extractLSIKeywords,
+  calculateComprehensiveness
+} = require('../lib/semantic-enrichment');
 
 /**
  * Batch Catalog Sync Endpoint
@@ -9,10 +16,11 @@ const { enrichArticleLight, analyzeContentStructure, analyzeEEAT, extractLSIKeyw
  *
  * POST /api/catalog-sync-batch
  *
- * Optimized for speed:
- * - Single Claude call for multiple articles
- * - Batch embedding generation
- * - Parallel Pinecone upserts
+ * v6.3: Added fullEnrichment support for parallel AI enrichment
+ *
+ * Modes:
+ * - fullEnrichment=false (default): Light enrichment, fast (~1 sec/article)
+ * - fullEnrichment=true: Full AI enrichment in parallel (~30 sec for 5 articles)
  */
 module.exports = async function handler(req, res) {
   // CORS headers
@@ -35,7 +43,7 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const { articles } = req.body;
+    const { articles, fullEnrichment = false } = req.body;
 
     if (!articles || !Array.isArray(articles) || articles.length === 0) {
       return res.status(400).json({
@@ -43,13 +51,16 @@ module.exports = async function handler(req, res) {
       });
     }
 
-    // Limit batch size to prevent timeouts
-    const MAX_BATCH_SIZE = 20;
+    // v6.3: Different batch limits for light vs full enrichment
+    // Full enrichment uses more API calls, so smaller batches
+    const MAX_BATCH_SIZE = fullEnrichment ? 5 : 20;
     if (articles.length > MAX_BATCH_SIZE) {
       return res.status(400).json({
-        error: `Batch size exceeds maximum of ${MAX_BATCH_SIZE} articles`
+        error: `Batch size exceeds maximum of ${MAX_BATCH_SIZE} articles for ${fullEnrichment ? 'full' : 'light'} enrichment`
       });
     }
+
+    console.log(`Batch sync: ${articles.length} articles with ${fullEnrichment ? 'FULL' : 'light'} enrichment`);
 
     // Validate required fields for each article
     const validArticles = [];
@@ -106,67 +117,172 @@ module.exports = async function handler(req, res) {
     // Step 5: Generate all embeddings in single batch call
     const embeddings = await generateEmbeddings(textsForEmbedding);
 
-    // Step 6: Prepare article data with analysis results, embeddings, AND light semantic enrichment
-    const articlesToUpsert = validArticles.map((article, index) => {
-      const analysis = analysisResults[article.postId] || {};
+    // Step 6: Prepare article data with enrichment
+    let articlesToUpsert;
 
-      // Merge WordPress data with analysis results
-      const finalTopicCluster = (article.topicCluster && article.topicCluster !== 'general')
-        ? article.topicCluster : (analysis.topicCluster || 'general');
-      const finalFunnelStage = article.funnelStage || analysis.funnelStage || 'awareness';
-      const finalTargetPersona = article.targetPersona || analysis.targetPersona || 'general';
-      const finalIsPillar = article.contentType === 'page' && (article.isPillar || false);
-      const mainTopics = article.mainTopics || analysis.mainTopics || [];
+    if (fullEnrichment) {
+      // === v6.3: FULL AI Enrichment (parallel) ===
+      // Run full enrichment for all articles in parallel
+      console.log(`Running FULL enrichment for ${validArticles.length} articles in parallel...`);
+      const enrichmentStartTime = Date.now();
 
-      // === v2.2: Light Semantic Enrichment (fast, no additional API calls) ===
-      // These are computed locally without Claude/OpenAI calls for batch efficiency
-      const contentStructure = analyzeContentStructure(article.content || '');
-      const comprehensiveness = calculateComprehensiveness(
-        article.content || '',
-        contentStructure,
-        mainTopics
-      );
-      const lsiKeywords = extractLSIKeywords(
-        article.content || '',
-        mainTopics,
-        finalTopicCluster
-      );
-      const eeatAnalysis = analyzeEEAT(article.content || '', {
-        updatedAt: article.updatedAt,
-        publishedAt: article.publishedAt
+      const enrichmentPromises = validArticles.map(async (article, index) => {
+        const analysis = analysisResults[article.postId] || {};
+        const finalTopicCluster = (article.topicCluster && article.topicCluster !== 'general')
+          ? article.topicCluster : (analysis.topicCluster || 'general');
+        const finalFunnelStage = article.funnelStage || analysis.funnelStage || 'awareness';
+        const finalTargetPersona = article.targetPersona || analysis.targetPersona || 'general';
+        const finalIsPillar = article.contentType === 'page' && (article.isPillar || false);
+        const mainTopics = article.mainTopics || analysis.mainTopics || [];
+
+        // Generate summary if not provided
+        let articleSummary = article.summary || analysis.summary;
+        if (!articleSummary) {
+          try {
+            articleSummary = await generateSummary(article.content);
+          } catch (e) {
+            articleSummary = '';
+          }
+        }
+
+        // Extract keywords if not provided
+        let keywords = { mainTopics: mainTopics, semanticKeywords: article.semanticKeywords || [] };
+        if (mainTopics.length === 0) {
+          try {
+            keywords = await extractKeywords(article.content);
+          } catch (e) {
+            // Use defaults
+          }
+        }
+
+        // Full AI-powered enrichment
+        const enrichmentData = await enrichArticle({
+          title: article.title,
+          content: article.content,
+          summary: articleSummary,
+          mainTopics: keywords.mainTopics,
+          semanticKeywords: keywords.semanticKeywords,
+          topicCluster: finalTopicCluster,
+          updatedAt: article.updatedAt || new Date().toISOString(),
+          publishedAt: article.publishedAt || new Date().toISOString()
+        }, {
+          generateSectionEmbed: true,
+          generateMultiVector: false,
+          extractLSI: true,
+          detectLinkable: true,
+          analyzeStructure: true,
+          analyzeEEATSignals: true,
+          extractAnchors: true,
+          useAI: true
+        });
+
+        console.log(`Full enrichment complete for article ${article.postId} in ${enrichmentData.enrichmentTime}ms`);
+
+        return {
+          postId: article.postId,
+          title: article.title,
+          url: article.url,
+          slug: article.slug || article.url.split('/').filter(Boolean).pop(),
+          contentType: article.contentType || 'article',
+          topicCluster: finalTopicCluster,
+          relatedClusters: article.relatedClusters || analysis.relatedClusters || [],
+          funnelStage: finalFunnelStage,
+          targetPersona: finalTargetPersona,
+          difficultyLevel: article.difficultyLevel || analysis.difficultyLevel || 'intermediate',
+          qualityScore: article.qualityScore || analysis.qualityScore || 50,
+          contentLifespan: article.contentLifespan || 'evergreen',
+          isPillar: finalIsPillar,
+          summary: articleSummary,
+          mainTopics: keywords.mainTopics,
+          semanticKeywords: keywords.semanticKeywords,
+          anchorPhrases: enrichmentData.anchorPhrases || [],
+          primaryAnchor: enrichmentData.primaryAnchor || '',
+          inboundLinkCount: article.inboundLinkCount || 0,
+          publishedAt: article.publishedAt || new Date().toISOString(),
+          updatedAt: article.updatedAt || new Date().toISOString(),
+          embedding: embeddings[index],
+
+          // === Full Semantic Enrichment Data (v6.3) ===
+          lsiKeywords: enrichmentData.lsiKeywords || [],
+          questionKeywords: enrichmentData.questionKeywords || [],
+          contentStructure: enrichmentData.contentStructure || {},
+          comprehensiveness: enrichmentData.comprehensiveness || {},
+          h2Topics: enrichmentData.h2Topics || [],
+          linkableMoments: enrichmentData.linkableMoments || [],
+          eeatAnalysis: enrichmentData.eeatAnalysis || {},
+          sections: enrichmentData.sections || [],
+          enrichedAt: enrichmentData.enrichedAt || new Date().toISOString(),
+          enrichmentTime: enrichmentData.enrichmentTime || 0,
+          enrichmentMode: 'full'
+        };
       });
 
-      return {
-        postId: article.postId,
-        title: article.title,
-        url: article.url,
-        slug: article.slug || article.url.split('/').filter(Boolean).pop(),
-        contentType: article.contentType || 'article',
-        topicCluster: finalTopicCluster,
-        relatedClusters: article.relatedClusters || analysis.relatedClusters || [],
-        funnelStage: finalFunnelStage,
-        targetPersona: finalTargetPersona,
-        difficultyLevel: article.difficultyLevel || analysis.difficultyLevel || 'intermediate',
-        qualityScore: article.qualityScore || analysis.qualityScore || 50,
-        contentLifespan: article.contentLifespan || 'evergreen',
-        isPillar: finalIsPillar,
-        summary: article.summary || analysis.summary || '',
-        mainTopics: mainTopics,
-        semanticKeywords: article.semanticKeywords || analysis.semanticKeywords || [],
-        anchorPhrases: article.anchorPhrases || [],
-        inboundLinkCount: article.inboundLinkCount || 0,
-        publishedAt: article.publishedAt || new Date().toISOString(),
-        updatedAt: article.updatedAt || new Date().toISOString(),
-        embedding: embeddings[index],
+      articlesToUpsert = await Promise.all(enrichmentPromises);
+      console.log(`Full batch enrichment completed in ${Date.now() - enrichmentStartTime}ms`);
 
-        // === Light Semantic Enrichment Data (v2.2) ===
-        lsiKeywords: lsiKeywords,
-        contentStructure: contentStructure,
-        comprehensiveness: comprehensiveness,
-        eeatAnalysis: eeatAnalysis,
-        enrichedAt: new Date().toISOString()
-      };
-    });
+    } else {
+      // === Light Enrichment (fast, no extra API calls) ===
+      articlesToUpsert = validArticles.map((article, index) => {
+        const analysis = analysisResults[article.postId] || {};
+
+        // Merge WordPress data with analysis results
+        const finalTopicCluster = (article.topicCluster && article.topicCluster !== 'general')
+          ? article.topicCluster : (analysis.topicCluster || 'general');
+        const finalFunnelStage = article.funnelStage || analysis.funnelStage || 'awareness';
+        const finalTargetPersona = article.targetPersona || analysis.targetPersona || 'general';
+        const finalIsPillar = article.contentType === 'page' && (article.isPillar || false);
+        const mainTopics = article.mainTopics || analysis.mainTopics || [];
+
+        // Light enrichment (local pattern matching, no API calls)
+        const contentStructure = analyzeContentStructure(article.content || '');
+        const comprehensiveness = calculateComprehensiveness(
+          article.content || '',
+          contentStructure,
+          mainTopics
+        );
+        const lsiKeywords = extractLSIKeywords(
+          article.content || '',
+          mainTopics,
+          finalTopicCluster
+        );
+        const eeatAnalysis = analyzeEEAT(article.content || '', {
+          updatedAt: article.updatedAt,
+          publishedAt: article.publishedAt
+        });
+
+        return {
+          postId: article.postId,
+          title: article.title,
+          url: article.url,
+          slug: article.slug || article.url.split('/').filter(Boolean).pop(),
+          contentType: article.contentType || 'article',
+          topicCluster: finalTopicCluster,
+          relatedClusters: article.relatedClusters || analysis.relatedClusters || [],
+          funnelStage: finalFunnelStage,
+          targetPersona: finalTargetPersona,
+          difficultyLevel: article.difficultyLevel || analysis.difficultyLevel || 'intermediate',
+          qualityScore: article.qualityScore || analysis.qualityScore || 50,
+          contentLifespan: article.contentLifespan || 'evergreen',
+          isPillar: finalIsPillar,
+          summary: article.summary || analysis.summary || '',
+          mainTopics: mainTopics,
+          semanticKeywords: article.semanticKeywords || analysis.semanticKeywords || [],
+          anchorPhrases: article.anchorPhrases || [],
+          inboundLinkCount: article.inboundLinkCount || 0,
+          publishedAt: article.publishedAt || new Date().toISOString(),
+          updatedAt: article.updatedAt || new Date().toISOString(),
+          embedding: embeddings[index],
+
+          // === Light Semantic Enrichment Data ===
+          lsiKeywords: lsiKeywords,
+          contentStructure: contentStructure,
+          comprehensiveness: comprehensiveness,
+          eeatAnalysis: eeatAnalysis,
+          enrichedAt: new Date().toISOString(),
+          enrichmentMode: 'light'
+        };
+      });
+    }
 
     // Step 7: Parallel upsert to Pinecone
     const upsertResults = await Promise.allSettled(
