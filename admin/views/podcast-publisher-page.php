@@ -30,8 +30,15 @@ if ($plugin_instance && method_exists($plugin_instance, 'get_transistor_webhook_
     $webhook_url = rest_url('lendcity/v1/transistor-webhook') . '?key=' . $webhook_secret;
 }
 
-// Get Transistor API key
+// Get Transistor API key with backup restoration (survives plugin updates)
 $transistor_api_key = get_option('lendcity_transistor_api_key', '');
+$transistor_api_key_backup = get_option('lendcity_transistor_api_key_backup', '');
+
+// Restore from backup if main option is empty but backup exists
+if (empty($transistor_api_key) && !empty($transistor_api_key_backup)) {
+    $transistor_api_key = $transistor_api_key_backup;
+    update_option('lendcity_transistor_api_key', $transistor_api_key);
+}
 
 // Get show mappings from individual options (WordPress Settings API saves these)
 $show_id_1 = get_option('lendcity_show_id_1', '');

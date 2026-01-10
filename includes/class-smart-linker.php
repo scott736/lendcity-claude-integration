@@ -96,6 +96,9 @@ class LendCity_Smart_Linker {
         // v12.7.0 Tag assignment queue processing
         add_action('lendcity_process_tag_queue', array($this, 'process_tag_assignment_batch'));
 
+        // v12.8.1 Auto-tag new posts
+        add_action('lendcity_auto_tag_new_post', array($this, 'process_new_post_auto_tag'));
+
         // Loopback processing (non-cron)
         add_action('wp_ajax_lendcity_background_process', array($this, 'ajax_background_process'));
         add_action('wp_ajax_nopriv_lendcity_background_process', array($this, 'ajax_background_process'));
@@ -1127,6 +1130,16 @@ class LendCity_Smart_Linker {
             return;
         }
 
+        // v12.8.1: Auto-tag new posts if enabled and tag directory exists
+        if (get_option('lendcity_auto_tag_posts', 'yes') === 'yes') {
+            $directory = $this->get_tag_directory();
+            if (!empty($directory['tags'])) {
+                $this->log('Scheduling auto-tag for new post ' . $post->ID . ' - ' . $post->post_title);
+                wp_schedule_single_event(time() + 30, 'lendcity_auto_tag_new_post', array($post->ID));
+            }
+        }
+
+        // Auto-linking (existing functionality)
         if (get_option('lendcity_smart_linker_auto', 'yes') !== 'yes') {
             return;
         }
@@ -5389,6 +5402,45 @@ class LendCity_Smart_Linker {
             'total' => count($post_ids),
             'message' => 'Tag assignment queue initialized with ' . count($post_ids) . ' posts'
         );
+    }
+
+    /**
+     * Auto-tag a newly published post
+     * Called by scheduled event after post publish
+     *
+     * @param int $post_id Post ID to tag
+     */
+    public function process_new_post_auto_tag($post_id) {
+        $post = get_post($post_id);
+        if (!$post || $post->post_status !== 'publish' || $post->post_type !== 'post') {
+            $this->log('Auto-tag skipped for post ' . $post_id . ' - invalid post');
+            return;
+        }
+
+        // Check if post already has tags (don't overwrite)
+        $existing_tags = wp_get_post_tags($post_id);
+        if (!empty($existing_tags)) {
+            $this->log('Auto-tag skipped for post ' . $post_id . ' - already has tags');
+            return;
+        }
+
+        // Check if tag directory exists
+        $directory = $this->get_tag_directory();
+        if (empty($directory['tags'])) {
+            $this->log('Auto-tag skipped for post ' . $post_id . ' - no tag directory');
+            return;
+        }
+
+        $this->log('Auto-tagging post ' . $post_id . ' - ' . $post->post_title);
+
+        // Assign tags (don't overwrite existing)
+        $result = $this->assign_tags_to_post($post_id, false);
+
+        if ($result['success']) {
+            $this->log('Auto-tag completed for post ' . $post_id . ' - assigned: ' . implode(', ', $result['assigned_tags']));
+        } else {
+            $this->log('Auto-tag failed for post ' . $post_id . ' - ' . ($result['error'] ?? 'unknown error'));
+        }
     }
 
     /**

@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 12.8.1
+ * Version: 12.9.0
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '12.8.1');
+define('LENDCITY_CLAUDE_VERSION', '12.9.0');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -593,11 +593,36 @@ class LendCity_Claude_Integration {
 
         // Podcast webhook settings - SEPARATE group to avoid overwriting API keys
         // NOTE: Webhook secret is NOT registered - it's managed separately via AJAX only
-        register_setting('lendcity_podcast_settings', 'lendcity_transistor_api_key');
+        register_setting('lendcity_podcast_settings', 'lendcity_transistor_api_key', array(
+            'sanitize_callback' => array($this, 'sanitize_transistor_api_key')
+        ));
         register_setting('lendcity_podcast_settings', 'lendcity_show_id_1');
         register_setting('lendcity_podcast_settings', 'lendcity_show_category_1');
         register_setting('lendcity_podcast_settings', 'lendcity_show_id_2');
         register_setting('lendcity_podcast_settings', 'lendcity_show_category_2');
+    }
+
+    /**
+     * Sanitize and backup Transistor API key
+     * Backs up to a separate option that survives plugin updates
+     */
+    public function sanitize_transistor_api_key($value) {
+        $value = sanitize_text_field($value);
+
+        // If empty, try to restore from backup
+        if (empty($value)) {
+            $backup = get_option('lendcity_transistor_api_key_backup', '');
+            if (!empty($backup)) {
+                return $backup;
+            }
+        }
+
+        // Backup non-empty values (autoload = false for backup)
+        if (!empty($value)) {
+            update_option('lendcity_transistor_api_key_backup', $value, false);
+        }
+
+        return $value;
     }
 
     /**
