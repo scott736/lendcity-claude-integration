@@ -2996,23 +2996,30 @@ class LendCity_Claude_Integration {
         // Strip markdown code blocks if present
         $cleaned_response = $response;
 
-        if (preg_match('/```(?:json)?\s*([\s\S]*?)\s*```/', $cleaned_response, $code_matches)) {
-            $cleaned_response = trim($code_matches[1]);
-        }
+        // Remove opening code fence (```json or ``` at start)
+        $cleaned_response = preg_replace('/^```(?:json)?\s*\n?/', '', $cleaned_response);
 
-        // Try to parse the cleaned response first
+        // Remove closing code fence (``` at end)
+        $cleaned_response = preg_replace('/\n?```\s*$/', '', $cleaned_response);
+
+        $cleaned_response = trim($cleaned_response);
+
+        // Try to parse the cleaned response
         $result = json_decode($cleaned_response, true);
 
-        // If that fails, try extracting JSON object from the response
-        if (!$result) {
-            if (preg_match('/(\{(?:[^{}]|(?1))*\})/s', $cleaned_response, $matches)) {
-                $result = json_decode($matches[0], true);
-            }
-        }
-
-        // Final fallback: try original response
+        // If that fails, try original response
         if (!$result) {
             $result = json_decode($response, true);
+        }
+
+        // If still failing, try to extract JSON from anywhere in the response
+        if (!$result) {
+            $first_brace = strpos($cleaned_response, '{');
+            $last_brace = strrpos($cleaned_response, '}');
+            if ($first_brace !== false && $last_brace !== false && $last_brace > $first_brace) {
+                $json_str = substr($cleaned_response, $first_brace, $last_brace - $first_brace + 1);
+                $result = json_decode($json_str, true);
+            }
         }
 
         if (!$result || !isset($result['title'])) {
