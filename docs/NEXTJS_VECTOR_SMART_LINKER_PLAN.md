@@ -1,4 +1,4 @@
-# Vector-Based Hybrid Smart Linker for Next.js + Sanity.io
+# Vector-Based Hybrid Smart Linker
 
 > **Status:** Planning Phase
 > **Target Scale:** 2,000 - 3,000+ articles
@@ -23,7 +23,7 @@
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                              SANITY.IO CMS                                   │
+│                                   CMS                                        │
 │                                                                              │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────┐   │
 │  │    Articles     │  │   Podcasts      │  │   Landing Pages             │   │
@@ -62,10 +62,10 @@
 │  │                                                                     │     │
 │  │  Each vector record:                                                │     │
 │  │  {                                                                  │     │
-│  │    id: "article-{sanityId}",                                        │     │
+│  │    id: "article-{articleId}",                                       │     │
 │  │    values: [0.023, -0.041, ...],  // 1536 or 3072 dimensions        │     │
 │  │    metadata: {                                                      │     │
-│  │      sanityId: "abc123",                                            │     │
+│  │      articleId: "abc123",                                           │     │
 │  │      slug: "brrrr-strategy-complete-guide",                         │     │
 │  │      title: "Complete BRRRR Strategy Guide",                        │     │
 │  │      url: "/blog/brrrr-strategy-complete-guide",                    │     │
@@ -152,158 +152,64 @@
 
 ## Detailed System Design
 
-### 1. Sanity.io Schema Extensions
+### 1. Article Schema Requirements
+
+The following fields are needed for smart linking functionality:
 
 ```javascript
-// schemas/article.js - Fields needed for smart linking
+// Article schema - Fields needed for smart linking
 
-export default {
-  name: 'article',
-  title: 'Article',
-  type: 'document',
-  fields: [
-    // Core content
-    { name: 'title', type: 'string', validation: Rule => Rule.required() },
-    { name: 'slug', type: 'slug', options: { source: 'title' } },
-    { name: 'body', type: 'portableText' },
-    { name: 'summary', type: 'text', rows: 4,
-      description: 'Used for SEO and vector embedding' },
+const articleSchema = {
+  // Core content
+  title: String,           // Required
+  slug: String,            // URL-friendly identifier
+  body: Text,              // Full article content
+  summary: Text,           // 'Used for SEO and vector embedding'
 
-    // === SMART LINKER METADATA ===
+  // === SMART LINKER METADATA ===
 
-    // Funnel & Journey
-    {
-      name: 'funnelStage',
-      type: 'string',
-      options: {
-        list: [
-          { title: 'Awareness', value: 'awareness' },
-          { title: 'Consideration', value: 'consideration' },
-          { title: 'Decision', value: 'decision' }
-        ]
-      }
-    },
+  // Funnel & Journey
+  funnelStage: Enum,       // 'awareness' | 'consideration' | 'decision'
 
-    // Target Audience
-    {
-      name: 'targetPersona',
-      type: 'string',
-      options: {
-        list: [
-          { title: 'Real Estate Investor', value: 'investor' },
-          { title: 'First-Time Buyer', value: 'first-time-buyer' },
-          { title: 'Realtor/Agent', value: 'realtor' },
-          { title: 'General', value: 'general' }
-        ]
-      }
-    },
+  // Target Audience
+  targetPersona: Enum,     // 'investor' | 'first-time-buyer' | 'realtor' | 'general'
 
-    // Content Classification
-    {
-      name: 'difficultyLevel',
-      type: 'string',
-      options: {
-        list: [
-          { title: 'Beginner', value: 'beginner' },
-          { title: 'Intermediate', value: 'intermediate' },
-          { title: 'Advanced', value: 'advanced' }
-        ]
-      }
-    },
+  // Content Classification
+  difficultyLevel: Enum,   // 'beginner' | 'intermediate' | 'advanced'
 
-    // Topic Clustering
-    {
-      name: 'topicCluster',
-      type: 'string',
-      options: {
-        list: [
-          { title: 'BRRRR Strategy', value: 'brrrr-strategy' },
-          { title: 'Financing', value: 'financing' },
-          { title: 'Refinancing', value: 'refinancing' },
-          { title: 'Rental Properties', value: 'rental-properties' },
-          { title: 'First-Time Buying', value: 'first-time-buying' },
-          { title: 'Market Analysis', value: 'market-analysis' },
-          // Add more as needed
-        ]
-      }
-    },
-    {
-      name: 'relatedClusters',
-      type: 'array',
-      of: [{ type: 'string' }],
-      options: {
-        list: [
-          // Same list as topicCluster
-        ]
-      }
-    },
+  // Topic Clustering
+  topicCluster: Enum,      // 'brrrr-strategy' | 'financing' | 'refinancing' | etc.
+  relatedClusters: Array,  // Array of topic cluster slugs
 
-    // Content Quality Signals
-    { name: 'isPillar', type: 'boolean', initialValue: false },
-    { name: 'qualityScore', type: 'number',
-      validation: Rule => Rule.min(0).max(100) },
-    {
-      name: 'contentLifespan',
-      type: 'string',
-      options: {
-        list: [
-          { title: 'Evergreen', value: 'evergreen' },
-          { title: 'Seasonal', value: 'seasonal' },
-          { title: 'Time-Sensitive', value: 'time-sensitive' }
-        ]
-      }
-    },
+  // Content Quality Signals
+  isPillar: Boolean,       // Default: false
+  qualityScore: Number,    // 0-100
+  contentLifespan: Enum,   // 'evergreen' | 'seasonal' | 'time-sensitive'
 
-    // Conversion Elements
-    { name: 'hasCta', type: 'boolean', initialValue: false },
-    { name: 'hasCalculator', type: 'boolean', initialValue: false },
-    { name: 'hasLeadForm', type: 'boolean', initialValue: false },
+  // Conversion Elements
+  hasCta: Boolean,         // Default: false
+  hasCalculator: Boolean,  // Default: false
+  hasLeadForm: Boolean,    // Default: false
 
-    // Geographic Targeting
-    {
-      name: 'targetRegions',
-      type: 'array',
-      of: [{ type: 'string' }],
-      description: 'e.g., Ontario, British Columbia'
-    },
-    {
-      name: 'targetCities',
-      type: 'array',
-      of: [{ type: 'string' }],
-      description: 'e.g., Toronto, Vancouver'
-    },
+  // Geographic Targeting
+  targetRegions: Array,    // e.g., ['Ontario', 'British Columbia']
+  targetCities: Array,     // e.g., ['Toronto', 'Vancouver']
 
-    // Linking Preferences
-    {
-      name: 'anchorPhrases',
-      type: 'array',
-      of: [{ type: 'string' }],
-      description: 'Natural phrases to use when linking TO this article'
-    },
-    {
-      name: 'mustLinkTo',
-      type: 'array',
-      of: [{ type: 'reference', to: [{ type: 'article' }] }],
-      description: 'Articles that MUST be linked from this one'
-    },
-    {
-      name: 'neverLinkTo',
-      type: 'array',
-      of: [{ type: 'reference', to: [{ type: 'article' }] }],
-      description: 'Articles that should NEVER be linked from this one'
-    }
-  ]
-}
+  // Linking Preferences
+  anchorPhrases: Array,    // Natural phrases to use when linking TO this article
+  mustLinkTo: Array,       // Article IDs that MUST be linked from this one
+  neverLinkTo: Array       // Article IDs that should NEVER be linked from this one
+};
 ```
 
-### 2. Webhook Handler (Next.js API Route)
+### 2. Webhook Handler (API Route)
 
 ```javascript
-// app/api/webhooks/sanity/route.js
+// api/webhooks/content/route.js
 
 import { generateEmbedding } from '@/lib/embeddings';
 import { upsertVector } from '@/lib/vector-db';
-import { sanityClient } from '@/lib/sanity';
+import { cmsClient } from '@/lib/cms';
 
 export async function POST(request) {
   const body = await request.json();
@@ -311,18 +217,15 @@ export async function POST(request) {
   // Verify webhook signature (important for security)
   // ...
 
-  const { _type, _id, operation } = body;
+  const { type, id, operation } = body;
 
   if (operation === 'delete') {
-    await deleteVector(`${_type}-${_id}`);
+    await deleteVector(`${type}-${id}`);
     return Response.json({ success: true });
   }
 
-  // Fetch full document from Sanity
-  const doc = await sanityClient.fetch(
-    `*[_id == $id][0]`,
-    { id: _id }
-  );
+  // Fetch full document from CMS
+  const doc = await cmsClient.getDocument(id);
 
   // Generate embedding text
   const embeddingText = [
@@ -336,11 +239,11 @@ export async function POST(request) {
 
   // Prepare metadata
   const metadata = {
-    sanityId: _id,
-    slug: doc.slug?.current,
+    articleId: id,
+    slug: doc.slug,
     title: doc.title,
-    url: `/${_type}/${doc.slug?.current}`,
-    contentType: _type,
+    url: `/${type}/${doc.slug}`,
+    contentType: type,
     funnelStage: doc.funnelStage || 'awareness',
     targetPersona: doc.targetPersona || 'general',
     difficultyLevel: doc.difficultyLevel || 'beginner',
@@ -353,12 +256,12 @@ export async function POST(request) {
     hasCalculator: doc.hasCalculator || false,
     anchorPhrases: doc.anchorPhrases || [],
     publishedAt: doc.publishedAt,
-    updatedAt: doc._updatedAt
+    updatedAt: doc.updatedAt
   };
 
   // Upsert to vector database
   await upsertVector({
-    id: `${_type}-${_id}`,
+    id: `${type}-${id}`,
     values: embedding,
     metadata
   });
@@ -413,7 +316,7 @@ export async function generateSmartLinks(article, paragraphs) {
       vector: embedding,
       topK: 30,
       filter: {
-        sanityId: { $ne: article.sanityId }
+        articleId: { $ne: article.articleId }
       }
     });
 
@@ -426,7 +329,7 @@ export async function generateSmartLinks(article, paragraphs) {
     // Step 3: Select best match
     const sorted = scored
       .filter(c => c.finalScore > 50) // Minimum threshold
-      .filter(c => !usedTargets.has(c.metadata.sanityId))
+      .filter(c => !usedTargets.has(c.metadata.articleId))
       .sort((a, b) => b.finalScore - a.finalScore);
 
     if (sorted.length === 0) continue;
@@ -449,7 +352,7 @@ export async function generateSmartLinks(article, paragraphs) {
       isPage: best.metadata.contentType === 'page'
     });
 
-    usedTargets.add(best.metadata.sanityId);
+    usedTargets.add(best.metadata.articleId);
     usedAnchors.add(anchor.toLowerCase());
   }
 
@@ -663,7 +566,7 @@ async function getRelatedArticles(articleId, limit = 5) {
   return queryVectors({
     vector: article.embedding,
     topK: limit + 1,
-    filter: { sanityId: { $ne: articleId } }
+    filter: { articleId: { $ne: articleId } }
   });
 }
 ```
@@ -773,7 +676,7 @@ async function getPersonalizedRecs(userId) {
     vector: tasteVector,
     topK: 10,
     filter: {
-      sanityId: { $nin: userHistory.map(h => h.id) }
+      articleId: { $nin: userHistory.map(h => h.id) }
     }
   });
 }
@@ -800,7 +703,7 @@ async function findDuplicates(threshold = 0.95) {
     const similar = await queryVectors({
       vector: article.values,
       topK: 5,
-      filter: { sanityId: { $ne: article.id } }
+      filter: { articleId: { $ne: article.id } }
     });
 
     const tooSimilar = similar.filter(s => s.score > threshold);
@@ -1406,86 +1309,33 @@ async function onLinkCreated(sourceId, targetId, anchor) {
 <!-- Add your thoughts on link-aware meta -->
 
 
-### 18. Sanity.io SEO Schema Integration
+### 18. SEO Schema Requirements
 
 ```javascript
-// schemas/article.js - SEO fields
+// SEO fields needed in article schema
 
-export default {
-  name: 'article',
-  type: 'document',
-  fields: [
-    // ... content fields ...
+const seoSchema = {
+  // === SEO FIELDS ===
+  seo: {
+    title: String,              // SEO Title (max 60 chars, auto-generated based on content and incoming links)
+    description: String,        // Meta Description (max 160 chars)
+    focusKeyphrase: String,     // Primary keyword to target (informed by incoming links)
+    secondaryKeywords: Array,   // Array of secondary keywords
+    canonical: String,          // Canonical URL (leave blank to use page URL)
+    noIndex: Boolean,           // Default: false
+    ogImage: String             // Social Share Image URL
+  },
 
-    // === SEO FIELDS ===
-    {
-      name: 'seo',
-      title: 'SEO Settings',
-      type: 'object',
-      fields: [
-        {
-          name: 'title',
-          title: 'SEO Title',
-          type: 'string',
-          description: 'Auto-generated based on content and incoming links',
-          validation: Rule => Rule.max(60).warning('Title should be under 60 characters')
-        },
-        {
-          name: 'description',
-          title: 'Meta Description',
-          type: 'text',
-          rows: 3,
-          validation: Rule => Rule.max(160).warning('Description should be under 160 characters')
-        },
-        {
-          name: 'focusKeyphrase',
-          title: 'Focus Keyphrase',
-          type: 'string',
-          description: 'Primary keyword to target (informed by incoming links)'
-        },
-        {
-          name: 'secondaryKeywords',
-          title: 'Secondary Keywords',
-          type: 'array',
-          of: [{ type: 'string' }]
-        },
-        {
-          name: 'canonical',
-          title: 'Canonical URL',
-          type: 'url',
-          description: 'Leave blank to use page URL'
-        },
-        {
-          name: 'noIndex',
-          title: 'No Index',
-          type: 'boolean',
-          initialValue: false
-        },
-        {
-          name: 'ogImage',
-          title: 'Social Share Image',
-          type: 'image'
-        }
-      ]
-    },
-
-    // === AUTO-GENERATED SEO DATA ===
-    {
-      name: 'seoAnalysis',
-      title: 'SEO Analysis (Auto)',
-      type: 'object',
-      readOnly: true,
-      fields: [
-        { name: 'lastAnalyzed', type: 'datetime' },
-        { name: 'inboundLinkCount', type: 'number' },
-        { name: 'topInboundAnchors', type: 'array', of: [{ type: 'string' }] },
-        { name: 'suggestedFocusKeyphrase', type: 'string' },
-        { name: 'contentScore', type: 'number' },
-        { name: 'recommendations', type: 'array', of: [{ type: 'string' }] }
-      ]
-    }
-  ]
-}
+  // === AUTO-GENERATED SEO DATA ===
+  seoAnalysis: {
+    lastAnalyzed: DateTime,
+    inboundLinkCount: Number,
+    topInboundAnchors: Array,
+    suggestedFocusKeyphrase: String,
+    contentScore: Number,
+    recommendations: Array
+  }
+};
 ```
 
 ### 19. SEO Dashboard & Recommendations
@@ -1751,16 +1601,12 @@ async function generateLinkAudit() {
 }
 ```
 
-### 22. SEO Integration with Next.js
+### 22. SEO Meta Tag Generation
 
 ```javascript
-// app/blog/[slug]/page.js - Full SEO implementation
+// Generate SEO meta tags for article pages
 
-import { generateMetadata as generateNextMetadata } from 'next';
-
-export async function generateMetadata({ params }) {
-  const article = await getArticleBySlug(params.slug);
-
+function generateArticleMeta(article) {
   return {
     title: article.seo?.title || article.title,
     description: article.seo?.description || article.summary,
@@ -1768,7 +1614,7 @@ export async function generateMetadata({ params }) {
     openGraph: {
       title: article.seo?.title || article.title,
       description: article.seo?.description || article.summary,
-      url: `https://lendcity.ca/blog/${params.slug}`,
+      url: `https://lendcity.ca/blog/${article.slug}`,
       siteName: 'LendCity',
       images: [
         {
@@ -1786,28 +1632,15 @@ export async function generateMetadata({ params }) {
       description: article.seo?.description || article.summary,
       images: [article.seo?.ogImage || '/default-og.jpg']
     },
-    alternates: {
-      canonical: article.seo?.canonical || `https://lendcity.ca/blog/${params.slug}`
-    },
+    canonical: article.seo?.canonical || `https://lendcity.ca/blog/${article.slug}`,
     robots: article.seo?.noIndex ? 'noindex, nofollow' : 'index, follow'
   };
 }
 
-export default async function ArticlePage({ params }) {
-  const article = await getArticleBySlug(params.slug);
+// Generate JSON-LD structured data
+function renderStructuredData(article) {
   const structuredData = generateStructuredData(article);
-
-  return (
-    <>
-      <script
-        type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
-      />
-      <article>
-        {/* Article content with smart links */}
-      </article>
-    </>
-  );
+  return `<script type="application/ld+json">${JSON.stringify(structuredData)}</script>`;
 }
 ```
 
@@ -3209,17 +3042,17 @@ async function processTranscriptStrategically(transcript, options = {}) {
     });
   }
 
-  // Step 4: Generate embeddings and prepare for Sanity
+  // Step 4: Generate embeddings and prepare for CMS
   for (const article of articles) {
     article.embedding = await generateEmbedding(
       `${article.title} ${extractTextFromHtml(article.body).slice(0, 8000)}`
     );
   }
 
-  // Step 5: Optionally auto-publish to Sanity
+  // Step 5: Optionally auto-publish to CMS
   if (autoPublish) {
     for (const article of articles) {
-      await publishToSanity(article);
+      await publishToCms(article);
       await upsertToVectorDb(article);
     }
   }
@@ -3412,32 +3245,22 @@ console.log(`Created ${result.linkingImprovements.reduce((s, a) => s + a.linksTo
 
 | Layer | Recommendation | Alternatives |
 |-------|----------------|--------------|
-| CMS | Sanity.io | Contentful, Strapi |
-| Frontend | Next.js (App Router) | Remix, Astro |
 | Embeddings | OpenAI text-embedding-3-large | Voyage voyage-3 |
 | Vector DB | Pinecone (starter) | Qdrant (scale) |
-| Hosting | Vercel | Netlify, Railway |
-| Caching | Vercel KV or Upstash Redis | - |
+| Caching | Upstash Redis | - |
 
 ### Why This Stack
 
-1. **Sanity.io**
-   - Excellent webhook support
-   - GROQ queries are powerful
-   - Real-time collaboration
-   - Customizable studio
-
-2. **Next.js App Router**
-   - Server components reduce client JS
-   - API routes for webhooks
-   - ISR for static + fresh content
-   - Vercel integration
-
-3. **Pinecone**
+1. **Pinecone**
    - Zero ops vector database
    - Metadata filtering built-in
    - Free tier is generous (100k vectors = ~30k articles)
    - Excellent documentation
+
+2. **OpenAI Embeddings**
+   - High quality embeddings
+   - Easy integration
+   - Well documented
 
 **NOTES:**
 <!-- Add your technology preferences/concerns here -->
@@ -3447,21 +3270,21 @@ console.log(`Created ${result.linkingImprovements.reduce((s, a) => s + a.linksTo
 
 ## Migration Strategy
 
-### Phase 1: Parallel Run
+### Phase 1: Data Export & Vector Setup
 1. Export current WordPress catalog to JSON
 2. Generate embeddings for all articles
-3. Build Next.js prototype with vector linking
+3. Build prototype with vector linking
 4. Compare link suggestions side-by-side
 
-### Phase 2: Sanity Migration
-1. Set up Sanity schema with smart linker fields
+### Phase 2: Integration
+1. Set up schema with smart linker fields
 2. Migrate content from WordPress
 3. Preserve existing metadata (funnel, persona, etc.)
 4. Generate fresh embeddings
 
 ### Phase 3: Cutover
-1. Deploy Next.js site
-2. Enable Sanity webhooks for auto-embedding
+1. Deploy new system
+2. Enable webhooks for auto-embedding
 3. Retire WordPress
 
 ### Data Export Needed from WordPress
@@ -3516,13 +3339,13 @@ FROM wp_lendcity_catalog;
 4. **When to generate anchor phrases?**
    - Option A: Claude generates on publish (one-time cost)
    - Option B: Extract from content automatically (no AI cost)
-   - Option C: Manual curation in Sanity
+   - Option C: Manual curation in CMS
 
    **Decision:**
    <!-- Record your decision here -->
 
 5. **Link insertion approach?**
-   - Option A: Portable Text custom marks (Sanity native)
+   - Option A: Rich text custom marks (CMS native)
    - Option B: Post-processing at render time
    - Option C: Pre-computed and stored
 
@@ -3595,8 +3418,6 @@ Current WordPress plugin estimate: $50-150/month
 
 - [Pinecone Documentation](https://docs.pinecone.io/)
 - [OpenAI Embeddings Guide](https://platform.openai.com/docs/guides/embeddings)
-- [Sanity Webhooks](https://www.sanity.io/docs/webhooks)
-- [Next.js App Router](https://nextjs.org/docs/app)
 - [Voyage AI](https://www.voyageai.com/)
 
 ### Glossary
