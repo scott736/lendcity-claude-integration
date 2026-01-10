@@ -4820,14 +4820,15 @@ class LendCity_Smart_Linker {
         $prompt .= "      \"status\": \"keep|merge|remove\",\n";
         $prompt .= "      \"merge_into\": \"other tag name or null\",\n";
         $prompt .= "      \"quality_score\": 1-10,\n";
-        $prompt .= "      \"reason\": \"brief explanation\"\n";
+        $prompt .= "      \"reason\": \"2-5 words max\"\n";
         $prompt .= "    }\n";
         $prompt .= "  ],\n";
         $prompt .= "  \"recommended_master_tags\": [\"list of 20-50 high-quality tags to keep as the master directory\"]\n";
         $prompt .= "}\n";
-        $prompt .= "\nReturn ONLY valid JSON, no other text.";
+        $prompt .= "\nIMPORTANT: Keep reasons VERY short (2-5 words). Return ONLY valid JSON, no markdown.";
 
-        $response = $api->simple_completion($prompt, 4000);
+        // Use higher token limit for large tag sets (307+ tags need ~15000 tokens)
+        $response = $api->simple_completion($prompt, 16000, false);
 
         if (!$response) {
             return array('success' => false, 'error' => 'API request failed');
