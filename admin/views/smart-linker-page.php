@@ -544,6 +544,144 @@ $total_links = $smart_linker->get_total_link_count();
         </div>
     </div>
 
+    <!-- Tag Directory System - v12.7.0 -->
+    <?php
+    $tag_queue_status = $smart_linker->get_tag_queue_status();
+    $tag_directory = $smart_linker->get_tag_directory();
+    $tag_audit = $smart_linker->get_tag_audit();
+    ?>
+    <div style="background: linear-gradient(135deg, #11998e, #38ef7d); border-radius: 4px; padding: 20px; margin-bottom: 20px; color: white;">
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 15px;">
+            <h2 style="margin: 0; color: white;">🏷️ Tag Directory</h2>
+            <span style="background: rgba(255,255,255,0.3); padding: 3px 10px; border-radius: 12px; font-size: 11px; font-weight: bold;">AI-POWERED</span>
+            <?php if (!empty($tag_directory['count'])): ?>
+            <span style="background: rgba(255,255,255,0.2); padding: 3px 10px; border-radius: 12px; font-size: 11px;">
+                <?php echo $tag_directory['count']; ?> tags in directory
+            </span>
+            <?php endif; ?>
+        </div>
+        <p style="margin: 0 0 15px; opacity: 0.9;">Curated tag system with AI-powered assignment. Audit existing tags, create a master directory, then auto-assign to posts.</p>
+
+        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 15px;">
+            <!-- Tag Audit Card -->
+            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px; color: white;">🔍 Tag Audit</h3>
+                <p style="margin: 0 0 10px; font-size: 13px; opacity: 0.8;">Analyze your existing tags for quality, duplicates, and recommendations.</p>
+                <?php if ($tag_audit): ?>
+                <div style="background: rgba(255,255,255,0.15); padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 12px;">
+                    <strong>Last audit:</strong> <?php echo date('M j, Y', strtotime($tag_audit['run_at'])); ?><br>
+                    <strong>Status:</strong> <?php echo ucfirst($tag_audit['summary']['overall_health'] ?? 'unknown'); ?> |
+                    ✓ <?php echo $tag_audit['summary']['keep_count'] ?? 0; ?> keep,
+                    ⚠ <?php echo $tag_audit['summary']['merge_count'] ?? 0; ?> merge,
+                    ✗ <?php echo $tag_audit['summary']['remove_count'] ?? 0; ?> remove
+                </div>
+                <?php endif; ?>
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" id="run-tag-audit-btn" class="button button-large" style="background: white; color: #11998e; border: none; font-weight: bold; flex: 1;">
+                        <?php echo $tag_audit ? '🔄 Re-run Audit' : '🔍 Run Audit'; ?>
+                    </button>
+                    <?php if ($tag_audit): ?>
+                    <button type="button" id="view-tag-audit-btn" class="button button-large" style="background: rgba(255,255,255,0.3); color: white; border: none; flex: 1;">
+                        📊 View Results
+                    </button>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <!-- Tag Directory Card -->
+            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px; color: white;">📚 Master Tag List</h3>
+                <p style="margin: 0 0 10px; font-size: 13px; opacity: 0.8;">Your curated list of approved tags. AI will prioritize these when assigning.</p>
+                <?php if (!empty($tag_directory['tags']) && !($tag_directory['is_fallback'] ?? false)): ?>
+                <div style="background: rgba(255,255,255,0.15); padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 12px; max-height: 60px; overflow-y: auto;">
+                    <?php echo implode(', ', array_slice($tag_directory['tags'], 0, 20)); ?>
+                    <?php if (count($tag_directory['tags']) > 20): ?>
+                    <em>... and <?php echo count($tag_directory['tags']) - 20; ?> more</em>
+                    <?php endif; ?>
+                </div>
+                <?php else: ?>
+                <div style="background: rgba(255,255,255,0.15); padding: 8px 12px; border-radius: 6px; margin-bottom: 12px; font-size: 12px; opacity: 0.8;">
+                    <em>No master list set. Run an audit first, then initialize the directory.</em>
+                </div>
+                <?php endif; ?>
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" id="init-tag-directory-btn" class="button button-large" style="background: white; color: #11998e; border: none; font-weight: bold; flex: 1;" <?php echo !$tag_audit ? 'disabled title="Run audit first"' : ''; ?>>
+                        <?php echo (!empty($tag_directory['tags']) && !($tag_directory['is_fallback'] ?? false)) ? '🔄 Reset Directory' : '✨ Initialize'; ?>
+                    </button>
+                    <?php if (!empty($tag_directory['tags']) && !($tag_directory['is_fallback'] ?? false)): ?>
+                    <button type="button" id="view-tag-directory-btn" class="button button-large" style="background: rgba(255,255,255,0.3); color: white; border: none; flex: 1;">
+                        📋 View All
+                    </button>
+                    <?php endif; ?>
+                </div>
+            </div>
+
+            <!-- Bulk Tag Assignment Card -->
+            <div style="background: rgba(255,255,255,0.1); padding: 15px; border-radius: 8px;">
+                <h3 style="margin: 0 0 10px; color: white;">🚀 Bulk Tag Assignment</h3>
+                <p style="margin: 0 0 10px; font-size: 13px; opacity: 0.8;">Assign up to 5 tags per post using AI. Runs in background.</p>
+                <?php if ($tag_queue_status['status'] === 'running'): ?>
+                <div style="background: rgba(255,255,255,0.15); padding: 8px 12px; border-radius: 6px; margin-bottom: 12px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                        <strong style="font-size: 12px;">⏳ Processing...</strong>
+                        <span style="font-size: 11px;"><?php echo $tag_queue_status['percent']; ?>%</span>
+                    </div>
+                    <div style="background: rgba(255,255,255,0.3); height: 6px; border-radius: 3px; overflow: hidden;">
+                        <div style="background: white; height: 100%; width: <?php echo $tag_queue_status['percent']; ?>%;"></div>
+                    </div>
+                    <div style="font-size: 11px; margin-top: 6px; opacity: 0.8;">
+                        <?php echo $tag_queue_status['completed']; ?> / <?php echo $tag_queue_status['total']; ?> posts
+                    </div>
+                </div>
+                <?php endif; ?>
+                <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 12px; cursor: pointer;">
+                    <input type="checkbox" id="tag-only-untagged" checked>
+                    <span>Only posts without tags</span>
+                </label>
+                <label style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; cursor: pointer;">
+                    <input type="checkbox" id="tag-overwrite-existing">
+                    <span>Overwrite existing tags</span>
+                </label>
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" id="start-tag-queue-btn" class="button button-large" style="background: white; color: #11998e; border: none; font-weight: bold; flex: 1;" <?php echo $tag_queue_status['status'] === 'running' ? 'disabled' : ''; ?>>
+                        🏷️ Start Tagging
+                    </button>
+                    <?php if ($tag_queue_status['status'] === 'running'): ?>
+                    <button type="button" id="stop-tag-queue-btn" class="button button-large" style="background: #ef5350; color: white; border: none;">
+                        ⏹ Stop
+                    </button>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </div>
+
+        <!-- Tag Audit Results Panel (hidden by default) -->
+        <div id="tag-audit-results" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333; max-height: 500px; overflow-y: auto;">
+            <div id="tag-audit-loading" style="text-align: center; padding: 20px;">
+                <span class="spinner is-active" style="float: none;"></span> Analyzing tags...
+            </div>
+            <div id="tag-audit-content" style="display: none;"></div>
+        </div>
+
+        <!-- Tag Directory Panel (hidden by default) -->
+        <div id="tag-directory-panel" style="display: none; margin-top: 15px; background: rgba(255,255,255,0.95); padding: 15px; border-radius: 4px; color: #333;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                <h3 style="margin: 0;">📚 Tag Directory</h3>
+                <button type="button" id="close-directory-panel" class="button" style="font-size: 11px;">Close</button>
+            </div>
+            <div id="tag-directory-content">
+                <p>Loading...</p>
+            </div>
+            <div style="margin-top: 15px; padding-top: 15px; border-top: 1px solid #ddd;">
+                <strong>Add New Tag:</strong>
+                <div style="display: flex; gap: 8px; margin-top: 8px;">
+                    <input type="text" id="new-tag-input" placeholder="Enter tag name" style="flex: 1;">
+                    <button type="button" id="add-tag-btn" class="button button-primary">Add</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Delete All Links (Danger Zone) -->
     <div style="background: #fff5f5; border: 1px solid #dc3545; border-radius: 4px; padding: 20px; margin-top: 40px;">
         <h3 style="margin-top: 0; color: #dc3545;">⚠️ Danger Zone</h3>
@@ -2530,6 +2668,371 @@ jQuery(document).ready(function($) {
     // Start polling if any queue was already running on page load
     <?php if ($any_queue_active): ?>
     startBackgroundQueuePolling();
+    <?php endif; ?>
+
+    // ========== TAG DIRECTORY SYSTEM - v12.7.0 ==========
+
+    // Run Tag Audit
+    $('#run-tag-audit-btn').on('click', function() {
+        var $btn = $(this);
+        var $results = $('#tag-audit-results');
+        var $loading = $('#tag-audit-loading');
+        var $content = $('#tag-audit-content');
+
+        $btn.prop('disabled', true).text('Analyzing...');
+        $results.show();
+        $loading.show();
+        $content.hide();
+
+        $.post(ajaxurl, {
+            action: 'lendcity_action',
+            sub_action: 'run_tag_audit',
+            nonce: nonce
+        }, function(response) {
+            $loading.hide();
+            $content.show();
+            $btn.prop('disabled', false).text('🔄 Re-run Audit');
+
+            if (response.success) {
+                renderTagAuditResults(response.data);
+            } else {
+                $content.html('<p style="color: #c62828;">Error: ' + (response.data || 'Audit failed') + '</p>');
+            }
+        }).fail(function() {
+            $loading.hide();
+            $content.show().html('<p style="color: #c62828;">Request failed. Please try again.</p>');
+            $btn.prop('disabled', false).text('🔍 Run Audit');
+        });
+    });
+
+    // View Tag Audit Results
+    $('#view-tag-audit-btn').on('click', function() {
+        var $results = $('#tag-audit-results');
+        var $loading = $('#tag-audit-loading');
+        var $content = $('#tag-audit-content');
+
+        $results.show();
+        $loading.show();
+        $content.hide();
+
+        $.post(ajaxurl, {
+            action: 'lendcity_action',
+            sub_action: 'get_tag_audit',
+            nonce: nonce
+        }, function(response) {
+            $loading.hide();
+            $content.show();
+
+            if (response.success) {
+                renderTagAuditResults(response.data);
+            } else {
+                $content.html('<p style="color: #c62828;">No audit found. Run an audit first.</p>');
+            }
+        });
+    });
+
+    function renderTagAuditResults(data) {
+        var html = '<div style="margin-bottom: 15px;">';
+        html += '<h3 style="margin: 0 0 10px;">Audit Summary</h3>';
+        html += '<div style="display: flex; gap: 15px; flex-wrap: wrap;">';
+        html += '<div style="background: #e8f5e9; padding: 10px 15px; border-radius: 6px;"><strong>' + (data.summary?.keep_count || 0) + '</strong> Keep</div>';
+        html += '<div style="background: #fff3e0; padding: 10px 15px; border-radius: 6px;"><strong>' + (data.summary?.merge_count || 0) + '</strong> Merge</div>';
+        html += '<div style="background: #ffebee; padding: 10px 15px; border-radius: 6px;"><strong>' + (data.summary?.remove_count || 0) + '</strong> Remove</div>';
+        html += '<div style="background: #e3f2fd; padding: 10px 15px; border-radius: 6px;">Health: <strong>' + (data.summary?.overall_health || 'Unknown').toUpperCase() + '</strong></div>';
+        html += '</div>';
+
+        if (data.summary?.key_issues && data.summary.key_issues.length > 0) {
+            html += '<div style="margin-top: 10px; padding: 10px; background: #fff8e1; border-radius: 6px;">';
+            html += '<strong>Key Issues:</strong> ' + data.summary.key_issues.join(', ');
+            html += '</div>';
+        }
+        html += '</div>';
+
+        // Tags table
+        html += '<h3>Tag Analysis</h3>';
+        html += '<table style="width: 100%; border-collapse: collapse; font-size: 13px;">';
+        html += '<thead><tr style="background: #f5f5f5;"><th style="padding: 8px; text-align: left;">Tag</th><th style="padding: 8px;">Status</th><th style="padding: 8px;">Merge Into</th><th style="padding: 8px;">Score</th><th style="padding: 8px; text-align: left;">Reason</th></tr></thead>';
+        html += '<tbody>';
+
+        (data.tags || []).forEach(function(tag) {
+            var bgColor = tag.status === 'keep' ? '#e8f5e9' : (tag.status === 'merge' ? '#fff3e0' : '#ffebee');
+            html += '<tr style="background: ' + bgColor + ';">';
+            html += '<td style="padding: 8px;"><strong>' + escapeHtml(tag.name) + '</strong></td>';
+            html += '<td style="padding: 8px; text-align: center;"><span style="padding: 2px 8px; border-radius: 10px; font-size: 11px; background: ' + (tag.status === 'keep' ? '#4caf50' : (tag.status === 'merge' ? '#ff9800' : '#f44336')) + '; color: white;">' + tag.status.toUpperCase() + '</span></td>';
+            html += '<td style="padding: 8px; text-align: center;">' + (tag.merge_into || '-') + '</td>';
+            html += '<td style="padding: 8px; text-align: center;">' + (tag.quality_score || '-') + '/10</td>';
+            html += '<td style="padding: 8px;">' + escapeHtml(tag.reason || '') + '</td>';
+            html += '</tr>';
+        });
+
+        html += '</tbody></table>';
+
+        // Recommended master tags
+        if (data.recommended_master_tags && data.recommended_master_tags.length > 0) {
+            html += '<div style="margin-top: 20px; padding: 15px; background: #e8f5e9; border-radius: 6px;">';
+            html += '<h3 style="margin: 0 0 10px;">Recommended Master Tags (' + data.recommended_master_tags.length + ')</h3>';
+            html += '<p style="margin: 0 0 10px; font-size: 12px; color: #666;">These are the high-quality tags recommended for your Tag Directory.</p>';
+            html += '<div style="display: flex; flex-wrap: wrap; gap: 6px;">';
+            data.recommended_master_tags.forEach(function(tag) {
+                html += '<span style="background: #4caf50; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12px;">' + escapeHtml(tag) + '</span>';
+            });
+            html += '</div>';
+            html += '</div>';
+        }
+
+        // Action buttons
+        html += '<div style="margin-top: 20px; padding-top: 15px; border-top: 1px solid #ddd; display: flex; gap: 10px;">';
+        html += '<button type="button" id="apply-audit-btn" class="button button-primary">Apply Recommendations</button>';
+        html += '<button type="button" id="close-audit-btn" class="button">Close</button>';
+        html += '</div>';
+
+        $('#tag-audit-content').html(html);
+
+        // Store audit data for later use
+        window.currentAuditData = data;
+    }
+
+    // Apply Audit Recommendations
+    $(document).on('click', '#apply-audit-btn', function() {
+        if (!window.currentAuditData) {
+            alert('No audit data available.');
+            return;
+        }
+
+        var data = window.currentAuditData;
+        var merges = [];
+        var removes = [];
+
+        (data.tags || []).forEach(function(tag) {
+            if (tag.status === 'merge' && tag.merge_into) {
+                merges.push({ from: tag.name, to: tag.merge_into });
+            } else if (tag.status === 'remove') {
+                removes.push(tag.name);
+            }
+        });
+
+        if (merges.length === 0 && removes.length === 0) {
+            alert('No changes to apply.');
+            return;
+        }
+
+        if (!confirm('Apply ' + merges.length + ' merges and ' + removes.length + ' removals?')) {
+            return;
+        }
+
+        var $btn = $(this).prop('disabled', true).text('Applying...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_action',
+            sub_action: 'apply_tag_audit',
+            nonce: nonce,
+            merge: JSON.stringify(merges),
+            remove: JSON.stringify(removes)
+        }, function(response) {
+            $btn.prop('disabled', false).text('Apply Recommendations');
+
+            if (response.success) {
+                var result = response.data;
+                alert('Applied!\n\n' +
+                    'Merged: ' + (result.merged?.length || 0) + '\n' +
+                    'Removed: ' + (result.removed?.length || 0) + '\n' +
+                    (result.errors?.length > 0 ? 'Errors: ' + result.errors.join(', ') : ''));
+                location.reload();
+            } else {
+                alert('Error: ' + (response.data || 'Failed to apply'));
+            }
+        });
+    });
+
+    // Close Audit Panel
+    $(document).on('click', '#close-audit-btn', function() {
+        $('#tag-audit-results').hide();
+    });
+
+    // Initialize Tag Directory
+    $('#init-tag-directory-btn').on('click', function() {
+        var $btn = $(this);
+        var auditData = window.currentAuditData;
+
+        if (!auditData && !confirm('Initialize directory from last audit results?')) {
+            return;
+        }
+
+        $btn.prop('disabled', true).text('Initializing...');
+
+        var postData = {
+            action: 'lendcity_action',
+            sub_action: 'init_tag_directory',
+            nonce: nonce
+        };
+
+        // If we have current audit data with recommended tags, use those
+        if (auditData && auditData.recommended_master_tags) {
+            postData.tags = JSON.stringify(auditData.recommended_master_tags);
+        }
+
+        $.post(ajaxurl, postData, function(response) {
+            $btn.prop('disabled', false).text('🔄 Reset Directory');
+
+            if (response.success) {
+                alert('Tag Directory initialized with ' + response.data.count + ' tags!');
+                location.reload();
+            } else {
+                alert('Error: ' + (response.data || 'Failed to initialize'));
+            }
+        });
+    });
+
+    // View Tag Directory
+    $('#view-tag-directory-btn').on('click', function() {
+        var $panel = $('#tag-directory-panel');
+        var $content = $('#tag-directory-content');
+
+        $panel.show();
+        $content.html('<p>Loading...</p>');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_action',
+            sub_action: 'get_tag_directory',
+            nonce: nonce
+        }, function(response) {
+            if (response.success) {
+                var tags = response.data.tags || [];
+                var html = '<div style="display: flex; flex-wrap: wrap; gap: 6px;">';
+                tags.forEach(function(tag) {
+                    html += '<span class="directory-tag" style="background: #4caf50; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12px; cursor: pointer;" data-tag="' + escapeHtml(tag) + '">' +
+                        escapeHtml(tag) + ' <span class="remove-tag" style="margin-left: 4px; opacity: 0.7;">×</span></span>';
+                });
+                html += '</div>';
+                html += '<p style="margin-top: 10px; font-size: 12px; color: #666;">Click × to remove a tag from the directory.</p>';
+                $content.html(html);
+            } else {
+                $content.html('<p style="color: #c62828;">Failed to load directory.</p>');
+            }
+        });
+    });
+
+    // Close Directory Panel
+    $('#close-directory-panel').on('click', function() {
+        $('#tag-directory-panel').hide();
+    });
+
+    // Remove tag from directory
+    $(document).on('click', '.remove-tag', function(e) {
+        e.stopPropagation();
+        var $span = $(this).closest('.directory-tag');
+        var tagName = $span.data('tag');
+
+        if (!confirm('Remove "' + tagName + '" from the directory?')) {
+            return;
+        }
+
+        $.post(ajaxurl, {
+            action: 'lendcity_action',
+            sub_action: 'remove_from_tag_directory',
+            nonce: nonce,
+            tag_name: tagName
+        }, function(response) {
+            if (response.success) {
+                $span.fadeOut(200, function() { $(this).remove(); });
+            } else {
+                alert('Error: ' + (response.data || 'Failed to remove'));
+            }
+        });
+    });
+
+    // Add tag to directory
+    $('#add-tag-btn').on('click', function() {
+        var tagName = $('#new-tag-input').val().trim();
+        if (!tagName) {
+            alert('Please enter a tag name.');
+            return;
+        }
+
+        var $btn = $(this).prop('disabled', true).text('Adding...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_action',
+            sub_action: 'add_to_tag_directory',
+            nonce: nonce,
+            tag_name: tagName
+        }, function(response) {
+            $btn.prop('disabled', false).text('Add');
+
+            if (response.success) {
+                $('#new-tag-input').val('');
+                var html = '<span class="directory-tag" style="background: #4caf50; color: white; padding: 4px 10px; border-radius: 12px; font-size: 12px; cursor: pointer;" data-tag="' + escapeHtml(response.data.tag) + '">' +
+                    escapeHtml(response.data.tag) + ' <span class="remove-tag" style="margin-left: 4px; opacity: 0.7;">×</span></span>';
+                $('#tag-directory-content > div').append(html);
+            } else {
+                alert('Error: ' + (response.data || 'Failed to add'));
+            }
+        });
+    });
+
+    // Start Tag Assignment Queue
+    $('#start-tag-queue-btn').on('click', function() {
+        var $btn = $(this);
+        var onlyUntagged = $('#tag-only-untagged').is(':checked');
+        var overwrite = $('#tag-overwrite-existing').is(':checked');
+
+        $btn.prop('disabled', true).text('Starting...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_action',
+            sub_action: 'init_tag_queue',
+            nonce: nonce,
+            only_untagged: onlyUntagged ? 'true' : 'false',
+            overwrite: overwrite ? 'true' : 'false'
+        }, function(response) {
+            if (response.success) {
+                alert('Tag assignment started for ' + response.data.total + ' posts!\n\nThis runs in the background. Refresh the page to check progress.');
+                location.reload();
+            } else {
+                alert('Error: ' + (response.data || 'Failed to start'));
+                $btn.prop('disabled', false).text('🏷️ Start Tagging');
+            }
+        });
+    });
+
+    // Stop Tag Queue
+    $('#stop-tag-queue-btn').on('click', function() {
+        if (!confirm('Stop tag assignment queue?')) return;
+
+        var $btn = $(this).prop('disabled', true).text('Stopping...');
+
+        $.post(ajaxurl, {
+            action: 'lendcity_action',
+            sub_action: 'clear_tag_queue',
+            nonce: nonce
+        }, function(response) {
+            if (response.success) {
+                alert('Tag queue stopped.');
+                location.reload();
+            } else {
+                $btn.prop('disabled', false).text('⏹ Stop');
+            }
+        });
+    });
+
+    // Poll tag queue status if running
+    <?php if ($tag_queue_status['status'] === 'running'): ?>
+    var tagQueuePollInterval = setInterval(function() {
+        $.post(ajaxurl, {
+            action: 'lendcity_action',
+            sub_action: 'get_tag_queue_status',
+            nonce: nonce
+        }, function(response) {
+            if (response.success) {
+                var data = response.data;
+                if (data.status !== 'running') {
+                    clearInterval(tagQueuePollInterval);
+                    alert('Tag assignment complete!\n\n' + data.completed + ' posts tagged.\n' + (data.new_tags_created?.length || 0) + ' new tags created.');
+                    location.reload();
+                }
+            }
+        });
+    }, 5000);
     <?php endif; ?>
 });
 </script>

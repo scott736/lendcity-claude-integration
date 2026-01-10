@@ -518,6 +518,20 @@ class LendCity_Claude_Integration {
             // Settings Export/Import
             'export_settings' => 'ajax_export_settings',
             'import_settings' => 'ajax_import_settings',
+
+            // Tag Directory System - v12.7.0
+            'run_tag_audit' => 'ajax_run_tag_audit',
+            'get_tag_audit' => 'ajax_get_tag_audit',
+            'apply_tag_audit' => 'ajax_apply_tag_audit',
+            'init_tag_directory' => 'ajax_init_tag_directory',
+            'get_tag_directory' => 'ajax_get_tag_directory',
+            'add_to_tag_directory' => 'ajax_add_to_tag_directory',
+            'remove_from_tag_directory' => 'ajax_remove_from_tag_directory',
+            'assign_tags_to_post' => 'ajax_assign_tags_to_post',
+            'init_tag_queue' => 'ajax_init_tag_queue',
+            'get_tag_queue_status' => 'ajax_get_tag_queue_status',
+            'clear_tag_queue' => 'ajax_clear_tag_queue',
+            'get_posts_for_tags' => 'ajax_get_posts_for_tags',
         );
 
         if (!isset($action_map[$sub_action])) {
@@ -3267,6 +3281,274 @@ class LendCity_Claude_Integration {
         $result = $smart_linker->clear_meta_queue();
 
         wp_send_json_success($result);
+    }
+
+    // ==================== TAG DIRECTORY SYSTEM AJAX - v12.7.0 ====================
+    // Intelligent tag management with curated directory and AI-powered assignment
+
+    /**
+     * Run comprehensive tag audit
+     */
+    public function ajax_run_tag_audit() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->run_tag_audit();
+
+        if (!empty($result['success'])) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result['error'] ?? 'Audit failed');
+        }
+    }
+
+    /**
+     * Get last tag audit results
+     */
+    public function ajax_get_tag_audit() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $audit = $smart_linker->get_tag_audit();
+
+        if ($audit) {
+            wp_send_json_success($audit);
+        } else {
+            wp_send_json_error('No audit found. Run an audit first.');
+        }
+    }
+
+    /**
+     * Apply tag audit recommendations (merge/remove tags)
+     */
+    public function ajax_apply_tag_audit() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $merge = isset($_POST['merge']) ? json_decode(stripslashes($_POST['merge']), true) : array();
+        $remove = isset($_POST['remove']) ? json_decode(stripslashes($_POST['remove']), true) : array();
+
+        $actions = array(
+            'merge' => $merge ?: array(),
+            'remove' => $remove ?: array()
+        );
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->apply_tag_audit($actions);
+
+        wp_send_json_success($result);
+    }
+
+    /**
+     * Initialize tag directory from audit recommendations
+     */
+    public function ajax_init_tag_directory() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $master_tags = isset($_POST['tags']) ? json_decode(stripslashes($_POST['tags']), true) : null;
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->init_tag_directory($master_tags);
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result['error'] ?? 'Failed to initialize directory');
+        }
+    }
+
+    /**
+     * Get current tag directory
+     */
+    public function ajax_get_tag_directory() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $directory = $smart_linker->get_tag_directory();
+
+        wp_send_json_success($directory);
+    }
+
+    /**
+     * Add a tag to the directory
+     */
+    public function ajax_add_to_tag_directory() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $tag_name = isset($_POST['tag_name']) ? sanitize_text_field($_POST['tag_name']) : '';
+        if (empty($tag_name)) {
+            wp_send_json_error('Tag name required');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->add_to_tag_directory($tag_name);
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result['error'] ?? 'Failed to add tag');
+        }
+    }
+
+    /**
+     * Remove a tag from the directory
+     */
+    public function ajax_remove_from_tag_directory() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $tag_name = isset($_POST['tag_name']) ? sanitize_text_field($_POST['tag_name']) : '';
+        if (empty($tag_name)) {
+            wp_send_json_error('Tag name required');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->remove_from_tag_directory($tag_name);
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result['error'] ?? 'Failed to remove tag');
+        }
+    }
+
+    /**
+     * Assign tags to a single post
+     */
+    public function ajax_assign_tags_to_post() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $post_id = isset($_POST['post_id']) ? intval($_POST['post_id']) : 0;
+        $overwrite = isset($_POST['overwrite']) && $_POST['overwrite'] === 'true';
+
+        if (!$post_id) {
+            wp_send_json_error('Post ID required');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->assign_tags_to_post($post_id, $overwrite);
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result['error'] ?? 'Failed to assign tags');
+        }
+    }
+
+    /**
+     * Initialize bulk tag assignment queue
+     */
+    public function ajax_init_tag_queue() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $overwrite = isset($_POST['overwrite']) && $_POST['overwrite'] === 'true';
+        $only_untagged = isset($_POST['only_untagged']) && $_POST['only_untagged'] === 'true';
+
+        $smart_linker = new LendCity_Smart_Linker();
+
+        // Get posts to process
+        $post_ids = $smart_linker->get_posts_for_tag_assignment($only_untagged);
+
+        if (empty($post_ids)) {
+            wp_send_json_error('No posts found to process');
+        }
+
+        $result = $smart_linker->init_tag_assignment_queue($post_ids, $overwrite);
+
+        if ($result['success']) {
+            wp_send_json_success($result);
+        } else {
+            wp_send_json_error($result['message'] ?? 'Failed to initialize queue');
+        }
+    }
+
+    /**
+     * Get tag assignment queue status
+     */
+    public function ajax_get_tag_queue_status() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $status = $smart_linker->get_tag_queue_status();
+
+        wp_send_json_success($status);
+    }
+
+    /**
+     * Clear tag assignment queue
+     */
+    public function ajax_clear_tag_queue() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $result = $smart_linker->clear_tag_queue();
+
+        wp_send_json_success($result);
+    }
+
+    /**
+     * Get list of posts for tag assignment with current tag counts
+     */
+    public function ajax_get_posts_for_tags() {
+        check_ajax_referer('lendcity_claude_nonce', 'nonce');
+        if (!current_user_can('edit_posts')) {
+            wp_send_json_error('Permission denied');
+        }
+
+        $only_untagged = isset($_POST['only_untagged']) && $_POST['only_untagged'] === 'true';
+
+        $smart_linker = new LendCity_Smart_Linker();
+        $post_ids = $smart_linker->get_posts_for_tag_assignment($only_untagged);
+
+        // Get tag counts
+        $posts_data = array();
+        foreach (array_slice($post_ids, 0, 100) as $post_id) { // Limit to first 100 for preview
+            $post = get_post($post_id);
+            $tags = wp_get_post_tags($post_id, array('fields' => 'names'));
+            $posts_data[] = array(
+                'id' => $post_id,
+                'title' => $post->post_title,
+                'type' => $post->post_type,
+                'tags' => $tags,
+                'tag_count' => count($tags)
+            );
+        }
+
+        wp_send_json_success(array(
+            'total' => count($post_ids),
+            'preview' => $posts_data
+        ));
     }
 
     // ==================== v12.0 BACKGROUND QUEUE AJAX ====================

@@ -58,6 +58,13 @@ class LendCity_Smart_Linker {
     // Cached debug mode flag (avoids repeated get_option calls)
     private $debug_mode = null;
 
+    // Tag Directory System - v12.7.0
+    private $tag_directory_option = 'lendcity_tag_directory';
+    private $tag_audit_option = 'lendcity_tag_audit';
+    private $tag_queue_option = 'lendcity_tag_assignment_queue';
+    private $tag_queue_status_option = 'lendcity_tag_assignment_status';
+    private $max_tags_per_post = 5;
+
     public function __construct() {
         global $wpdb;
         $this->table_name = $wpdb->prefix . 'lendcity_smart_linker_catalog';
@@ -85,6 +92,9 @@ class LendCity_Smart_Linker {
 
         // v12.0 Background queue processing hooks (runs without browser)
         add_action('lendcity_process_catalog_queue', array($this, 'process_catalog_queue_batch'));
+
+        // v12.7.0 Tag assignment queue processing
+        add_action('lendcity_process_tag_queue', array($this, 'process_tag_assignment_batch'));
 
         // Loopback processing (non-cron)
         add_action('wp_ajax_lendcity_background_process', array($this, 'ajax_background_process'));
@@ -4687,6 +4697,648 @@ class LendCity_Smart_Linker {
             'changes' => $changes,
             'new_seo' => $result
         );
+    }
+
+    // =========================================================================
+    // TAG DIRECTORY SYSTEM - v12.7.0
+    // Intelligent tag management with curated directory and AI-powered assignment
+    // =========================================================================
+
+    /**
+     * Run a comprehensive audit of all WordPress tags
+     * Analyzes tag quality, usage, duplicates, and provides recommendations
+     *
+     * @return array Audit results with recommendations
+     */
+    public function run_tag_audit() {
+        // Get all tags with full data
+        $all_tags = get_tags(array(
+            'hide_empty' => false,
+            'orderby' => 'count',
+            'order' => 'DESC'
+        ));
+
+        if (empty($all_tags)) {
+            return array(
+                'success' => false,
+                'message' => 'No tags found on this site'
+            );
+        }
+
+        // Prepare tag data for analysis
+        $tag_data = array();
+        $total_usage = 0;
+        foreach ($all_tags as $tag) {
+            $tag_data[] = array(
+                'id' => $tag->term_id,
+                'name' => $tag->name,
+                'slug' => $tag->slug,
+                'count' => $tag->count
+            );
+            $total_usage += $tag->count;
+        }
+
+        // Get posts stats
+        $total_posts = wp_count_posts('post')->publish + wp_count_posts('page')->publish;
+        $posts_with_tags = $this->count_posts_with_tags();
+
+        // Use Claude to analyze tags
+        $api = new LendCity_Claude_API();
+
+        $prompt = "You are a WordPress SEO and taxonomy expert. Analyze these tags and provide recommendations.\n\n";
+        $prompt .= "=== SITE CONTEXT ===\n";
+        $prompt .= "Industry: Mortgage/Real Estate (Canadian)\n";
+        $prompt .= "Total published posts/pages: {$total_posts}\n";
+        $prompt .= "Posts with tags: {$posts_with_tags}\n";
+        $prompt .= "Total tags: " . count($all_tags) . "\n";
+        $prompt .= "Total tag usage: {$total_usage}\n\n";
+
+        $prompt .= "=== ALL TAGS (name: usage count) ===\n";
+        foreach ($tag_data as $t) {
+            $prompt .= "- {$t['name']}: {$t['count']} posts\n";
+        }
+
+        $prompt .= "\n=== ANALYZE AND CATEGORIZE EACH TAG ===\n";
+        $prompt .= "For each tag, determine:\n";
+        $prompt .= "1. Status: 'keep' (good quality tag), 'merge' (synonym/duplicate), 'remove' (low quality/unused)\n";
+        $prompt .= "2. For 'merge' tags, specify which tag it should merge INTO\n";
+        $prompt .= "3. Quality score (1-10): How useful is this tag for site navigation and SEO?\n\n";
+
+        $prompt .= "Criteria for good tags:\n";
+        $prompt .= "- Clear, descriptive topic (not too generic, not too specific)\n";
+        $prompt .= "- Reusable across multiple articles (ideally 3+ uses)\n";
+        $prompt .= "- Relevant to mortgage/real estate industry\n";
+        $prompt .= "- Not a duplicate/synonym of another tag\n";
+        $prompt .= "- Professional and user-friendly\n\n";
+
+        $prompt .= "Red flags:\n";
+        $prompt .= "- 0-1 usage (orphaned)\n";
+        $prompt .= "- Too generic (e.g., 'tips', 'guide')\n";
+        $prompt .= "- Too specific (one-off topics)\n";
+        $prompt .= "- Synonyms (e.g., 'mortgages' vs 'home loans')\n";
+        $prompt .= "- Unprofessional/unclear names\n\n";
+
+        $prompt .= "Return a JSON object:\n";
+        $prompt .= "{\n";
+        $prompt .= "  \"summary\": {\n";
+        $prompt .= "    \"total_analyzed\": <number>,\n";
+        $prompt .= "    \"keep_count\": <number>,\n";
+        $prompt .= "    \"merge_count\": <number>,\n";
+        $prompt .= "    \"remove_count\": <number>,\n";
+        $prompt .= "    \"overall_health\": \"good|fair|poor\",\n";
+        $prompt .= "    \"key_issues\": [\"issue1\", \"issue2\"]\n";
+        $prompt .= "  },\n";
+        $prompt .= "  \"tags\": [\n";
+        $prompt .= "    {\n";
+        $prompt .= "      \"name\": \"tag name\",\n";
+        $prompt .= "      \"status\": \"keep|merge|remove\",\n";
+        $prompt .= "      \"merge_into\": \"other tag name or null\",\n";
+        $prompt .= "      \"quality_score\": 1-10,\n";
+        $prompt .= "      \"reason\": \"brief explanation\"\n";
+        $prompt .= "    }\n";
+        $prompt .= "  ],\n";
+        $prompt .= "  \"recommended_master_tags\": [\"list of 20-50 high-quality tags to keep as the master directory\"]\n";
+        $prompt .= "}\n";
+        $prompt .= "\nReturn ONLY valid JSON, no other text.";
+
+        $response = $api->simple_completion($prompt, 4000);
+
+        if (!$response) {
+            return array('success' => false, 'error' => 'API request failed');
+        }
+
+        // Parse response
+        $result = json_decode($response, true);
+        if (!$result && preg_match('/\{.*\}/s', $response, $matches)) {
+            $result = json_decode($matches[0], true);
+        }
+
+        if (!$result || !isset($result['tags'])) {
+            return array('success' => false, 'error' => 'Invalid API response', 'raw' => substr($response, 0, 500));
+        }
+
+        // Enrich with term IDs for easier processing
+        $tag_id_map = array();
+        foreach ($tag_data as $t) {
+            $tag_id_map[strtolower($t['name'])] = $t['id'];
+        }
+
+        foreach ($result['tags'] as &$tag) {
+            $tag['term_id'] = $tag_id_map[strtolower($tag['name'])] ?? null;
+        }
+
+        // Store audit results
+        $audit_data = array(
+            'success' => true,
+            'run_at' => current_time('mysql'),
+            'total_tags' => count($all_tags),
+            'total_posts' => $total_posts,
+            'posts_with_tags' => $posts_with_tags,
+            'summary' => $result['summary'],
+            'tags' => $result['tags'],
+            'recommended_master_tags' => $result['recommended_master_tags'] ?? array()
+        );
+
+        update_option($this->tag_audit_option, $audit_data);
+
+        return $audit_data;
+    }
+
+    /**
+     * Count posts that have at least one tag
+     */
+    private function count_posts_with_tags() {
+        global $wpdb;
+
+        $query = "
+            SELECT COUNT(DISTINCT p.ID)
+            FROM {$wpdb->posts} p
+            INNER JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
+            INNER JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
+            WHERE tt.taxonomy = 'post_tag'
+            AND p.post_status = 'publish'
+            AND p.post_type IN ('post', 'page')
+        ";
+
+        return (int) $wpdb->get_var($query);
+    }
+
+    /**
+     * Get the last tag audit results
+     *
+     * @return array|null Audit results or null if never run
+     */
+    public function get_tag_audit() {
+        return get_option($this->tag_audit_option, null);
+    }
+
+    /**
+     * Apply audit recommendations (merge and remove tags)
+     *
+     * @param array $actions Array of actions to apply: ['merge' => [...], 'remove' => [...]]
+     * @return array Results of the operation
+     */
+    public function apply_tag_audit($actions) {
+        $results = array(
+            'merged' => array(),
+            'removed' => array(),
+            'errors' => array()
+        );
+
+        // Process merges first
+        if (!empty($actions['merge'])) {
+            foreach ($actions['merge'] as $merge) {
+                $from_tag = get_term_by('name', $merge['from'], 'post_tag');
+                $to_tag = get_term_by('name', $merge['to'], 'post_tag');
+
+                if (!$from_tag) {
+                    $results['errors'][] = "Tag not found: {$merge['from']}";
+                    continue;
+                }
+
+                if (!$to_tag) {
+                    // Create the target tag if it doesn't exist
+                    $new_term = wp_insert_term($merge['to'], 'post_tag');
+                    if (is_wp_error($new_term)) {
+                        $results['errors'][] = "Could not create tag: {$merge['to']}";
+                        continue;
+                    }
+                    $to_tag = get_term($new_term['term_id'], 'post_tag');
+                }
+
+                // Get all posts with the source tag
+                $posts = get_posts(array(
+                    'tag_id' => $from_tag->term_id,
+                    'posts_per_page' => -1,
+                    'post_type' => array('post', 'page'),
+                    'fields' => 'ids'
+                ));
+
+                // Add target tag to each post
+                foreach ($posts as $post_id) {
+                    wp_set_post_tags($post_id, array($to_tag->name), true); // Append
+                }
+
+                // Delete the source tag
+                wp_delete_term($from_tag->term_id, 'post_tag');
+
+                $results['merged'][] = array(
+                    'from' => $merge['from'],
+                    'to' => $merge['to'],
+                    'posts_affected' => count($posts)
+                );
+            }
+        }
+
+        // Process removals
+        if (!empty($actions['remove'])) {
+            foreach ($actions['remove'] as $tag_name) {
+                $tag = get_term_by('name', $tag_name, 'post_tag');
+                if (!$tag) {
+                    $results['errors'][] = "Tag not found for removal: {$tag_name}";
+                    continue;
+                }
+
+                wp_delete_term($tag->term_id, 'post_tag');
+                $results['removed'][] = $tag_name;
+            }
+        }
+
+        return $results;
+    }
+
+    /**
+     * Initialize the Tag Directory with recommended master tags
+     *
+     * @param array $master_tags List of tag names to use as the master directory
+     * @return array Result
+     */
+    public function init_tag_directory($master_tags = null) {
+        // If no tags provided, use the recommended tags from the last audit
+        if ($master_tags === null) {
+            $audit = $this->get_tag_audit();
+            if (!empty($audit['recommended_master_tags'])) {
+                $master_tags = $audit['recommended_master_tags'];
+            } else {
+                return array('success' => false, 'error' => 'No master tags provided and no audit found');
+            }
+        }
+
+        // Normalize tag names
+        $normalized_tags = array_map(function($tag) {
+            return trim(strtolower($tag));
+        }, $master_tags);
+        $normalized_tags = array_unique($normalized_tags);
+
+        // Store the directory
+        $directory = array(
+            'tags' => $normalized_tags,
+            'created_at' => current_time('mysql'),
+            'updated_at' => current_time('mysql'),
+            'count' => count($normalized_tags)
+        );
+
+        update_option($this->tag_directory_option, $directory);
+
+        return array(
+            'success' => true,
+            'count' => count($normalized_tags),
+            'tags' => $normalized_tags
+        );
+    }
+
+    /**
+     * Get the current Tag Directory
+     *
+     * @return array Tag directory data
+     */
+    public function get_tag_directory() {
+        $directory = get_option($this->tag_directory_option, null);
+
+        if (!$directory) {
+            // Return all existing tags as fallback
+            $all_tags = get_tags(array('hide_empty' => false));
+            return array(
+                'tags' => array_map(function($t) { return strtolower($t->name); }, $all_tags ?: array()),
+                'is_fallback' => true,
+                'count' => count($all_tags ?: array())
+            );
+        }
+
+        return $directory;
+    }
+
+    /**
+     * Add a tag to the directory
+     *
+     * @param string $tag_name Tag to add
+     * @return array Result
+     */
+    public function add_to_tag_directory($tag_name) {
+        $directory = get_option($this->tag_directory_option, array('tags' => array()));
+        $normalized = trim(strtolower($tag_name));
+
+        if (in_array($normalized, $directory['tags'])) {
+            return array('success' => false, 'error' => 'Tag already in directory');
+        }
+
+        $directory['tags'][] = $normalized;
+        $directory['updated_at'] = current_time('mysql');
+        $directory['count'] = count($directory['tags']);
+
+        update_option($this->tag_directory_option, $directory);
+
+        // Also create the tag in WordPress if it doesn't exist
+        if (!term_exists($tag_name, 'post_tag')) {
+            wp_insert_term($tag_name, 'post_tag');
+        }
+
+        return array('success' => true, 'tag' => $normalized);
+    }
+
+    /**
+     * Remove a tag from the directory (does not delete from WordPress)
+     *
+     * @param string $tag_name Tag to remove
+     * @return array Result
+     */
+    public function remove_from_tag_directory($tag_name) {
+        $directory = get_option($this->tag_directory_option, array('tags' => array()));
+        $normalized = trim(strtolower($tag_name));
+
+        $key = array_search($normalized, $directory['tags']);
+        if ($key === false) {
+            return array('success' => false, 'error' => 'Tag not in directory');
+        }
+
+        unset($directory['tags'][$key]);
+        $directory['tags'] = array_values($directory['tags']); // Re-index
+        $directory['updated_at'] = current_time('mysql');
+        $directory['count'] = count($directory['tags']);
+
+        update_option($this->tag_directory_option, $directory);
+
+        return array('success' => true);
+    }
+
+    /**
+     * Assign tags to a post using AI and the Tag Directory
+     * Prioritizes existing directory tags, only creates new if necessary
+     *
+     * @param int $post_id Post ID to assign tags to
+     * @param bool $overwrite_existing Whether to replace existing tags
+     * @return array Result with assigned tags
+     */
+    public function assign_tags_to_post($post_id, $overwrite_existing = false) {
+        $post = get_post($post_id);
+        if (!$post) {
+            return array('success' => false, 'error' => 'Post not found');
+        }
+
+        // Get current tags if not overwriting
+        $current_tags = array();
+        if (!$overwrite_existing) {
+            $current_tags = wp_get_post_tags($post_id, array('fields' => 'names'));
+        }
+
+        // Get the tag directory
+        $directory = $this->get_tag_directory();
+        $available_tags = $directory['tags'];
+
+        // Get content for analysis
+        $content = wp_strip_all_tags($post->post_content);
+        $content = substr($content, 0, 2000); // Limit content length
+
+        // Build prompt for Claude
+        $api = new LendCity_Claude_API();
+
+        $prompt = "You are selecting tags for a mortgage/real estate article.\n\n";
+        $prompt .= "=== ARTICLE ===\n";
+        $prompt .= "Title: {$post->post_title}\n";
+        $prompt .= "Content: {$content}\n\n";
+
+        $prompt .= "=== AVAILABLE TAGS (use these first!) ===\n";
+        $prompt .= implode(', ', $available_tags) . "\n\n";
+
+        if (!empty($current_tags)) {
+            $prompt .= "=== CURRENT TAGS (already assigned) ===\n";
+            $prompt .= implode(', ', $current_tags) . "\n\n";
+        }
+
+        $prompt .= "=== INSTRUCTIONS ===\n";
+        $prompt .= "1. Select up to {$this->max_tags_per_post} tags that best match this article\n";
+        $prompt .= "2. STRONGLY PREFER tags from the 'Available Tags' list\n";
+        $prompt .= "3. Only suggest a NEW tag if:\n";
+        $prompt .= "   - There's a major topic NOT covered by any available tag\n";
+        $prompt .= "   - The new tag would be useful for 3+ other articles (reusable)\n";
+        $prompt .= "   - It's not a synonym of an existing tag\n";
+        $prompt .= "4. Keep current tags if they're still relevant (don't remove good tags)\n\n";
+
+        $prompt .= "Return JSON:\n";
+        $prompt .= "{\n";
+        $prompt .= "  \"selected_tags\": [\"tag1\", \"tag2\", ...],\n";
+        $prompt .= "  \"new_tags\": [\"any new tags not in available list\"],\n";
+        $prompt .= "  \"reasoning\": \"brief explanation of choices\"\n";
+        $prompt .= "}\n";
+        $prompt .= "\nReturn ONLY valid JSON.";
+
+        $response = $api->simple_completion($prompt, 500);
+
+        if (!$response) {
+            return array('success' => false, 'error' => 'API request failed');
+        }
+
+        // Parse response
+        $result = json_decode($response, true);
+        if (!$result && preg_match('/\{.*\}/s', $response, $matches)) {
+            $result = json_decode($matches[0], true);
+        }
+
+        if (!$result || !isset($result['selected_tags'])) {
+            return array('success' => false, 'error' => 'Invalid API response', 'raw' => substr($response, 0, 300));
+        }
+
+        // Combine with current tags if not overwriting
+        $final_tags = $result['selected_tags'];
+        if (!$overwrite_existing && !empty($current_tags)) {
+            $final_tags = array_unique(array_merge($current_tags, $final_tags));
+        }
+
+        // Enforce max limit
+        $final_tags = array_slice($final_tags, 0, $this->max_tags_per_post);
+
+        // Apply tags
+        wp_set_post_tags($post_id, $final_tags, false);
+
+        // Add any new tags to the directory
+        $new_tags = $result['new_tags'] ?? array();
+        foreach ($new_tags as $new_tag) {
+            $this->add_to_tag_directory($new_tag);
+        }
+
+        return array(
+            'success' => true,
+            'post_id' => $post_id,
+            'assigned_tags' => $final_tags,
+            'new_tags_created' => $new_tags,
+            'reasoning' => $result['reasoning'] ?? ''
+        );
+    }
+
+    /**
+     * Initialize tag assignment queue for bulk processing
+     *
+     * @param array $post_ids Post IDs to process
+     * @param bool $overwrite_existing Whether to replace existing tags
+     * @return array Queue status
+     */
+    public function init_tag_assignment_queue($post_ids, $overwrite_existing = false) {
+        if (empty($post_ids)) {
+            return array('success' => false, 'message' => 'No posts to process');
+        }
+
+        $queue_data = array(
+            'pending' => $post_ids,
+            'completed' => array(),
+            'failed' => array(),
+            'total' => count($post_ids),
+            'started_at' => current_time('mysql'),
+            'overwrite_existing' => $overwrite_existing,
+            'new_tags_created' => array()
+        );
+
+        update_option($this->tag_queue_option, $queue_data);
+        update_option($this->tag_queue_status_option, 'running');
+
+        // Schedule first batch
+        if (!wp_next_scheduled('lendcity_process_tag_queue')) {
+            wp_schedule_single_event(time() + 2, 'lendcity_process_tag_queue');
+        }
+
+        return array(
+            'success' => true,
+            'total' => count($post_ids),
+            'message' => 'Tag assignment queue initialized with ' . count($post_ids) . ' posts'
+        );
+    }
+
+    /**
+     * Process a batch of tag assignment queue items
+     */
+    public function process_tag_assignment_batch() {
+        $queue = get_option($this->tag_queue_option, array());
+        $status = get_option($this->tag_queue_status_option, 'idle');
+
+        if ($status !== 'running' || empty($queue['pending'])) {
+            update_option($this->tag_queue_status_option, 'idle');
+            return;
+        }
+
+        // Process batch of 3 posts per cron run
+        $batch_size = 3;
+        $batch = array_splice($queue['pending'], 0, $batch_size);
+        $overwrite = $queue['overwrite_existing'] ?? false;
+
+        foreach ($batch as $post_id) {
+            $post = get_post($post_id);
+            if (!$post) {
+                $queue['failed'][] = array('id' => $post_id, 'error' => 'Post not found');
+                continue;
+            }
+
+            // Assign tags
+            $result = $this->assign_tags_to_post($post_id, $overwrite);
+
+            if (!$result['success']) {
+                $queue['failed'][] = array('id' => $post_id, 'error' => $result['error'] ?? 'Unknown error');
+            } else {
+                $queue['completed'][] = array(
+                    'id' => $post_id,
+                    'tags' => $result['assigned_tags']
+                );
+
+                // Track new tags created
+                if (!empty($result['new_tags_created'])) {
+                    $queue['new_tags_created'] = array_unique(array_merge(
+                        $queue['new_tags_created'] ?? array(),
+                        $result['new_tags_created']
+                    ));
+                }
+            }
+        }
+
+        // Update queue
+        update_option($this->tag_queue_option, $queue);
+
+        // Schedule next batch if more items pending
+        if (!empty($queue['pending'])) {
+            wp_schedule_single_event(time() + 3, 'lendcity_process_tag_queue');
+        } else {
+            update_option($this->tag_queue_status_option, 'completed');
+        }
+    }
+
+    /**
+     * Get current tag assignment queue status
+     *
+     * @return array Queue status with counts
+     */
+    public function get_tag_queue_status() {
+        $queue = get_option($this->tag_queue_option, array());
+        $status = get_option($this->tag_queue_status_option, 'idle');
+
+        if (empty($queue)) {
+            return array(
+                'status' => 'idle',
+                'pending' => 0,
+                'completed' => 0,
+                'failed' => 0,
+                'total' => 0,
+                'percent' => 0
+            );
+        }
+
+        $pending = count($queue['pending'] ?? array());
+        $completed = count($queue['completed'] ?? array());
+        $failed = count($queue['failed'] ?? array());
+        $total = $queue['total'] ?? 0;
+
+        return array(
+            'status' => $status,
+            'pending' => $pending,
+            'completed' => $completed,
+            'failed' => $failed,
+            'failed_details' => $queue['failed'] ?? array(),
+            'total' => $total,
+            'percent' => $total > 0 ? round(($completed + $failed) / $total * 100) : 0,
+            'started_at' => $queue['started_at'] ?? '',
+            'new_tags_created' => $queue['new_tags_created'] ?? array()
+        );
+    }
+
+    /**
+     * Clear tag assignment queue
+     */
+    public function clear_tag_queue() {
+        delete_option($this->tag_queue_option);
+        update_option($this->tag_queue_status_option, 'idle');
+        wp_clear_scheduled_hook('lendcity_process_tag_queue');
+        return array('success' => true);
+    }
+
+    /**
+     * Get all posts/pages for tag assignment (those in catalog or all published)
+     *
+     * @param bool $only_untagged Only return posts without tags
+     * @return array Post IDs
+     */
+    public function get_posts_for_tag_assignment($only_untagged = false) {
+        global $wpdb;
+
+        if ($only_untagged) {
+            // Get posts without tags
+            $query = "
+                SELECT p.ID
+                FROM {$wpdb->posts} p
+                LEFT JOIN {$wpdb->term_relationships} tr ON p.ID = tr.object_id
+                LEFT JOIN {$wpdb->term_taxonomy} tt ON tr.term_taxonomy_id = tt.term_taxonomy_id AND tt.taxonomy = 'post_tag'
+                WHERE p.post_status = 'publish'
+                AND p.post_type IN ('post', 'page')
+                AND tt.term_taxonomy_id IS NULL
+                ORDER BY p.post_date DESC
+            ";
+        } else {
+            // Get all published posts
+            $query = "
+                SELECT ID
+                FROM {$wpdb->posts}
+                WHERE post_status = 'publish'
+                AND post_type IN ('post', 'page')
+                ORDER BY post_date DESC
+            ";
+        }
+
+        return $wpdb->get_col($query);
     }
 
 }
