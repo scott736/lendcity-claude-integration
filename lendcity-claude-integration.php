@@ -3,7 +3,7 @@
  * Plugin Name: LendCity Tools
  * Plugin URI: https://lendcity.ca
  * Description: AI-powered Smart Linker, Article Scheduler, and Bulk Metadata
- * Version: 12.8.0
+ * Version: 12.8.1
  * Author: LendCity Mortgages
  * Author URI: https://lendcity.ca
  * License: GPL v2 or later
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('LENDCITY_CLAUDE_VERSION', '12.8.0');
+define('LENDCITY_CLAUDE_VERSION', '12.8.1');
 define('LENDCITY_CLAUDE_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('LENDCITY_CLAUDE_PLUGIN_URL', plugin_dir_url(__FILE__));
 
@@ -3516,6 +3516,7 @@ class LendCity_Claude_Integration {
 
     /**
      * Get tag assignment queue status
+     * Also processes a batch (loopback) since WP cron is unreliable
      */
     public function ajax_get_tag_queue_status() {
         check_ajax_referer('lendcity_claude_nonce', 'nonce');
@@ -3524,6 +3525,13 @@ class LendCity_Claude_Integration {
         }
 
         $smart_linker = new LendCity_Smart_Linker();
+
+        // Loopback: process a batch when status is polled (WP cron is unreliable)
+        $current_status = get_option('lendcity_tag_queue_status', 'idle');
+        if ($current_status === 'running') {
+            $smart_linker->process_tag_assignment_batch();
+        }
+
         $status = $smart_linker->get_tag_queue_status();
 
         wp_send_json_success($status);
