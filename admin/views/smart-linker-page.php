@@ -1013,6 +1013,7 @@ jQuery(document).ready(function($) {
     }
 
     // Run audit on specific posts
+    // v6.3: Uses parallel batch processing for faster audits
     function runAudit(postIds, onComplete) {
         var $bar = $('#audit-progress-bar');
         var $text = $('#audit-progress-text');
@@ -1023,15 +1024,20 @@ jQuery(document).ready(function($) {
 
         var total = postIds.length;
         var processed = 0;
-        var chunkSize = 3;
+        var chunkSize = 10; // v6.3: Larger batch size (API handles up to 10)
+        var parallelWorkers = 3; // v6.3: Run 3 batches in parallel
+        var activeWorkers = 0;
+        var chunkIndex = 0;
 
         var aggregatedStats = { totalLinks: 0, brokenLinks: 0, suboptimalLinks: 0, missingOpportunities: 0 };
         var allIssues = [];
+        var startTime = Date.now();
 
-        function processChunk() {
-            if (processed >= total) {
+        function checkComplete() {
+            if (processed >= total && activeWorkers === 0) {
+                var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
                 $bar.css('width', '100%');
-                $text.text('Complete! Refreshing results...');
+                $text.text('Complete in ' + elapsed + 's! Refreshing results...');
 
                 // Reload cached results to get fresh data
                 setTimeout(function() {
@@ -1039,13 +1045,29 @@ jQuery(document).ready(function($) {
                     $progress.hide();
                     if (onComplete) onComplete();
                 }, 500);
+            }
+        }
+
+        function processNextBatch() {
+            // Check if we have more chunks to process
+            var startIdx = chunkIndex * chunkSize;
+            if (startIdx >= total) {
+                checkComplete();
                 return;
             }
 
-            var chunk = postIds.slice(processed, processed + chunkSize);
+            // Check if we can start a new worker
+            if (activeWorkers >= parallelWorkers) {
+                return;
+            }
+
+            // Get chunk and increment index
+            var chunk = postIds.slice(startIdx, startIdx + chunkSize);
+            chunkIndex++;
+            activeWorkers++;
 
             $.post(ajaxurl, {
-                action: 'lendcity_audit_chunk',
+                action: 'lendcity_audit_chunk_batch', // v6.3: Use batch endpoint
                 nonce: linkAuditNonce,
                 post_ids: chunk
             }, function(chunkResponse) {
@@ -1061,16 +1083,24 @@ jQuery(document).ready(function($) {
                 processed += chunk.length;
                 var percent = Math.round((processed / total) * 100);
                 $bar.css('width', percent + '%');
-                $text.text('Auditing ' + processed + ' of ' + total + ' posts...');
+                $text.text('Auditing ' + processed + ' of ' + total + ' posts (' + parallelWorkers + ' parallel)...');
 
-                setTimeout(processChunk, 500);
+                activeWorkers--;
+                processNextBatch(); // Start next batch immediately
             }).fail(function() {
                 processed += chunk.length;
-                setTimeout(processChunk, 500);
+                activeWorkers--;
+                processNextBatch();
             });
+
+            // Try to start more workers immediately
+            processNextBatch();
         }
 
-        processChunk();
+        // Start parallel workers
+        for (var i = 0; i < parallelWorkers; i++) {
+            processNextBatch();
+        }
     }
 
     // Load cached results on page load
@@ -1212,6 +1242,7 @@ jQuery(document).ready(function($) {
     });
 
     // Accept All Missing Opportunities Handler
+    // v6.3: Uses batch endpoint for much faster processing
     $('#accept-all-missing').on('click', function() {
         var missingIssues = window.auditIssues.filter(function(i) { return i.type === 'missing'; });
         var pendingRows = [];
@@ -1230,60 +1261,98 @@ jQuery(document).ready(function($) {
             return;
         }
 
-        if (!confirm('Accept all ' + pendingRows.length + ' missing link opportunities?\n\nThis will trigger smart linking for each source post to add the suggested links.')) {
+        if (!confirm('Accept all ' + pendingRows.length + ' missing link opportunities?\n\nThis will add the suggested links to your posts.')) {
             return;
         }
 
         var $btn = $(this);
         $btn.prop('disabled', true).text('Processing...');
+        var startTime = Date.now();
 
-        var processed = 0;
-        var succeeded = 0;
+        // Disable all buttons and show processing state
+        pendingRows.forEach(function(item) {
+            var $row = $('#issue-row-' + item.index);
+            $row.find('.fix-link-btn').prop('disabled', true);
+            $row.css('background', '#fff3cd');
+        });
 
-        function processNext() {
-            if (processed >= pendingRows.length) {
+        // v6.3: Process in batches of 20 using batch endpoint
+        var batchSize = 20;
+        var totalProcessed = 0;
+        var totalSucceeded = 0;
+        var batchIndex = 0;
+
+        function processBatch() {
+            var startIdx = batchIndex * batchSize;
+            if (startIdx >= pendingRows.length) {
+                // All done!
+                var elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
                 $btn.prop('disabled', false).text('✓ Accept All Suggestions');
-                alert('Completed! ' + succeeded + ' of ' + pendingRows.length + ' opportunities accepted.');
-                // Update counter
+                alert('Completed in ' + elapsed + 's!\n\n' + totalSucceeded + ' of ' + pendingRows.length + ' opportunities accepted.');
                 var currentMissing = parseInt($('#audit-missing-opps').text()) || 0;
-                $('#audit-missing-opps').text(Math.max(0, currentMissing - succeeded));
+                $('#audit-missing-opps').text(Math.max(0, currentMissing - totalSucceeded));
                 return;
             }
 
-            var item = pendingRows[processed];
-            var $row = $('#issue-row-' + item.index);
-            $row.find('.fix-link-btn').prop('disabled', true);
+            var batch = pendingRows.slice(startIdx, startIdx + batchSize);
+            var opportunities = batch.map(function(item) {
+                return {
+                    post_id: item.issue.postId,
+                    target_post_id: item.issue.targetPostId,
+                    target_url: item.issue.targetUrl,
+                    target_title: item.issue.targetTitle,
+                    anchor_text: item.issue.anchorText || ''
+                };
+            });
+
+            $btn.text('Processing batch ' + (batchIndex + 1) + '...');
 
             $.post(ajaxurl, {
-                action: 'lendcity_accept_opportunity',
+                action: 'lendcity_accept_opportunities_batch',
                 nonce: linkAuditNonce,
-                post_id: item.issue.postId,
-                target_post_id: item.issue.targetPostId,
-                target_url: item.issue.targetUrl,
-                target_title: item.issue.targetTitle,
-                anchor_text: item.issue.anchorText || ''
+                opportunities: opportunities
             }, function(response) {
                 if (response.success) {
-                    succeeded++;
-                    $row.css('background', '#d4edda');
-                    $row.find('.fix-link-btn').remove();
-                    $row.find('td:last').html('<span style="color: #28a745; font-weight: bold;">✓ Accepted</span>');
-                } else {
+                    var data = response.data;
+                    totalSucceeded += data.succeeded;
+                    totalProcessed += batch.length;
+
+                    // Update UI for each item in batch
+                    if (data.details) {
+                        data.details.forEach(function(detail, i) {
+                            var item = batch[i];
+                            if (!item) return;
+                            var $row = $('#issue-row-' + item.index);
+
+                            if (detail.success) {
+                                $row.css('background', '#d4edda');
+                                $row.find('.fix-link-btn').remove();
+                                $row.find('td:last').html('<span style="color: #28a745; font-weight: bold;">✓ Accepted</span>');
+                            } else {
+                                $row.css('background', '#f8d7da');
+                                $row.find('td:last').html('<span style="color: #c62828;">✗ ' + (detail.error || 'Failed') + '</span>');
+                            }
+                        });
+                    }
+                }
+
+                batchIndex++;
+                $btn.text('Processed ' + Math.min(totalProcessed, pendingRows.length) + '/' + pendingRows.length + '...');
+                processBatch(); // Process next batch immediately
+            }).fail(function() {
+                // Mark entire batch as failed
+                batch.forEach(function(item) {
+                    var $row = $('#issue-row-' + item.index);
                     $row.css('background', '#f8d7da');
                     $row.find('td:last').html('<span style="color: #c62828;">✗ Failed</span>');
-                }
-                processed++;
-                $btn.text('Processing ' + processed + '/' + pendingRows.length + '...');
-                setTimeout(processNext, 300);
-            }).fail(function() {
-                $row.css('background', '#f8d7da');
-                $row.find('td:last').html('<span style="color: #c62828;">✗ Failed</span>');
-                processed++;
-                setTimeout(processNext, 300);
+                });
+                totalProcessed += batch.length;
+                batchIndex++;
+                processBatch();
             });
         }
 
-        processNext();
+        processBatch();
     });
 
     // Dismiss All Missing Opportunities Handler
