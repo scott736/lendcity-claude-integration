@@ -4095,13 +4095,31 @@ class LendCity_Smart_Linker {
             return new WP_Error('api_error', 'API request failed');
         }
 
-        // Parse response
-        $result = json_decode($response, true);
-        if (!$result && preg_match('/\{.*\}/s', $response, $matches)) {
-            $result = json_decode($matches[0], true);
+        // Parse response - strip markdown code blocks if present
+        $cleaned_response = $response;
+
+        // Remove markdown code blocks (```json ... ``` or ``` ... ```)
+        if (preg_match('/```(?:json)?\s*([\s\S]*?)\s*```/', $cleaned_response, $code_matches)) {
+            $cleaned_response = trim($code_matches[1]);
+        }
+
+        // Try to parse the cleaned response first
+        $result = json_decode($cleaned_response, true);
+
+        // If that fails, try extracting JSON object from the response
+        if (!$result) {
+            if (preg_match('/(\{(?:[^{}]|(?1))*\})/s', $cleaned_response, $matches)) {
+                $result = json_decode($matches[0], true);
+            }
+        }
+
+        // Final fallback: try original response
+        if (!$result) {
+            $result = json_decode($response, true);
         }
 
         if (!$result || !isset($result['title'])) {
+            error_log('LendCity Smart Metadata: Failed to parse API response. Raw: ' . substr($response, 0, 500));
             return new WP_Error('parse_error', 'Invalid API response: ' . substr($response, 0, 200));
         }
 
@@ -4807,13 +4825,32 @@ class LendCity_Smart_Linker {
             return array('success' => false, 'error' => 'API request failed');
         }
 
-        // Parse response
-        $result = json_decode($response, true);
-        if (!$result && preg_match('/\{.*\}/s', $response, $matches)) {
-            $result = json_decode($matches[0], true);
+        // Parse response - strip markdown code blocks if present
+        $cleaned_response = $response;
+
+        // Remove markdown code blocks (```json ... ``` or ``` ... ```)
+        if (preg_match('/```(?:json)?\s*([\s\S]*?)\s*```/', $cleaned_response, $code_matches)) {
+            $cleaned_response = trim($code_matches[1]);
+        }
+
+        // Try to parse the cleaned response first
+        $result = json_decode($cleaned_response, true);
+
+        // If that fails, try extracting JSON object from the response
+        if (!$result) {
+            // Try to find the outermost JSON object
+            if (preg_match('/(\{(?:[^{}]|(?1))*\})/s', $cleaned_response, $matches)) {
+                $result = json_decode($matches[0], true);
+            }
+        }
+
+        // Final fallback: try original response
+        if (!$result) {
+            $result = json_decode($response, true);
         }
 
         if (!$result || !isset($result['tags'])) {
+            error_log('LendCity Tag Audit: Failed to parse API response. Raw: ' . substr($response, 0, 1000));
             return array('success' => false, 'error' => 'Invalid API response', 'raw' => substr($response, 0, 500));
         }
 
@@ -5128,13 +5165,31 @@ class LendCity_Smart_Linker {
             return array('success' => false, 'error' => 'API request failed');
         }
 
-        // Parse response
-        $result = json_decode($response, true);
-        if (!$result && preg_match('/\{.*\}/s', $response, $matches)) {
-            $result = json_decode($matches[0], true);
+        // Parse response - strip markdown code blocks if present
+        $cleaned_response = $response;
+
+        // Remove markdown code blocks (```json ... ``` or ``` ... ```)
+        if (preg_match('/```(?:json)?\s*([\s\S]*?)\s*```/', $cleaned_response, $code_matches)) {
+            $cleaned_response = trim($code_matches[1]);
+        }
+
+        // Try to parse the cleaned response first
+        $result = json_decode($cleaned_response, true);
+
+        // If that fails, try extracting JSON object from the response
+        if (!$result) {
+            if (preg_match('/(\{(?:[^{}]|(?1))*\})/s', $cleaned_response, $matches)) {
+                $result = json_decode($matches[0], true);
+            }
+        }
+
+        // Final fallback: try original response
+        if (!$result) {
+            $result = json_decode($response, true);
         }
 
         if (!$result || !isset($result['selected_tags'])) {
+            error_log('LendCity Tag Assignment: Failed to parse API response. Raw: ' . substr($response, 0, 500));
             return array('success' => false, 'error' => 'Invalid API response', 'raw' => substr($response, 0, 300));
         }
 

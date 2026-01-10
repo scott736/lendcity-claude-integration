@@ -2991,12 +2991,30 @@ class LendCity_Claude_Integration {
             wp_send_json_error('API request failed');
         }
         
-        $result = json_decode($response, true);
-        if (!$result && preg_match('/\{.*\}/s', $response, $matches)) {
-            $result = json_decode($matches[0], true);
+        // Strip markdown code blocks if present
+        $cleaned_response = $response;
+
+        if (preg_match('/```(?:json)?\s*([\s\S]*?)\s*```/', $cleaned_response, $code_matches)) {
+            $cleaned_response = trim($code_matches[1]);
         }
-        
+
+        // Try to parse the cleaned response first
+        $result = json_decode($cleaned_response, true);
+
+        // If that fails, try extracting JSON object from the response
+        if (!$result) {
+            if (preg_match('/(\{(?:[^{}]|(?1))*\})/s', $cleaned_response, $matches)) {
+                $result = json_decode($matches[0], true);
+            }
+        }
+
+        // Final fallback: try original response
+        if (!$result) {
+            $result = json_decode($response, true);
+        }
+
         if (!$result || !isset($result['title'])) {
+            error_log('LendCity Meta Generation: Failed to parse API response. Raw: ' . substr($response, 0, 500));
             wp_send_json_error('Invalid API response: ' . substr($response, 0, 200));
         }
         
