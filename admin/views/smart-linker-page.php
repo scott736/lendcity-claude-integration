@@ -613,7 +613,8 @@ jQuery(document).ready(function($) {
             var processed = 0;
             var succeeded = 0;
             var failed = 0;
-            var chunkSize = 3;
+            // v6.3: Process 1 article at a time for full semantic enrichment (takes 15-30 sec each)
+            var chunkSize = 1;
 
             $text.text('Syncing 0 of ' + total + ' articles...');
 
