@@ -4768,117 +4768,93 @@ class LendCity_Smart_Linker {
         $total_posts = wp_count_posts('post')->publish + wp_count_posts('page')->publish;
         $posts_with_tags = $this->count_posts_with_tags();
 
-        // Use Claude to analyze tags
-        $api = new LendCity_Claude_API();
+        // Process tags in parallel batches for reliability
+        $batch_size = 50;
+        $tag_batches = array_chunk($tag_data, $batch_size);
+        $all_tag_results = array();
 
-        $prompt = "You are a WordPress SEO and taxonomy expert. Analyze these tags and provide recommendations.\n\n";
-        $prompt .= "=== SITE CONTEXT ===\n";
-        $prompt .= "Industry: Mortgage/Real Estate (Canadian)\n";
-        $prompt .= "Total published posts/pages: {$total_posts}\n";
-        $prompt .= "Posts with tags: {$posts_with_tags}\n";
-        $prompt .= "Total tags: " . count($all_tags) . "\n";
-        $prompt .= "Total tag usage: {$total_usage}\n\n";
+        error_log('LendCity Tag Audit: Processing ' . count($tag_data) . ' tags in ' . count($tag_batches) . ' batches');
 
-        $prompt .= "=== ALL TAGS (name: usage count) ===\n";
-        foreach ($tag_data as $t) {
-            $prompt .= "- {$t['name']}: {$t['count']} posts\n";
-        }
+        // Process batches in parallel (3 at a time)
+        $batch_chunks = array_chunk($tag_batches, 3);
 
-        $prompt .= "\n=== ANALYZE AND CATEGORIZE EACH TAG ===\n";
-        $prompt .= "For each tag, determine:\n";
-        $prompt .= "1. Status: 'keep' (good quality tag), 'merge' (synonym/duplicate), 'remove' (low quality/unused)\n";
-        $prompt .= "2. For 'merge' tags, specify which tag it should merge INTO\n";
-        $prompt .= "3. Quality score (1-10): How useful is this tag for site navigation and SEO?\n\n";
+        foreach ($batch_chunks as $chunk_index => $parallel_batches) {
+            error_log('LendCity Tag Audit: Processing chunk ' . ($chunk_index + 1) . ' of ' . count($batch_chunks));
 
-        $prompt .= "Criteria for good tags:\n";
-        $prompt .= "- Clear, descriptive topic (not too generic, not too specific)\n";
-        $prompt .= "- Reusable across multiple articles (ideally 3+ uses)\n";
-        $prompt .= "- Relevant to mortgage/real estate industry\n";
-        $prompt .= "- Not a duplicate/synonym of another tag\n";
-        $prompt .= "- Professional and user-friendly\n\n";
+            $batch_results = $this->process_tag_audit_batches_parallel($parallel_batches, $total_posts, $posts_with_tags, $total_usage, count($all_tags));
 
-        $prompt .= "Red flags:\n";
-        $prompt .= "- 0-1 usage (orphaned)\n";
-        $prompt .= "- Too generic (e.g., 'tips', 'guide')\n";
-        $prompt .= "- Too specific (one-off topics)\n";
-        $prompt .= "- Synonyms (e.g., 'mortgages' vs 'home loans')\n";
-        $prompt .= "- Unprofessional/unclear names\n\n";
-
-        $prompt .= "Return a JSON object:\n";
-        $prompt .= "{\n";
-        $prompt .= "  \"summary\": {\n";
-        $prompt .= "    \"total_analyzed\": <number>,\n";
-        $prompt .= "    \"keep_count\": <number>,\n";
-        $prompt .= "    \"merge_count\": <number>,\n";
-        $prompt .= "    \"remove_count\": <number>,\n";
-        $prompt .= "    \"overall_health\": \"good|fair|poor\",\n";
-        $prompt .= "    \"key_issues\": [\"issue1\", \"issue2\"]\n";
-        $prompt .= "  },\n";
-        $prompt .= "  \"tags\": [\n";
-        $prompt .= "    {\n";
-        $prompt .= "      \"name\": \"tag name\",\n";
-        $prompt .= "      \"status\": \"keep|merge|remove\",\n";
-        $prompt .= "      \"merge_into\": \"other tag name or null\",\n";
-        $prompt .= "      \"quality_score\": 1-10,\n";
-        $prompt .= "      \"reason\": \"2-5 words max\"\n";
-        $prompt .= "    }\n";
-        $prompt .= "  ],\n";
-        $prompt .= "  \"recommended_master_tags\": [\"list of 20-50 high-quality tags to keep as the master directory\"]\n";
-        $prompt .= "}\n";
-        $prompt .= "\nIMPORTANT: Keep reasons VERY short (2-5 words). Return ONLY valid JSON, no markdown.";
-
-        // Use higher token limit for large tag sets (307+ tags need ~15000 tokens)
-        $response = $api->simple_completion($prompt, 16000, false);
-
-        if (!$response) {
-            return array('success' => false, 'error' => 'API request failed');
-        }
-
-        // Parse response - strip markdown code blocks if present
-        $cleaned_response = $response;
-
-        // Remove opening code fence (```json or ``` at start)
-        $cleaned_response = preg_replace('/^```(?:json)?\s*\n?/', '', $cleaned_response);
-
-        // Remove closing code fence (``` at end)
-        $cleaned_response = preg_replace('/\n?```\s*$/', '', $cleaned_response);
-
-        $cleaned_response = trim($cleaned_response);
-
-        // Try to parse the cleaned response
-        $result = json_decode($cleaned_response, true);
-
-        // If that fails, try original response
-        if (!$result) {
-            $result = json_decode($response, true);
-        }
-
-        // If still failing, try to extract JSON from anywhere in the response
-        if (!$result) {
-            // Find first { and last } to extract JSON
-            $first_brace = strpos($cleaned_response, '{');
-            $last_brace = strrpos($cleaned_response, '}');
-            if ($first_brace !== false && $last_brace !== false && $last_brace > $first_brace) {
-                $json_str = substr($cleaned_response, $first_brace, $last_brace - $first_brace + 1);
-                $result = json_decode($json_str, true);
+            foreach ($batch_results as $tags) {
+                $all_tag_results = array_merge($all_tag_results, $tags);
             }
         }
 
-        if (!$result || !isset($result['tags'])) {
-            error_log('LendCity Tag Audit: Failed to parse API response. Raw: ' . substr($response, 0, 1000));
-            error_log('LendCity Tag Audit: JSON error: ' . json_last_error_msg());
-            return array('success' => false, 'error' => 'Invalid API response', 'raw' => substr($response, 0, 500));
+        if (empty($all_tag_results)) {
+            return array('success' => false, 'error' => 'All batch requests failed');
         }
 
-        // Enrich with term IDs for easier processing
+        // Build tag ID map for enrichment
         $tag_id_map = array();
         foreach ($tag_data as $t) {
             $tag_id_map[strtolower($t['name'])] = $t['id'];
         }
 
-        foreach ($result['tags'] as &$tag) {
+        // Enrich with term IDs
+        foreach ($all_tag_results as &$tag) {
             $tag['term_id'] = $tag_id_map[strtolower($tag['name'])] ?? null;
         }
+
+        // Calculate summary from results
+        $keep_count = 0;
+        $merge_count = 0;
+        $remove_count = 0;
+        $recommended_tags = array();
+
+        foreach ($all_tag_results as $tag) {
+            if ($tag['status'] === 'keep') {
+                $keep_count++;
+                if ($tag['quality_score'] >= 7) {
+                    $recommended_tags[] = $tag['name'];
+                }
+            } elseif ($tag['status'] === 'merge') {
+                $merge_count++;
+            } else {
+                $remove_count++;
+            }
+        }
+
+        // Determine overall health
+        $keep_ratio = $keep_count / max(1, count($all_tag_results));
+        $overall_health = 'poor';
+        if ($keep_ratio > 0.6) $overall_health = 'good';
+        elseif ($keep_ratio > 0.3) $overall_health = 'fair';
+
+        // Build key issues
+        $key_issues = array();
+        $orphaned = count(array_filter($tag_data, function($t) { return $t['count'] <= 1; }));
+        if ($orphaned > count($tag_data) * 0.3) {
+            $key_issues[] = round($orphaned / count($tag_data) * 100) . '% of tags have 0-1 usage';
+        }
+        if ($merge_count > count($all_tag_results) * 0.2) {
+            $key_issues[] = 'Many duplicate/synonym tags need consolidation';
+        }
+        if ($remove_count > count($all_tag_results) * 0.4) {
+            $key_issues[] = 'High number of low-quality tags to remove';
+        }
+        if (count($tag_data) > $total_posts * 2) {
+            $key_issues[] = 'Tag bloat: more tags than needed for post count';
+        }
+
+        $summary = array(
+            'total_analyzed' => count($all_tag_results),
+            'keep_count' => $keep_count,
+            'merge_count' => $merge_count,
+            'remove_count' => $remove_count,
+            'overall_health' => $overall_health,
+            'key_issues' => array_slice($key_issues, 0, 5)
+        );
+
+        // Limit recommended tags to 50
+        $recommended_tags = array_slice($recommended_tags, 0, 50);
 
         // Store audit results
         $audit_data = array(
@@ -4887,14 +4863,150 @@ class LendCity_Smart_Linker {
             'total_tags' => count($all_tags),
             'total_posts' => $total_posts,
             'posts_with_tags' => $posts_with_tags,
-            'summary' => $result['summary'],
-            'tags' => $result['tags'],
-            'recommended_master_tags' => $result['recommended_master_tags'] ?? array()
+            'summary' => $summary,
+            'tags' => $all_tag_results,
+            'recommended_master_tags' => $recommended_tags
         );
 
         update_option($this->tag_audit_option, $audit_data);
 
+        error_log('LendCity Tag Audit: Completed. Analyzed ' . count($all_tag_results) . ' tags');
+
         return $audit_data;
+    }
+
+    /**
+     * Process multiple tag audit batches in parallel using curl_multi
+     */
+    private function process_tag_audit_batches_parallel($batches, $total_posts, $posts_with_tags, $total_usage, $total_tags) {
+        if (empty($this->api_key)) {
+            return array();
+        }
+
+        $multi_handle = curl_multi_init();
+        $curl_handles = array();
+
+        foreach ($batches as $batch_index => $batch) {
+            $prompt = $this->build_tag_audit_batch_prompt($batch, $total_posts, $posts_with_tags, $total_usage, $total_tags);
+
+            $ch = curl_init();
+            curl_setopt_array($ch, array(
+                CURLOPT_URL => 'https://api.anthropic.com/v1/messages',
+                CURLOPT_POST => true,
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => 120,
+                CURLOPT_HTTPHEADER => array(
+                    'Content-Type: application/json',
+                    'x-api-key: ' . $this->api_key,
+                    'anthropic-version: 2023-06-01'
+                ),
+                CURLOPT_POSTFIELDS => json_encode(array(
+                    'model' => LendCity_Claude_API::MODEL_SONNET,
+                    'max_tokens' => 4000,
+                    'messages' => array(array('role' => 'user', 'content' => $prompt))
+                ))
+            ));
+
+            curl_multi_add_handle($multi_handle, $ch);
+            $curl_handles[$batch_index] = $ch;
+        }
+
+        // Execute all requests in parallel
+        $running = null;
+        do {
+            curl_multi_exec($multi_handle, $running);
+            curl_multi_select($multi_handle);
+        } while ($running > 0);
+
+        // Collect results
+        $results = array();
+        foreach ($curl_handles as $batch_index => $ch) {
+            $response = curl_multi_getcontent($ch);
+            $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+
+            curl_multi_remove_handle($multi_handle, $ch);
+            curl_close($ch);
+
+            if ($http_code !== 200) {
+                error_log("LendCity Tag Audit: Batch $batch_index failed with HTTP $http_code");
+                continue;
+            }
+
+            $body = json_decode($response, true);
+            if (!isset($body['content'][0]['text'])) {
+                error_log("LendCity Tag Audit: Batch $batch_index - invalid response structure");
+                continue;
+            }
+
+            $text = $body['content'][0]['text'];
+            $tags = $this->parse_tag_audit_response($text);
+
+            if (!empty($tags)) {
+                $results[$batch_index] = $tags;
+                error_log("LendCity Tag Audit: Batch $batch_index - parsed " . count($tags) . " tags");
+            }
+        }
+
+        curl_multi_close($multi_handle);
+
+        return $results;
+    }
+
+    /**
+     * Build prompt for a single batch of tags
+     */
+    private function build_tag_audit_batch_prompt($batch, $total_posts, $posts_with_tags, $total_usage, $total_tags) {
+        $prompt = "You are a WordPress SEO expert. Analyze these tags for a Canadian mortgage/real estate site.\n\n";
+        $prompt .= "Site has {$total_posts} posts, {$posts_with_tags} with tags, {$total_tags} total tags.\n\n";
+
+        $prompt .= "=== TAGS TO ANALYZE ===\n";
+        foreach ($batch as $t) {
+            $prompt .= "- {$t['name']}: {$t['count']} posts\n";
+        }
+
+        $prompt .= "\n=== FOR EACH TAG, DETERMINE ===\n";
+        $prompt .= "- status: 'keep' (good), 'merge' (duplicate/synonym), 'remove' (low quality)\n";
+        $prompt .= "- merge_into: if merge, which tag to merge into (or null)\n";
+        $prompt .= "- quality_score: 1-10\n";
+        $prompt .= "- reason: 2-5 words only\n\n";
+
+        $prompt .= "Good tags: clear topic, 3+ uses, relevant to mortgages/real estate, not duplicate.\n";
+        $prompt .= "Bad tags: 0-1 usage, too generic, too specific, synonyms, unclear.\n\n";
+
+        $prompt .= "Return ONLY a JSON array (no markdown, no code blocks):\n";
+        $prompt .= "[{\"name\":\"tag\",\"status\":\"keep|merge|remove\",\"merge_into\":null,\"quality_score\":7,\"reason\":\"brief\"}]\n";
+
+        return $prompt;
+    }
+
+    /**
+     * Parse tag audit response from a batch
+     */
+    private function parse_tag_audit_response($response) {
+        // Remove markdown code blocks if present
+        $cleaned = preg_replace('/^```(?:json)?\s*\n?/', '', $response);
+        $cleaned = preg_replace('/\n?```\s*$/', '', $cleaned);
+        $cleaned = trim($cleaned);
+
+        // Try to parse as JSON array
+        $result = json_decode($cleaned, true);
+
+        if (!$result) {
+            // Try to find array in response
+            $first_bracket = strpos($cleaned, '[');
+            $last_bracket = strrpos($cleaned, ']');
+            if ($first_bracket !== false && $last_bracket !== false && $last_bracket > $first_bracket) {
+                $json_str = substr($cleaned, $first_bracket, $last_bracket - $first_bracket + 1);
+                $result = json_decode($json_str, true);
+            }
+        }
+
+        if (!is_array($result)) {
+            error_log('LendCity Tag Audit: Failed to parse batch response: ' . substr($response, 0, 300));
+            return array();
+        }
+
+        return $result;
     }
 
     /**
